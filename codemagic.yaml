@@ -64,6 +64,8 @@ workflows:
       - mobile/build/ios/archive/*.xcarchive
     publishing:
       app_store_connect:
-        api_key: app_store_connect
+        key_id: $APP_STORE_CONNECT_KEY_ID
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        key: $APP_STORE_CONNECT_PRIVATE_KEY
         submit_to_testflight: true
 
