@@ -62,8 +62,9 @@ workflows:
     artifacts:
       - mobile/build/ios/ipa/*.ipa
       - mobile/build/ios/archive/*.xcarchive
-    publishing:
-      app_store_connect:
-        api_key: app_store_connect
-        submit_to_testflight: true
+    # Publishing to TestFlight/App Store will be enabled later once signing setup completes
+    # publishing:
+    #   app_store_connect:
+    #     api_key: app_store_connect
+    #     submit_to_testflight: true
 
