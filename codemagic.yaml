@@ -41,7 +41,7 @@ workflows:
         APP_ENV: prod
         API_BASE_URL: https://api.example.com
     integrations:
-      app_store_connect: prod_app_store_connect
+      app_store_connect: app_store_connect
     scripts:
       - name: 安装依赖
         script: |
@@ -64,6 +64,6 @@ workflows:
       - mobile/build/ios/archive/*.xcarchive
     publishing:
       app_store_connect:
-        api_key: prod_app_store_connect
+        api_key: app_store_connect
         submit_to_testflight: true
 
