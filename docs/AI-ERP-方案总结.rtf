@@ -1,0 +1,84 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Calibri;}{\f1 SimSun;}}
+\f0\fs22
+\b 目标与原则\b0\par
+\pard\li0\fi0\sa120
+\bullet 目标：用 AI 驱动的通用模型，快速构建/扩展 ERP（尤其会计），以“定义即落地”为核心：后端逻辑与前端 UI 均由 Schema 驱动，AI 通过工具调用接入业务能力。\par
+\bullet 原则：单租户 JSONB 存储 + 生成列命中核心字段；通用 CRUD 网关；权限可配；最小产品先跑通，再逐步增强。\par
+\par
+\b 已实现（后端 .NET 8 + PostgreSQL）\b0\par
+\pard\sa120
+1) 数据存储（JSONB + 生成列）\par
+\tab - 各对象以 JSONB 存储于 payload；通过生成列投影 “核心字段”（如 posting_date/voucher_type/voucher_no），可索引与约束，兼顾灵活与性能。\par
+2) Schema 驱动（jsonstructures）\par
+\tab - 统一保存 schema/ui/query/core_fields/validators/numbering/ai_hints/auth，形成单一事实来源。\par
+\tab - JSON Schema 强校验：maxLength/pattern/format/if-then-else/multipleOf。\par
+3) 通用 API 网关\par
+\tab - /objects/:entity 通用 CRUD；/objects/:entity/search DSL 搜索（白名单字段/排序，自动注入 company_code）。\par
+\tab - voucher 特例：借贷平衡校验；按 yymm+6 生成编号；SQL 侧 jsonb_set 注入 companyCode/voucherNo；基于 account.fieldRules 强校验；写时生成 open_items 投影。\par
+4) 权限（轻量 RBAC + 简化 ABAC）\par
+\tab - 请求头解析 x-user-id/x-roles/x-dept-id；auth.actions 控动作级权限；auth.scopes 生成参数化 SQL 过滤（支持 eq/ne/in/contains/eq_user）。\par
+5) 开放项与入金操作\par
+\tab - open_items 投影（original_amount/residual_amount/cleared_flag），仅对启用“未清项管理”的科目生成。\par
+\tab - /operations/bank-collect/allocate：行级锁定、扣减 residual_amount、必要时置清；生成简化“入金凭证”。\par
+6) 附件存储\par
+\tab - Azure Blob Storage，/attachments/sas 签发短期只读 SAS。\par
+7) 序列号与并发安全\par
+\tab - voucher_sequences 按 (company_code,yymm) 分段递增，事务内两步确保并发安全。\par
+8) 基础设施拆分\par
+\tab - Infrastructure/Database.cs（AddPostgres）、Infrastructure/Storage.cs（AddAzureBlob）、Infrastructure/Auth.cs；Domain/SchemasService.cs（GetActiveSchema/SaveAndActivate）。\par
+\par
+\b 已实现（前端 Vue 3 + Element Plus）\b0\par
+\pard\sa120
+1) 动态表单与列表\par
+\tab - DynamicForm 依据 ui.form.layout 渲染 input/select/switch/date/grid/section；支持 visibleWhen、options、半角片假名过滤。\par
+\tab - VoucherForm：抬头/明细联动，金额精度随币种切换，行字段按 account.fieldRules 动态显示/必输。\par
+\tab - AccountForm/AccountsList：银行/现金互斥，条件显示 bankInfo/cashCurrency，列表内弹窗完整编辑。\par
+2) 银行/支店选择\par
+\tab - BankBranchPicker 支持名称/编号模糊检索；后端 contains(ILIKE) 支持。\par
+3) 编码/缓存修复\par
+\tab - 后端 Schema 接口 UTF-8 与禁缓存；前端 GET 加时间戳；修复动态组件绑定。\par
+\par
+\b AI 集成（设计与落地状态）\b0\par
+\pard\sa120
+\tab - 设计：Agent 以“工具调用”映射后端（getSchema/search/getDetail/save/signBlobSAS 等），RAG 注入 jsonstructures、词汇与示例，使 AI 理解数据结构并自主选择工具完成查询/报表/入库。\par
+\tab - 现状：agent-service 侧车具备工具定义与调用路径；后端统一接口与权限控制，便于复用。\par
+\par
+\b 关键校验与规则\b0\par
+\pard\sa120
+\tab - 凭证：drcr/amount 借贷平衡；按 account.fieldRules 控制 customerId/vendorId/employeeId/departmentId/paymentDate 的 required/hidden。\par
+\tab - 科目：isBank/isCash 互斥；银行字段必输；bankInfo.holder 半角片假名（前端过滤 + 后端正则）。\par
+\tab - JSON Schema：maxLength、pattern、format、if/then/else、multipleOf（JPY 整数，外币两位小数）。\par
+\par
+\b 工程组织现状\b0\par
+\pard\sa120
+\tab - 端点仍集中在 Program.cs（可运行、可读性尚可）；基础设施与 Schema 服务已独立文件，后续可继续按 Endpoints/Domain/Infrastructure 演进。\par
+\par
+\b 可改进建议（面向“AI 快速构建 ERP”）\b0\par
+\pard\sa120
+1) 架构与代码组织\par
+\tab - Endpoints 拆分：SchemasEndpoints/ObjectsEndpoints/OperationsEndpoints。\par
+\tab - Domain 拆分：VoucherService/SearchService/OpenItemService，端点仅装配。\par
+\tab - 统一错误/结果模型；迁移工具化（DbUp/EF）。\par
+2) 数据与性能\par
+\tab - 为高频生成列加组合索引；模糊查询按需启用 GIN/pg_trgm。\par
+\tab - 投影策略统一与幂等重建；Schema 服务端缓存（TTL+版本戳）。\par
+3) 安全与合规\par
+\tab - 强化 ABAC（更多操作符与组合）；必要时数据库级 RLS 兜底；机密集中管理（Key Vault）。\par
+4) 可靠性与可观测\par
+\tab - 操作幂等键；结构化日志/指标/分布式追踪；慢查询观测。\par
+5) AI 深度融合\par
+\tab - RAG 知识库：字段字典、同义词、示例问答；标准化工具清单；结构化输出预校验；权限上下文透传；文件解析链（OCR/表格→映射→确认→入库）。\par
+6) 前端与体验\par
+\tab - 通用联动表达式（visible/required/readonly When）标准化；虚拟列表/分页；完善 i18n 与汇率。\par
+7) 测试与质量\par
+\tab - 单元/集成测试：编号并发、open_items 重建、权限 scopes；合约测试：前后端/Agent 工具契约。\par
+\par
+\b 价值与结论\b0\par
+\pard\sa120
+\tab - 单一事实来源 jsonstructures：定义即校验/权限/编号/查询白名单 + 前端自动渲染，极大减少重复开发。\par
+\tab - 通用 /objects/:entity：AI 学少量工具即可组合大量能力。\par
+\tab - 生成列 + 投影：既保留 JSON 灵活，又保障查询性能；对清账等场景以投影表优化。\par
+\tab - RAG + 工具调用：AI 能理解 Schema 与语义，自动选择查询/写入/操作工具，形成“自然语言业务编排”。\par
+}
+

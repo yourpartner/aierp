@@ -1,0 +1,23 @@
+[
+  { "code": "1000", "name": "現金", "category": "BS", "openItem": false },
+  { "code": "1010", "name": "当座預金", "category": "BS", "openItem": false },
+  { "code": "1020", "name": "普通預金", "category": "BS", "openItem": false },
+  { "code": "1100", "name": "売掛金", "category": "BS", "openItem": true },
+  { "code": "1200", "name": "前払金", "category": "BS", "openItem": false },
+  { "code": "1300", "name": "棚卸資産", "category": "BS", "openItem": false },
+  { "code": "1400", "name": "有形固定資産", "category": "BS", "openItem": false },
+  { "code": "2000", "name": "買掛金", "category": "BS", "openItem": true },
+  { "code": "2100", "name": "未払金", "category": "BS", "openItem": false },
+  { "code": "2200", "name": "未払費用", "category": "BS", "openItem": false },
+  { "code": "3000", "name": "資本金", "category": "BS", "openItem": false },
+  { "code": "4000", "name": "売上高", "category": "PL", "openItem": false },
+  { "code": "4100", "name": "売上割戻", "category": "PL", "openItem": false },
+  { "code": "5000", "name": "売上原価", "category": "PL", "openItem": false },
+  { "code": "5100", "name": "旅費交通費", "category": "PL", "openItem": false },
+  { "code": "5200", "name": "通信費", "category": "PL", "openItem": false },
+  { "code": "5300", "name": "消耗品費", "category": "PL", "openItem": false },
+  { "code": "5400", "name": "租税公課", "category": "PL", "openItem": false },
+  { "code": "5500", "name": "支払手数料", "category": "PL", "openItem": false }
+]
+
+

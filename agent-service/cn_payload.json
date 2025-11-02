@@ -1,0 +1,26 @@
+﻿{
+  "pdf": {
+    "template": "jp_employment_form",
+    "title": "鍦ㄨ亴璇佹槑锛堣〃鏍肩増锛?,
+    "employee": { "name": "灞辩敯澶儙", "address": "涓滀含閮芥腐鍖?-2-3", "birthday": "1990-04-15" },
+    "employment": { "startDate": "2020-06-01", "endDate": "", "years": 4, "months": 5, "duties": "杞欢璁捐/寮€鍙戙€佽繍缁? },
+    "worktime": { "start": "09:00", "end": "18:00", "breakMinutes": 60 },
+    "remarks": "",
+    "date": "2025-10-28",
+    "companyName": "绀轰緥鑲′唤鏈夐檺鍏徃",
+    "companyAddress": "涓滀含閮芥腐鍖?-1-1",
+    "companyRep": "浠ｈ〃鍙栫紨褰?浣愯棨涓€閮?,
+    "docId": "",
+    "labels": {
+      "name": "濮撳悕", "address": "浣忓潃", "birthday": "鍑虹敓鏃ユ湡", "hireDate": "鍏ヨ亴鏃ユ湡", "separationDate": "绂昏亴鏃ユ湡",
+      "years": "宸ラ緞", "worktime": "宸ヤ綔鏃堕棿", "duties": "宸ヤ綔鍐呭", "remarks": "澶囨敞",
+      "closing": "鍏硅瘉鏄庝笂杩颁汉鍛樺湪鏈叕鍙稿湪鑱岋紙鎴栨浘鍦ㄨ亴锛夈€?,
+      "zip": "閭紪锛?, "companyAddressPrefix": "鍏徃鍦板潃锛?, "companyNamePrefix": "鍏徃鍚嶇О锛?, "companyRepPrefix": "娉曞畾浠ｈ〃浜猴細",
+      "yearSuffix": "骞?, "monthSuffix": "鏈?, "daySuffix": "鏃?,
+      "yearsUnit": "骞?, "monthsUnit": "涓湀",
+      "breakFmt": "锛堜紤鎭?{min} 鍒嗛挓锛?, "hireSuffix": "鍏ヨ亴", "sepSuffix": "绂昏亴",
+      "docIdPrefix": "鏂囨。缂栧彿:"
+    },
+    "seal": { "image": "D:\\\\yanxia\\\\agent-service\\\\assets\\\\seal.png", "size": 56.7, "opacity": 1, "offsetX": -28.35, "offsetY": 28.35 }
+  }
+}

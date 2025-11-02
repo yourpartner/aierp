@@ -1,0 +1,64 @@
+{
+  "schema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2019-09/schema",
+    "properties": {
+      "code": { "type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[0-9A-Za-z_-]{1,20}$" },
+      "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+      "category": { "type": "string", "enum": ["PL","BS"] },
+      "openItem": { "type": "boolean" },
+      "openItemBaseline": { "type": ["string","null"], "enum": [null, "NONE","CUSTOMER","VENDOR","EMPLOYEE"] },
+      "fieldRules": {
+        "type": "object",
+        "properties": {
+          "customerId": { "type": "string", "enum": ["required","optional","hidden"] },
+          "vendorId": { "type": "string", "enum": ["required","optional","hidden"] },
+          "employeeId": { "type": "string", "enum": ["required","optional","hidden"] },
+          "departmentId": { "type": "string", "enum": ["required","optional","hidden"] },
+          "paymentDate": { "type": "string", "enum": ["required","optional","hidden"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "required": ["code","name","category"]
+  },
+  "ui": {
+    "list": { "columns": ["account_code","name","pl_bs_type","open_item_mgmt"] },
+    "form": {
+      "layout": [
+        { "type": "grid", "cols": [
+          { "field": "code", "label": "科目番号", "span": 6, "widget": "input" },
+          { "field": "name", "label": "科目名", "span": 8, "widget": "input" },
+          { "field": "category", "label": "BS/PL区分", "span": 5, "widget": "select", "options": [
+            { "label": "BS資産負債科目", "value": "BS" },
+            { "label": "PL損益科目", "value": "PL" }
+          ] },
+          { "field": "openItem", "label": "未清項管理", "span": 5, "widget": "switch" },
+          { "field": "openItemBaseline", "label": "清账基准项目", "span": 24, "widget": "select",
+            "options": [
+              { "label": "无基准项目", "value": "NONE" },
+              { "label": "客户", "value": "CUSTOMER" },
+              { "label": "供应商", "value": "VENDOR" },
+              { "label": "员工", "value": "EMPLOYEE" }
+            ],
+            "visibleWhen": { "field": "openItem", "equals": true }
+          }
+        ]}
+      ]
+    }
+  },
+  "query": {
+    "filters": ["account_code","name","pl_bs_type"],
+    "sorts": ["account_code","name"]
+  },
+  "core_fields": {
+    "coreFields": [
+      { "name": "account_code", "path": "code", "type": "string", "index": { "strategy": "generated_column", "unique": true, "scope": ["company_code"] } },
+      { "name": "name", "path": "name", "type": "string", "index": { "strategy": "generated_column", "unique": false } },
+      { "name": "pl_bs_type", "path": "category", "type": "string", "index": { "strategy": "generated_column", "unique": false } },
+      { "name": "open_item_mgmt", "path": "openItem", "type": "boolean", "index": { "strategy": "generated_column", "unique": false } }
+    ]
+  }
+}
+
+

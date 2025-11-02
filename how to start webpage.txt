@@ -1,0 +1,6 @@
+以后怎么稳定启动（最省心做法）:
+1) 后端: 直接运行
+dotnet run --project server-dotnet/Server.csproj --urls http://localhost:5179
+2) 前端: 不用 npx，避免策略拦截
+cd web && npm run dev
+访问: http://127.0.0.1:5180/

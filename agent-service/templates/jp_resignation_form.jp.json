@@ -1,0 +1,15 @@
+{
+  "pdf": {
+    "template": "jp_resignation_form",
+    "employee": { "name": "山田太郎", "address": "東京都港区1-2-3", "birthday": "1990-04-15" },
+    "employment": { "startDate": "2020-06-01", "endDate": "2025-03-31", "position": "主任" },
+    "reason": "一身上の都合により退職。",
+    "date": "2025年10月28日",
+    "companyName": "サンプル株式会社",
+    "companyAddress": "東京都港区1-1-1",
+    "companyRep": "代表取締役 佐藤一郎",
+    "docId": "__REPLACE_WITH_DOCID__",
+    "seal": { "image": "assets/seal.png", "size": 56.7, "opacity": 1, "offsetX": -28.35, "offsetY": 28.35 }
+  }
+}
+

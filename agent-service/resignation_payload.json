@@ -1,0 +1,14 @@
+{
+  "pdf": {
+    "template": "jp_resignation_form",
+    "employee": { "name": "灞辩敯澶儙", "address": "鏉变含閮芥腐鍖?-2-3", "birthday": "1990-04-15" },
+    "employment": { "startDate": "2020-06-01", "endDate": "2025-03-31", "position": "涓讳换" },
+    "reason": "涓€韬笂銇兘鍚堛伀銈堛倞閫€鑱枫€?,
+    "date": "2025-10-28",
+    "companyName": "銈点兂銉椼儷鏍紡浼氱ぞ",
+    "companyAddress": "鏉变含閮芥腐鍖?-1-1",
+    "companyRep": "浠ｈ〃鍙栫窢褰?浣愯棨涓€閮?,
+    "docId": "20831ee8-5e0b-4331-9cc6-836651e69677",
+    "seal": { "image": "D:\\\\yanxia\\\\agent-service\\\\assets\\\\seal.png", "size": 56.7, "opacity": 1 }
+  }
+}

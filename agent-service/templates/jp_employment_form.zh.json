@@ -1,0 +1,17 @@
+{
+  "pdf": {
+    "template": "jp_employment_form",
+    "locale": "zh",
+    "employee": { "name": "张三", "address": "北京市朝阳区XX路XX号", "birthday": "1990-04-15" },
+    "employment": { "startDate": "2020-06-01", "endDate": "", "years": 4, "months": 5, "duties": "软件设计/开发、运维" },
+    "worktime": { "start": "09:00", "end": "18:00", "breakMinutes": 60 },
+    "remarks": "",
+    "date": "2025-10-28",
+    "companyName": "示例股份有限公司",
+    "companyAddress": "东京都港区1-1-1",
+    "companyRep": "代表取缔役 佐藤一郎",
+    "docId": "__REPLACE_WITH_DOCID__",
+    "seal": { "image": "assets/seal.png", "size": 56.7, "opacity": 1, "offsetX": -28.35, "offsetY": 28.35 }
+  }
+}
+

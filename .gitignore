@@ -1,0 +1,29 @@
+# Node / Frontend
+node_modules/
+web/dist/
+
+# Dotnet build outputs
+server-dotnet/bin/
+server-dotnet/obj/
+
+# Flutter / Dart
+mobile/build/
+mobile/.dart_tool/
+mobile/.idea/
+mobile/ios/Pods/
+mobile/android/.gradle/
+mobile/android/app/build/
+
+# Visual Studio / VSCode
+.vscode/
+*.iml
+
+# Secrets
+agent-service/.env
+
+# System files
+*.log
+*.tmp
+Thumbs.db
+Desktop.ini
+

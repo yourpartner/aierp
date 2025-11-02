@@ -1,0 +1,53 @@
+workflows:
+  ios-ci:
+    name: iOS CI
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: 15.4
+      cocoapods: default
+      vars:
+        APP_ENV: dev
+        API_BASE_URL: https://api-dev.example.com
+    scripts:
+      - name: 安装依赖
+        script: flutter pub get
+      - name: 静态检查
+        script: flutter analyze
+      - name: 单元测试
+        script: flutter test
+      - name: 构建未签名 IPA
+        script: flutter build ipa --no-codesign
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - build/ios/archive/*.xcarchive
+
+  ios-release:
+    name: iOS Release
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: 15.4
+      cocoapods: default
+      vars:
+        APP_ENV: prod
+        API_BASE_URL: https://api.example.com
+    integrations:
+      app_store_connect: prod_app_store_connect
+    scripts:
+      - name: 安装依赖
+        script: flutter pub get
+      - name: 静态检查
+        script: flutter analyze
+      - name: 单元测试
+        script: flutter test
+      - name: 构建并签名 IPA
+        script: flutter build ipa --export-options-plist=ios/export_options.plist
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - build/ios/archive/*.xcarchive
+    publishing:
+      app_store_connect:
+        api_key: prod_app_store_connect
+        submit_to_testflight: true
+

@@ -1,0 +1,32 @@
+{
+  "pdf": {
+    "template": "jp_resignation_form",
+    "employee": { "name": "Taro Yamada", "address": "1-2-3, Minato, Tokyo", "birthday": "1990-04-15" },
+    "employment": { "startDate": "2020-06-01", "endDate": "2025-03-31", "position": "Senior Engineer" },
+    "reason": "Resignation due to personal reasons.",
+    "date": "2025-10-28",
+    "companyName": "Sample Co., Ltd.",
+    "companyAddress": "1-1-1, Minato, Tokyo",
+    "companyRep": "CEO Ichiro Sato",
+    "docId": "__REPLACE_WITH_DOCID__",
+    "seal": { "image": "assets/seal.png", "size": 56.7, "opacity": 1 },
+    "labels": {
+      "title": "Certificate of Resignation",
+      "dear": "Mr./Ms.",
+      "statement": "We hereby certify that the person below has resigned from our company for the reason stated.",
+      "name": "Name",
+      "birthday": "Date of Birth",
+      "hireDate": "Date of Joining",
+      "separationDate": "Date of Resignation",
+      "position": "Position / Title",
+      "reason": "Reason for Resignation",
+      "zip": "Address",
+      "companyNamePrefix": "Company",
+      "companyRepPrefix": "Representative",
+      "yearSuffix": "-",
+      "monthSuffix": "-",
+      "daySuffix": ""
+    }
+  }
+}
+
