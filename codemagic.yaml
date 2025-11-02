@@ -62,9 +62,8 @@ workflows:
     artifacts:
       - mobile/build/ios/ipa/*.ipa
       - mobile/build/ios/archive/*.xcarchive
-    # 若尚未配置 App Store Connect 集成，可暂时注释掉发布流程
-    # publishing:
-    #   app_store_connect:
-    #     api_key: app_store_connect
-    #     submit_to_testflight: true
+    publishing:
+      app_store_connect:
+        api_key: app_store_connect
+        submit_to_testflight: true
 

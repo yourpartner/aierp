@@ -1,6 +1,7 @@
 name: yanxia_mobile
 description: 移动端多页扫描与 AI 凭证处理客户端
 publish_to: 'none'
+version: 0.1.0+1
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
