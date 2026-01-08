@@ -53,7 +53,8 @@ server-dotnet/TestPdfExtract/
 # 辅助工具编译输出
 server-dotnet/Tools/*/bin/
 server-dotnet/Tools/*/obj/
-tools/
+# 只忽略根目录下的 tools 文件夹，不要影响 server-dotnet/Tools
+/tools/
 
 # 其他临时目录
 mobile/
