@@ -1,0 +1,147 @@
+[1mdiff --git a/server-dotnet/Program.cs b/server-dotnet/Program.cs[m
+[1mindex 18086d2..01cafdd 100644[m
+[1m--- a/server-dotnet/Program.cs[m
+[1m+++ b/server-dotnet/Program.cs[m
+[36m@@ -1,5 +1,4 @@[m
+ // =============================[m
+[31m-// 本文件为最小可运行的 .NET 8 Web API 入口：[m
+ // - 启动时执行数据库迁移（创建表/生成列/索引/种子 jsonstructures）[m
+ // - 通用 CRUD 与搜索 DSL（通过 jsonstructures 的 schema/query/coreFields 驱动）[m
+ // - 凭证特殊逻辑：借贷平衡校验、yymm+6 编号、注入 companyCode/voucherNo[m
+[36m@@ -22,6 +21,12 @@[m [musing Server.Domain; // 引入 SchemasService[m
+ using Server.Modules;[m
+ using System.Security.Cryptography;[m
+ using System.Text.Json.Nodes;[m
+[32m+[m[32musing Microsoft.AspNetCore.Mvc;[m
+[32m+[m[32musing System.Globalization;[m
+[32m+[m[32musing System.Collections.Concurrent;[m
+[32m+[m[32musing System.IO.Compression;[m
+[32m+[m[32musing System.Text.RegularExpressions;[m
+[32m+[m[32musing Microsoft.AspNetCore.Http;[m
+ [m
+ // 权限辅助（需置于顶部，先于顶层语句）[m
+ // 权限模型：[m
+[36m@@ -52,11 +57,23 @@[m [mbuilder.Services.AddAzureBlob(builder.Configuration);[m
+ builder.Services.AddSingleton<Server.Infrastructure.LawDatasetService>();[m
+ builder.Services.AddScoped<Server.Modules.HrCrudService>();[m
+ builder.Services.AddScoped<Server.Modules.InvoiceRegistryService>();[m
+[32m+[m[32mbuilder.Services.Configure<Server.Infrastructure.AiMessageCleanupOptions>(builder.Configuration.GetSection("AiMessageCleanup"));[m
+[32m+[m[32mbuilder.Services.Configure<AzureStorageOptions>(builder.Configuration.GetSection("AzureStorage"));[m
+[32m+[m[32mbuilder.Services.AddSingleton<AzureBlobService>();[m
+[32m+[m[32mbuilder.Services.AddHostedService<Server.Infrastructure.AiMessageCleanupService>();[m
+ builder.Services.AddScoped<Server.Modules.FinanceService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.FinancialStatementService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.WorkflowRulesService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.VoucherAutomationService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.BankImportService>();[m
+ builder.Services.AddHttpClient();[m
+ builder.Services.AddSingleton<Server.Infrastructure.ApnsService>();[m
+ builder.Services.AddHostedService<Server.Infrastructure.NotificationSchedulerService>();[m
+ builder.Services.AddHostedService<Server.Infrastructure.TaskSchedulerService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.AgentScenarioService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.AgentAccountingRuleService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.InvoiceTaskService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.SalesOrderTaskService>();[m
+ [m
+ // CORS（开发环境放开）应在 Build 之前注册[m
+ builder.Services.AddCors(opts =>[m
+[36m@@ -87,10 +104,64 @@[m [mbuilder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)[m
+     });[m
+ builder.Services.AddAuthorization();[m
+ [m
+[32m+[m[32mbuilder.Services.AddHttpClient("openai", client =>[m
+[32m+[m[32m{[m
+[32m+[m[32m    client.BaseAddress = new Uri("https://api.openai.com/");[m
+[32m+[m[32m    client.Timeout = TimeSpan.FromSeconds(240);[m
+[32m+[m[32m});[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.AgentKitService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.AgentScenarioService>();[m
+[32m+[m
+ var app = builder.Build();[m
+[32m+[m[32mvar uploadRoot = Path.Combine(AppContext.BaseDirectory, "uploads", "ai-files");[m
+[32m+[m[32mDirectory.CreateDirectory(uploadRoot);[m
+[32m+[m[32mvar uploadedFiles = new ConcurrentDictionary<string, UploadedFileRecord>();[m
+[32m+[m
+[32m+[m[32mvar logsDir = Path.Combine(AppContext.BaseDirectory, "logs");[m
+[32m+[m[32mDirectory.CreateDirectory(logsDir);[m
+[32m+[m[32mvar aiTasksLogPath = Path.Combine(logsDir, "ai_tasks.log");[m
+[32m+[m[32mvar aiTasksLogLock = new object();[m
+[32m+[m[32mvoid AppendAiTasksLog(string message)[m
+[32m+[m[32m{[m
+[32m+[m[32m    lock (aiTasksLogLock)[m
+[32m+[m[32m    {[m
+[32m+[m[32m        File.AppendAllText(aiTasksLogPath, $"[{DateTimeOffset.UtcNow:O}] {message}{Environment.NewLine}");[m
+[32m+[m[32m    }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mvar searchRequestJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)[m
+[32m+[m[32m{[m
+[32m+[m[32m    PropertyNameCaseInsensitive = true[m
+[32m+[m[32m};[m
+[32m+[m
+[32m+[m[32mtry[m
+[32m+[m[32m{[m
+[32m+[m[32m    using var scope = app.Services.CreateScope();[m
+[32m+[m[32m    var financial = scope.ServiceProvider.GetRequiredService<FinancialStatementService>();[m
+[32m+[m[32m    var defaultCompany = builder.Configuration.GetSection("App").GetValue<string>("DefaultCompany") ?? "JP01";[m
+[32m+[m[32m    financial.SeedDefaultTemplateAsync(defaultCompany).GetAwaiter().GetResult();[m
+[32m+[m[32m}[m
+[32m+[m[32mcatch (Exception ex)[m
+[32m+[m[32m{[m
+[32m+[m[32m    Console.WriteLine($"[financial] seed skipped: {ex.Message}");[m
+[32m+[m[32m}[m
+[32m+[m
+ // 全局最早注入 CORS 允许头（包括出现异常/401 时），并处理预检[m
+[31m-// 统一 CORS 处理（单一中间件，覆盖预检和所有响应）[m
+ app.UseCors("DevAll");[m
+[32m+[m[32m// 兼容直接访问后端的 /api 前缀（例如绕过 Vite 代理时）[m
+[32m+[m[32mapp.Use(async (ctx, next) =>[m
+[32m+[m[32m{[m
+[32m+[m[32m    if (ctx.Request.Path.StartsWithSegments("/api", out var remaining))[m
+[32m+[m[32m    {[m
+[32m+[m[32m        Console.WriteLine($"[PathRewrite] {ctx.Request.Path} -> {remaining}");[m
+[32m+[m[32m        ctx.Request.Path = remaining;[m
+[32m+[m[32m        if (!ctx.Request.Path.HasValue)[m
+[32m+[m[32m        {[m
+[32m+[m[32m            ctx.Request.Path = "/";[m
+[32m+[m[32m        }[m
+[32m+[m[32m    }[m
+[32m+[m[32m    await next();[m
+[32m+[m[32m});[m
+ // 兜底：确保所有响应都带上 CORS 头（包括 401/403/异常）[m
+ app.Use(async (ctx, next) =>[m
+ {[m
+[36m@@ -728,6 +799,9 @@[m [mServer.Modules.LocalizationMaintenanceModule.MapLocalizationMaintenanceModule(ap[m
+ // 注册 CRM 模块端点[m
+ Server.Modules.CrmModule.MapCrmModule(app);[m
+ [m
+[32m+[m[32m// 基础根路径探活，避免返回 405[m
+[32m+[m[32mapp.MapGet("/", () => Results.Json(new { ok = true })).AllowAnonymous();[m
+[32m+[m
+ app.MapGet("/health", async (IServiceProvider sp) =>[m
+ {[m
+     var env = app.Environment.EnvironmentName;[m
+[36m@@ -784,7 +858,6 @@[m [mapp.MapGet("/debug/open-items", async (string voucherNo, NpgsqlDataSource ds, Ht[m
+     while (await rd.ReadAsync()) rows.Add(rd.GetFieldValue<string>(0));[m
+     return Results.Text("[" + string.Join(',', rows) + "]", "application/json");[m
+ }).RequireAuthorization();[m
+[31m-[m
+ // 维护：重建 open_items 投影（按凭证号或全部）[m
+ app.MapPost("/maintenance/open-items/rebuild", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+ {[m
+[36m@@ -925,7 +998,7 @@[m [mapp.MapPost("/dev/seed-user", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+         await map.ExecuteNonQueryAsync();[m
+     }[m
+     // 给角色加一些基础能力，便于演示[m
+[31m-    var caps = new[]{ "roles:manage", "op:bank-collect", "op:bank-payment" };[m
+[32m+[m[32m    var caps = new[]{ "roles:manage", "op:bank-collect", "op:bank-payment", "report:financial" };[m
+     foreach (var cap in caps)[m
+     {[m
+         await using var capCmd = conn.CreateCommand();[m
+[36m@@ -940,24 +1013,33 @@[m [mapp.MapPost("/dev/seed-user", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+ // 登录接口：companyCode + employeeCode + password -> JWT[m
+ app.MapPost("/auth/login", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+ {[m
+[31m-    using var doc = await JsonDocument.ParseAsync(req.Body);[m
+[31m-    var root = doc.RootElement;[m
+[3

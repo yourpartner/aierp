@@ -1,0 +1,52 @@
+# ===========================================
+# 生产环境 Docker Compose (Azure 部署用)
+# ===========================================
+version: '3.8'
+
+services:
+  # .NET 后端 API
+  api:
+    image: ${ACR_LOGIN_SERVER}/yanxia-api:${IMAGE_TAG:-latest}
+    container_name: yanxia-api
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ConnectionStrings__Default=${DATABASE_URL}
+      - AzureStorage__ConnectionString=${AZURE_STORAGE_CONNECTION_STRING}
+      - OpenAI__ApiKey=${OPENAI_API_KEY}
+      - Anthropic__ApiKey=${ANTHROPIC_API_KEY}
+      - ASPNETCORE_URLS=http://+:80
+    ports:
+      - "80:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Node.js Agent Service
+  agent:
+    image: ${ACR_LOGIN_SERVER}/yanxia-agent:${IMAGE_TAG:-latest}
+    container_name: yanxia-agent
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - API_BASE_URL=http://api:80
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Vue 前端
+  web:
+    image: ${ACR_LOGIN_SERVER}/yanxia-web:${IMAGE_TAG:-latest}
+    container_name: yanxia-web
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    depends_on:
+      - api
+

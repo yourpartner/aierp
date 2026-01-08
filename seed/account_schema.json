@@ -1,0 +1,167 @@
+{
+  "schema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2019-09/schema",
+    "properties": {
+      "code": { "type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[0-9A-Za-z_-]{1,20}$" },
+      "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+      "category": { "type": "string", "enum": ["PL","BS"] },
+      "openItem": { "type": "boolean" },
+      "openItemBaseline": { "type": ["string","null"], "enum": [null, "NONE","CUSTOMER","VENDOR","EMPLOYEE"] },
+      "fieldRules": {
+        "type": "object",
+        "properties": {
+          "customerId": { "type": "string", "enum": ["required","optional","hidden"] },
+          "vendorId": { "type": "string", "enum": ["required","optional","hidden"] },
+          "employeeId": { "type": "string", "enum": ["required","optional","hidden"] },
+          "departmentId": { "type": "string", "enum": ["required","optional","hidden"] },
+          "paymentDate": { "type": "string", "enum": ["required","optional","hidden"] },
+          "assetId": { "type": "string", "enum": ["required","optional","hidden"] }
+        },
+        "additionalProperties": false
+      },
+      "taxType": {
+        "type": ["string","null"],
+        "enum": [null, "OUTPUT_TAX", "INPUT_TAX", "TAX_ACCOUNT", "NON_TAX", "NON_TAXABLE", "EXEMPT", "OUT_OF_SCOPE"],
+        "description": "消費税区分"
+      },
+      "accountType": {
+        "type": ["string","null"],
+        "enum": [null, "asset", "liability", "equity", "revenue", "expense"],
+        "description": "勘定科目タイプ"
+      },
+      "fsBalanceGroup": {
+        "type": ["string","null"],
+        "description": "財務諸表BS分類グループ"
+      },
+      "fsProfitGroup": {
+        "type": ["string","null"],
+        "description": "財務諸表PL分類グループ"
+      },
+      "isBank": {
+        "type": "boolean",
+        "default": false,
+        "description": "銀行口座勘定フラグ"
+      },
+      "isCash": {
+        "type": "boolean",
+        "default": false,
+        "description": "現金勘定フラグ"
+      },
+      "bankInfo": {
+        "type": ["object","null"],
+        "description": "銀行口座情報（isBank=trueの場合必須）",
+        "properties": {
+          "bankCode": { "type": "string", "description": "銀行コード" },
+          "bankName": { "type": "string", "description": "銀行名" },
+          "branchCode": { "type": "string", "description": "支店コード" },
+          "branchName": { "type": "string", "description": "支店名" },
+          "accountType": { "type": "string", "enum": ["Futsu", "Toza", "Chochiku"], "description": "口座種別" },
+          "accountNo": { "type": "string", "description": "口座番号" },
+          "holder": { "type": "string", "description": "口座名義（カナ）" },
+          "currency": { "type": "string", "enum": ["JPY", "USD", "CNY"], "description": "通貨" }
+        },
+        "required": ["bankName", "branchName", "accountType", "accountNo", "holder", "currency"]
+      }
+    },
+    "required": ["code","name","category"],
+    "allOf": [
+      {
+        "if": {
+          "properties": { "isBank": { "const": true }, "isCash": { "const": true } }
+        },
+        "then": false
+      },
+      {
+        "if": {
+          "properties": { "isBank": { "const": true } }
+        },
+        "then": {
+          "required": ["bankInfo"]
+        }
+      }
+    ]
+  },
+  "ui": {
+    "list": { "columns": ["account_code","name","pl_bs_type","open_item_mgmt"] },
+    "form": {
+      "layout": [
+        { "type": "grid", "cols": [
+          { "field": "code", "label": "科目番号", "span": 6, "widget": "input" },
+          { "field": "name", "label": "科目名", "span": 8, "widget": "input" },
+          { "field": "category", "label": "BS/PL区分", "span": 5, "widget": "select", "options": [
+            { "label": "BS資産負債科目", "value": "BS" },
+            { "label": "PL損益科目", "value": "PL" }
+          ] },
+          { "field": "openItem", "label": "未清項管理", "span": 5, "widget": "switch" },
+          { "field": "openItemBaseline", "label": "清账基准项目", "span": 24, "widget": "select",
+            "options": [
+              { "label": "无基准项目", "value": "NONE" },
+              { "label": "客户", "value": "CUSTOMER" },
+              { "label": "供应商", "value": "VENDOR" },
+              { "label": "员工", "value": "EMPLOYEE" }
+            ],
+            "visibleWhen": { "field": "openItem", "equals": true }
+          }
+        ]},
+        { "type": "grid", "cols": [
+          { "field": "taxType", "label": "消費税区分", "span": 8, "widget": "select", "options": [
+            { "label": "なし", "value": null },
+            { "label": "売上税（OUTPUT_TAX）", "value": "OUTPUT_TAX" },
+            { "label": "仕入税（INPUT_TAX）", "value": "INPUT_TAX" },
+            { "label": "消費税科目（TAX_ACCOUNT）", "value": "TAX_ACCOUNT" },
+            { "label": "非課税（NON_TAX）", "value": "NON_TAX" },
+            { "label": "不課税（NON_TAXABLE）", "value": "NON_TAXABLE" },
+            { "label": "免税（EXEMPT）", "value": "EXEMPT" },
+            { "label": "対象外（OUT_OF_SCOPE）", "value": "OUT_OF_SCOPE" }
+          ]},
+          { "field": "accountType", "label": "勘定タイプ", "span": 8, "widget": "select", "options": [
+            { "label": "なし", "value": null },
+            { "label": "資産（asset）", "value": "asset" },
+            { "label": "負債（liability）", "value": "liability" },
+            { "label": "資本（equity）", "value": "equity" },
+            { "label": "収益（revenue）", "value": "revenue" },
+            { "label": "費用（expense）", "value": "expense" }
+          ]},
+          { "field": "isBank", "label": "銀行口座", "span": 4, "widget": "switch" },
+          { "field": "isCash", "label": "現金勘定", "span": 4, "widget": "switch" }
+        ]},
+        { "type": "section", "title": "銀行口座情報", "visibleWhen": { "field": "isBank", "equals": true }, "layout": [
+          { "type": "grid", "cols": [
+            { "field": "bankInfo.bankName", "label": "銀行名", "span": 8, "widget": "text" },
+            { "field": "bankInfo.branchName", "label": "支店名", "span": 8, "widget": "text" },
+            { "field": "bankInfo.accountType", "label": "口座種別", "span": 8, "widget": "select", "options": [
+              { "label": "普通", "value": "Futsu" },
+              { "label": "当座", "value": "Toza" },
+              { "label": "貯蓄", "value": "Chochiku" }
+            ]}
+          ]},
+          { "type": "grid", "cols": [
+            { "field": "bankInfo.accountNo", "label": "口座番号", "span": 8 },
+            { "field": "bankInfo.holder", "label": "口座名義（カナ）", "span": 8 },
+            { "field": "bankInfo.currency", "label": "通貨", "span": 8, "widget": "select", "options": [
+              { "label": "日本円 (JPY)", "value": "JPY" },
+              { "label": "米ドル (USD)", "value": "USD" },
+              { "label": "人民元 (CNY)", "value": "CNY" }
+            ]}
+          ]}
+        ]}
+      ]
+    }
+  },
+  "query": {
+    "filters": ["account_code","name","pl_bs_type","taxType","accountType","isBank","isCash"],
+    "sorts": ["account_code","name"]
+  },
+  "core_fields": {
+    "coreFields": [
+      { "name": "account_code", "path": "code", "type": "string", "index": { "strategy": "generated_column", "unique": true, "scope": ["company_code"] } },
+      { "name": "name", "path": "name", "type": "string", "index": { "strategy": "generated_column", "unique": false } },
+      { "name": "pl_bs_type", "path": "category", "type": "string", "index": { "strategy": "generated_column", "unique": false } },
+      { "name": "open_item_mgmt", "path": "openItem", "type": "boolean", "index": { "strategy": "generated_column", "unique": false } },
+      { "name": "tax_type", "path": "taxType", "type": "string", "index": { "strategy": "generated_column", "unique": false } },
+      { "name": "is_bank", "path": "isBank", "type": "boolean", "index": { "strategy": "generated_column", "unique": false } },
+      { "name": "is_cash", "path": "isCash", "type": "boolean", "index": { "strategy": "generated_column", "unique": false } }
+    ]
+  }
+}

@@ -1,0 +1,71 @@
+# ===========================================
+# 本地开发用 Docker Compose
+# ===========================================
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库（本地开发用）
+  db:
+    image: postgres:16-alpine
+    container_name: yanxia-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Hpxdcd2508
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./server-dotnet/migrate.sql:/docker-entrypoint-initdb.d/01-migrate.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # .NET 后端 API
+  api:
+    build:
+      context: ./server-dotnet
+      dockerfile: Dockerfile
+    container_name: yanxia-api
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__Default=Host=db;Port=5432;Database=postgres;Username=postgres;Password=Hpxdcd2508
+      - ASPNETCORE_URLS=http://+:80
+    ports:
+      - "5179:80"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./server-dotnet/appsettings.json:/app/appsettings.json:ro
+
+  # Node.js Agent Service
+  agent:
+    build:
+      context: ./agent-service
+      dockerfile: Dockerfile
+    container_name: yanxia-agent
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+    ports:
+      - "3001:3000"
+    depends_on:
+      - api
+
+  # Vue 前端（开发模式直接用 npm run dev，这里是生产构建测试）
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: yanxia-web
+    ports:
+      - "5180:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+

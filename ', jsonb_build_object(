@@ -1,0 +1,336 @@
+[1mdiff --git a/server-dotnet/Program.cs b/server-dotnet/Program.cs[m
+[1mindex 18086d2..456a03f 100644[m
+[1m--- a/server-dotnet/Program.cs[m
+[1m+++ b/server-dotnet/Program.cs[m
+[36m@@ -22,6 +22,12 @@[m [musing Server.Domain; // 引入 SchemasService[m
+ using Server.Modules;[m
+ using System.Security.Cryptography;[m
+ using System.Text.Json.Nodes;[m
+[32m+[m[32musing Microsoft.AspNetCore.Mvc;[m
+[32m+[m[32musing System.Globalization;[m
+[32m+[m[32musing System.Collections.Concurrent;[m
+[32m+[m[32musing System.IO.Compression;[m
+[32m+[m[32musing System.Text.RegularExpressions;[m
+[32m+[m[32musing Microsoft.AspNetCore.Http;[m
+ [m
+ // 权限辅助（需置于顶部，先于顶层语句）[m
+ // 权限模型：[m
+[36m@@ -52,11 +58,25 @@[m [mbuilder.Services.AddAzureBlob(builder.Configuration);[m
+ builder.Services.AddSingleton<Server.Infrastructure.LawDatasetService>();[m
+ builder.Services.AddScoped<Server.Modules.HrCrudService>();[m
+ builder.Services.AddScoped<Server.Modules.InvoiceRegistryService>();[m
+[32m+[m[32mbuilder.Services.Configure<Server.Infrastructure.MoneytreeOptions>(builder.Configuration.GetSection("Moneytree"));[m
+[32m+[m[32mbuilder.Services.Configure<Server.Infrastructure.AiMessageCleanupOptions>(builder.Configuration.GetSection("AiMessageCleanup"));[m
+[32m+[m[32mbuilder.Services.Configure<AzureStorageOptions>(builder.Configuration.GetSection("AzureStorage"));[m
+[32m+[m[32mbuilder.Services.AddSingleton<AzureBlobService>();[m
+[32m+[m[32mbuilder.Services.AddHttpClient("moneytree");[m
+[32m+[m[32mbuilder.Services.AddHttpClient("moneytree-token");[m
+[32m+[m[32mbuilder.Services.AddHostedService<Server.Infrastructure.AiMessageCleanupService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.MoneytreeService>();[m
+ builder.Services.AddScoped<Server.Modules.FinanceService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.FinancialStatementService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.WorkflowRulesService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.VoucherAutomationService>();[m
+ builder.Services.AddHttpClient();[m
+ builder.Services.AddSingleton<Server.Infrastructure.ApnsService>();[m
+ builder.Services.AddHostedService<Server.Infrastructure.NotificationSchedulerService>();[m
+ builder.Services.AddHostedService<Server.Infrastructure.TaskSchedulerService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.AgentScenarioService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.AgentAccountingRuleService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.InvoiceTaskService>();[m
+ [m
+ // CORS（开发环境放开）应在 Build 之前注册[m
+ builder.Services.AddCors(opts =>[m
+[36m@@ -87,10 +107,52 @@[m [mbuilder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)[m
+     });[m
+ builder.Services.AddAuthorization();[m
+ [m
+[32m+[m[32mbuilder.Services.AddHttpClient("openai", client =>[m
+[32m+[m[32m{[m
+[32m+[m[32m    client.BaseAddress = new Uri("https://api.openai.com/");[m
+[32m+[m[32m    client.Timeout = TimeSpan.FromSeconds(240);[m
+[32m+[m[32m});[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.AgentKitService>();[m
+[32m+[m[32mbuilder.Services.AddScoped<Server.Modules.AgentScenarioService>();[m
+[32m+[m
+ var app = builder.Build();[m
+[32m+[m[32mvar uploadRoot = Path.Combine(AppContext.BaseDirectory, "uploads", "ai-files");[m
+[32m+[m[32mDirectory.CreateDirectory(uploadRoot);[m
+[32m+[m[32mvar uploadedFiles = new ConcurrentDictionary<string, UploadedFileRecord>();[m
+[32m+[m
+[32m+[m[32mvar searchRequestJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)[m
+[32m+[m[32m{[m
+[32m+[m[32m    PropertyNameCaseInsensitive = true[m
+[32m+[m[32m};[m
+[32m+[m
+[32m+[m[32mtry[m
+[32m+[m[32m{[m
+[32m+[m[32m    using var scope = app.Services.CreateScope();[m
+[32m+[m[32m    var financial = scope.ServiceProvider.GetRequiredService<FinancialStatementService>();[m
+[32m+[m[32m    var defaultCompany = builder.Configuration.GetSection("App").GetValue<string>("DefaultCompany") ?? "JP01";[m
+[32m+[m[32m    financial.SeedDefaultTemplateAsync(defaultCompany).GetAwaiter().GetResult();[m
+[32m+[m[32m}[m
+[32m+[m[32mcatch (Exception ex)[m
+[32m+[m[32m{[m
+[32m+[m[32m    Console.WriteLine($"[financial] seed skipped: {ex.Message}");[m
+[32m+[m[32m}[m
+[32m+[m
+ // 全局最早注入 CORS 允许头（包括出现异常/401 时），并处理预检[m
+[31m-// 统一 CORS 处理（单一中间件，覆盖预检和所有响应）[m
+ app.UseCors("DevAll");[m
+[32m+[m[32m// 兼容直接访问后端的 /api 前缀（例如绕过 Vite 代理时）[m
+[32m+[m[32mapp.Use(async (ctx, next) =>[m
+[32m+[m[32m{[m
+[32m+[m[32m    if (ctx.Request.Path.StartsWithSegments("/api", out var remaining))[m
+[32m+[m[32m    {[m
+[32m+[m[32m        Console.WriteLine($"[PathRewrite] {ctx.Request.Path} -> {remaining}");[m
+[32m+[m[32m        ctx.Request.Path = remaining;[m
+[32m+[m[32m        if (!ctx.Request.Path.HasValue)[m
+[32m+[m[32m        {[m
+[32m+[m[32m            ctx.Request.Path = "/";[m
+[32m+[m[32m        }[m
+[32m+[m[32m    }[m
+[32m+[m[32m    await next();[m
+[32m+[m[32m});[m
+ // 兜底：确保所有响应都带上 CORS 头（包括 401/403/异常）[m
+ app.Use(async (ctx, next) =>[m
+ {[m
+[36m@@ -728,6 +790,9 @@[m [mServer.Modules.LocalizationMaintenanceModule.MapLocalizationMaintenanceModule(ap[m
+ // 注册 CRM 模块端点[m
+ Server.Modules.CrmModule.MapCrmModule(app);[m
+ [m
+[32m+[m[32m// 基础根路径探活，避免返回 405[m
+[32m+[m[32mapp.MapGet("/", () => Results.Json(new { ok = true })).AllowAnonymous();[m
+[32m+[m
+ app.MapGet("/health", async (IServiceProvider sp) =>[m
+ {[m
+     var env = app.Environment.EnvironmentName;[m
+[36m@@ -784,7 +849,6 @@[m [mapp.MapGet("/debug/open-items", async (string voucherNo, NpgsqlDataSource ds, Ht[m
+     while (await rd.ReadAsync()) rows.Add(rd.GetFieldValue<string>(0));[m
+     return Results.Text("[" + string.Join(',', rows) + "]", "application/json");[m
+ }).RequireAuthorization();[m
+[31m-[m
+ // 维护：重建 open_items 投影（按凭证号或全部）[m
+ app.MapPost("/maintenance/open-items/rebuild", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+ {[m
+[36m@@ -925,7 +989,7 @@[m [mapp.MapPost("/dev/seed-user", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+         await map.ExecuteNonQueryAsync();[m
+     }[m
+     // 给角色加一些基础能力，便于演示[m
+[31m-    var caps = new[]{ "roles:manage", "op:bank-collect", "op:bank-payment" };[m
+[32m+[m[32m    var caps = new[]{ "roles:manage", "op:bank-collect", "op:bank-payment", "report:financial" };[m
+     foreach (var cap in caps)[m
+     {[m
+         await using var capCmd = conn.CreateCommand();[m
+[36m@@ -940,24 +1004,33 @@[m [mapp.MapPost("/dev/seed-user", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+ // 登录接口：companyCode + employeeCode + password -> JWT[m
+ app.MapPost("/auth/login", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+ {[m
+[31m-    using var doc = await JsonDocument.ParseAsync(req.Body);[m
+[31m-    var root = doc.RootElement;[m
+[31m-    var company = root.GetProperty("companyCode").GetString()!;[m
+[31m-    var emp = root.GetProperty("employeeCode").GetString()!;[m
+[31m-    var pwd = root.GetProperty("password").GetString()!;[m
+[32m+[m[32m    using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: req.HttpContext.RequestAborted);[m
+[32m+[m[32m    var companyCode = doc.RootElement.TryGetProperty("companyCode", out var ccEl) && ccEl.ValueKind == JsonValueKind.String[m
+[32m+[m[32m        ? ccEl.GetString()[m
+[32m+[m[32m        : null;[m
+[32m+[m[32m    var employeeCode = doc.RootElement.TryGetProperty("employeeCode", out var empEl) && empEl.ValueKind == JsonValueKind.String[m
+[32m+[m[32m        ? empEl.GetString()[m
+[32m+[m[32m        : null;[m
+[32m+[m[32m    var password = doc.RootElement.TryGetProperty("password", out var pwdEl) && pwdEl.ValueKind == JsonValueKind.String[m
+[32m+[m[32m        ? pwdEl.GetString()[m
+[32m+[m[32m        : null;[m
+[32m+[m[32m    if (string.IsNullOrWhiteSpace(companyCode) || string.IsNullOrWhiteSpace(employeeCode) || string.IsNullOrWhiteSpace(password))[m
+[32m+[m[32m    {[m
+[32m+[m[32m        return Results.BadRequest(new { error = "missing credentials" });[m
+[32m+[m[32m    }[m
+ [m
+     await using var conn = await ds.OpenConnectionAsync();[m
+     await using var cmd = conn.CreateCommand();[m
+     cmd.CommandText = @"SELECT id, password_hash, name, dept_id FROM users WHERE company_code=$1 AND employee_code=$2 LIMIT 1";[m
+[31m-    cmd.Parameters.AddWithValue(company);[m
+[31m-    cmd.Parameters.AddWithValue(emp);[m
+[32m+[m[32m    cmd.Parameters.AddWithValue(companyCode);[m
+[32m+[m[32m    cmd.Parameters.AddWithValue(employeeCode);[m
+     await using var rd = await cmd.ExecuteReaderAsync();[m
+     if (!await rd.ReadAsync()) return Results.Unauthorized();[m
+     var userId = rd.GetGuid(0);[m
+     var hash = rd.GetString(1);[m
+     var name = rd.IsDBNull(2) ? null : rd.GetString(2);[m
+     var deptId = rd.IsDBNull(3) ? null : rd.GetString(3);[m
+[31m-    if (!BCrypt.Net.BCrypt.Verify(pwd, hash)) return Results.Unauthorized();[m
+[32m+[m[32m    if (!BCrypt.Net.BCrypt.Verify(password, hash)) return Results.Unauthorized();[m
+ [m
+     // 取角色[m
+     await rd.CloseAsync();[m
+[36m@@ -981,8 +1054,8 @@[m [mapp.MapPost("/auth/login", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+     var claims = new[][m
+     {[m
+         new System.Security.Claims.Claim("uid", userId.ToString()),[m
+[31m-        new System.Security.Claims.Claim("companyCode", company),[m
+[31m-        new System.Security.Claims.Claim("employeeCode", emp),[m
+[32m+[m[32m        new System.Security.Claims.Claim("companyCode", companyCode),[m
+[32m+[m[32m        new System.Security.Claims.Claim("employeeCode", employeeCode),[m
+         new System.Security.Claims.Claim("name", name ?? string.Empty),[m
+         new System.Security.Claims.Claim("deptId", deptId ?? string.Empty),[m
+         new System.Security.Claims.Claim("roles", string.Join(',', roles)),[m
+[36m@@ -998,7 +1071,6 @@[m [mapp.MapPost("/auth/login", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+     var jwt = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().WriteToken(token);[m
+     return Results.Ok(new { token = jwt, name, roles });[m
+ });[m
+[31m-[m
+ // 当前用户信息[m
+ app.MapGet("/auth/me", (HttpContext ctx) =>[m
+ {[m
+[36m@@ -1012,7 +1084,6 @@[m [mapp.MapGet("/auth/me", (HttpContext ctx) =>[m
+     if (string.IsNullOrEmpty(uid)) return Results.Unauthorized();[m
+     return Results.Ok(new { uid, companyCode = company, employeeCode = emp, name, deptId = dept, roles, caps });[m
+ }).RequireAuthorization();[m
+[31m-[m
+ // 调试：自检创建一张最小凭证（不依赖前端），返回凭证号或错误[m
+ app.MapGet("/debug/voucher-selftest", async (NpgsqlDataSource ds) =>[m
+ {[m
+[36m@@ -1055,206 +1126,14 @@[m [mapp.MapGet("/debug/voucher-selftest", async (NpgsqlDataSource ds) =>[m
+     }[m
+ });[m
+ [m
+[31m-// AI 路由：返回 actions（如 openEmbed(key,payload)），用于前端根据意图打开页面并预填[m
+[31m-app.MapPost("/ai/route", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+[31m-{[m
+[31m-    var apiKey = req.Headers.TryGetValue("x-openai-key", out var hk) && !string.IsNullOrWhiteSpace(hk)[m
+[31m-        ? hk.ToString()[m
+[31m-        : (Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? app.Configuration["OpenAI:ApiKey"]);[m
+[31m-    if (string.IsNullOrWhiteSpace(apiKey)) return Results.BadRequest(new { error = "OpenAI API key not configured" });[m
+[31m-[m
+[31m-    using var doc = await JsonDocument.ParseAsync(req.Body);[m
+[31m-    var root = doc.RootElement;[m
+[31m-    var messages = root.TryGetProperty("messages", out var ms) && ms.ValueKind==JsonValueKind.Array ? ms : default;[m
+[31m-    if (ms.ValueKind != JsonValueKind.Array) return Results.BadRequest(new { error = "messages required" });[m
+[31m-[m
+[31m-    // 从 schemas 读取可用实体/路由（MVP：示例包含 account.new / voucher.new）[m
+[31m-    var entities = new List<object>();[m
+[31m-    try[m
+[31m-    {[m
+[31m-        var schemaAcc = await Server.Domain.SchemasService.GetActiveSchema(ds, "account", req.Headers.TryGetValue("x-company-code", out var ccRoute) ? ccRoute.ToString() : null);[m
+[31m-        if (schemaAcc is not null && schemaAcc.RootElement.TryGetProperty("schema", out var sAcc))[m
+[31m-        {[m
+[31m-            // 仅暴露安全字段示例[m
+[31m-            var fields = new List<string>();[m
+[31m-            if (sAcc.TryGetProperty("properties", out var props) && props.ValueKind==JsonValueKind.Object)[m
+[31m-            {[m
+[31m-                foreach (var p in props.EnumerateObject())[m
+[31m-                {[m
+[31m-                    if (p.Name is "code" or "name") fields.Add(p.Name);[m
+[31m-                }[m
+[31m-            }[m
+[31m-            entities.Add(new { key = "account.new", entity = "account", fields });[m
+[31m-        }[m
+[31m-        var schemaV = await Server.Domain.SchemasService.GetActiveSchema(ds, "voucher", req.Headers.TryGetValue("x-company-code", out var ccRoute2) ? ccRoute2.ToString() : null);[m
+[31m-        if (schemaV is not null)[m
+[31m-        {[m
+[31m-            // 列出允许预填的一些头字段与行字段[m
+[31m-            var vfields = new []{ "header.currency", "header.postingDate", "header.summary", "lines[].accountCode", "lines[].drcr", "lines[].amount" };[m
+[31m-            entities.Add(new { key = "voucher.new", entity = "voucher", fields = vfields });[m
+[31m-        }[m
+[31m-    }[m
+[31m-    catch { }[m
+[31m-[m
+[31m-    // 构造工具定义（OpenAI function calling 格式）[m
+[31m-    var tools = new[][m
+[31m-    {[m
+[31m-        new {[m
+[31m-            type = "function",[m
+[31m-            function = new {[m
+[31m-                name = "open_embed",[m
+[31m-                description = "Open a UI page by key and optionally pass initial payload for prefill",[m
+[31m-                parameters = new {[m
+[31m-                    type = "object",[m
+[31m-                    properties = new {[m
+[31m-                        key = new { type = "string", description = "Page key, e.g. account.new" },[m
+[31m-                        payload = new { type = "object", description = "Initial form fields to prefill" }[m
+[31m-                    },[m
+[31m-                    required = new [] { "key" }[m
+[31m-                }[m
+[31m-            }[m
+[31m-        }[m
+[31m-    };[m
+[31m-[m
+[31m-    var sysPrompt = @$"You are an ERP assistant. Decide user intent and call open_embed with an appropriate page key and a minimal payload to prefill fields.[m
+[31m-Available pages (key → entity, fields):[m
+[31m-{string.Join("\n", entities.Select(e => System.Text.Json.JsonSerializer.Serialize(e)))}[m
+[31m-Rules:[m
+[31m-- Prefer a single call to open_embed that includes payload when user asks to create/edit something.[m
+[31m-- Keep payload small and only include known fields for that entity.[m
+[31m-- If the user asks to 'create voucher' or similar, call open_embed with key 'voucher.new'. Prefill header.currency if mentioned, header.postingDate if a date is mentioned, and header.summary if provided. If an amount is mentioned, set lines[0].amount and lines[0].drcr if indicated (DR/CR or debit/credit). Do not invent account codes; leave accountCode empty for the user to choose.[m
+[31m-- If unsure, ask a short clarifying question in assistant message and do not call tools.[m
+[31m-";[m
+[31m-[m
+[31m-    using var http = new HttpClient();[m
+[31m-    http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);[m
+[31m-    var chatBody = new {[m
+[31m-        model = "gpt-4o-mini",[m
+[31m-        messages = new List<object> { new { role = "system", content = sysPrompt } }[m
+[31m-            .Concat(ms.EnumerateArray().Select(x => new { role = x.GetProperty("role").GetString(), content = x.GetProperty("content").GetString() }))[m
+[31m-            .ToArray(),[m
+[31m-        tools,[m
+[31m-        tool_choice = "auto",[m
+[31m-        temperature = 0.2[m
+[31m-    };[m
+[31m-    var resp = await http.PostAsync("https://api.openai.com/v1/chat/completions",[m
+[31m-        new StringContent(JsonSerializer.Serialize(chatBody), System.Text.Encoding.UTF8, "application/json"));[m
+[31m-    var text = await resp.Content.ReadAsStringAsync();[m
+[31m-    if (!resp.IsSuccessStatusCode) return Results.StatusCode((int)resp.StatusCode);[m
+[31m-[m
+[31m-    using var parsed = JsonDocument.Parse(text);[m
+[31m-    var msg = parsed.RootElement.GetProperty("choices")[0].GetProperty("message");[m
+[31m-    string assistantMessage = msg.TryGetProperty("content", out var c) && c.ValueKind==JsonValueKind.String ? c.GetString() ?? string.Empty : string.Empty;[m
+[31m-    var actions = new List<object>();[m
+[31m-    if (msg.TryGetProperty("tool_calls", out var tc) && tc.ValueKind==JsonValueKind.Array)[m
+[31m-    {[m
+[31m-        foreach (var tcall in tc.EnumerateArray())[m
+[31m-        {[m
+[31m-            var name = tcall.GetProperty("function").GetProperty("name").GetString();[m
+[31m-            var argsText = tcall.GetProperty("function").GetProperty("arguments").GetString() ?? "{}";[m
+[31m-            try[m
+[31m-            {[m
+[31m-                using var a = JsonDocument.Parse(argsText);[m
+[31m-                if (name == "open_embed")[m
+[31m-                {[m
+[31m-                    var key = a.RootElement.TryGetProperty("key", out var k) ? k.GetString() : null;[m
+[31m-                    object? payloadObj = null;[m
+[31m-                    if (a.RootElement.TryGetProperty("payload", out var p))[m
+[31m-                    {[m
+[31m-                        try { payloadObj = JsonSerializer.Deserialize<object>(p.GetRawText()); }[m
+[31m-                        catch { payloadObj = null; }[m
+[31m-                    }[m
+[31m-                    if (!string.IsNullOrEmpty(key))[m
+[31m-                    {[m
+[31m-                        actions.Add(new { type = "openEmbed", key, payload = payloadObj } );[m
+[31m-                    }[m
+[31m-                }[m
+[31m-            } catch { }[m
+[31m-        }[m
+[31m-    }[m
+[31m-    return Results.Json(new { assistantMessage, actions });[m
+[31m-}).RequireAuthorization();[m
+ // AI 聊天（最小代理）：需要设置环境变量 OPENAI_API_KEY；未设置则返回 501[m
+[31m-app.MapPost("/ai/chat", async (HttpRequest req, NpgsqlDataSource ds) =>[m
+[32m+[m[32mapp.MapPost("/ai/chat", (HttpRequest req, NpgsqlDataSource ds) =>[m
+ {[m
+[31m-    var apiKey = req.Headers.TryGetValue("x-openai-key", out var hk) && !string.IsNullOrWhiteSpace(hk)[m
+[31m-        ? hk.ToString()[m
+[31m-        : (Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? app.Configuration["OpenAI:ApiKey"]);[m
+[31m-    if (string.IsNullOrWhiteSpace(apiKey)) return Results.BadRequest(new { error = "OpenAI API key not configured" });[m
+[31m-    using var doc = await JsonDocument.ParseAsync(req.Body);[m
+[31m-    var root = doc.RootElement;[m
+[31m-    var sessionId = root.TryGetProperty("sessionId", out var sid) && sid.ValueKind==JsonValueKind.String ? sid.GetString() : null;[m
+[31m-    var messages = root.TryGetProperty("messages", out var ms) && ms.ValueKind==JsonValueKind.Array ? ms : default;[m
+[31m-    if (ms.ValueKind != JsonValueKind.Array) return Results.BadRequest(new { error = "messages required" });[m
+[31m-[m
+[31m-    // 若无 sessionId 则创建会话[m
+[31m-    if (string.IsNullOrEmpty(sessionId))[m
+[31m-    {[m
+[31m-        await using var conn = await ds.OpenConnectionAsync();[m
+[31m-        await using var cmd = conn.CreateCommand();[m
+[31m-        cmd.CommandText = "INSERT INTO ai_sessions(company_code,use

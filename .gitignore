@@ -1,0 +1,80 @@
+# Node / Frontend
+node_modules/
+web/dist/
+
+# Dotnet build outputs
+server-dotnet/bin/
+server-dotnet/obj/
+
+# Flutter / Dart
+mobile/build/
+mobile/.dart_tool/
+mobile/.idea/
+mobile/ios/Pods/
+mobile/android/.gradle/
+mobile/android/app/build/
+
+# Visual Studio / VSCode
+.vscode/
+*.iml
+
+# Secrets - 敏感配置文件（不要提交到 Git）
+agent-service/.env
+server-dotnet/appsettings.json
+server-dotnet/appsettings.Development.json
+server-dotnet/appsettings.Production.json
+server-dotnet/appsettings.Local.json
+web/.env.local
+web/.env.production.local
+*.local.json
+
+# 临时/测试文件
+*.log
+*.tmp
+*.xlsx
+*.pdf
+*_resp.json
+*_payload*.json
+token.json
+
+# System files
+*.log
+*.tmp
+Thumbs.db
+Desktop.ini
+
+# 大数据文件（不适合 Git 管理）
+data/
+server-dotnet/Dump20251222/
+server-dotnet/bin_build_check*/
+server-dotnet/TestPdfPig/
+server-dotnet/TestPdfExtract/
+
+# 辅助工具编译输出
+server-dotnet/Tools/*/bin/
+server-dotnet/Tools/*/obj/
+tools/
+
+# 其他临时目录
+mobile/
+hashgen/
+JsonNodeTest/
+
+# 根目录临时文件
+*.sql
+*.csv
+*.xml
+*.zip
+*.json
+*.txt
+*.html
+*.tsv
+
+# 但保留必要的配置文件
+!package.json
+!package-lock.json
+!tsconfig.json
+!web/index.html
+!seed/*.json
+!web/scripts/*.js
+

@@ -1,0 +1,70 @@
+workflows:
+  ios-ci:
+    name: iOS CI
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: 15.4
+      cocoapods: default
+      vars:
+        APP_ENV: dev
+        API_BASE_URL: https://api-dev.example.com
+    scripts:
+      - name: 安装依赖
+        script: |
+          cd mobile
+          flutter pub get
+      - name: 静态检查
+        script: |
+          cd mobile
+          flutter analyze
+      - name: 单元测试
+        script: |
+          cd mobile
+          flutter test
+      - name: 构建未签名 IPA
+        script: |
+          cd mobile
+          flutter build ipa --no-codesign
+    artifacts:
+      - mobile/build/ios/ipa/*.ipa
+      - mobile/build/ios/archive/*.xcarchive
+
+  ios-release:
+    name: iOS Release
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: 15.4
+      cocoapods: default
+      vars:
+        APP_ENV: prod
+        API_BASE_URL: https://api.example.com
+    integrations:
+      app_store_connect: app_store_connect
+    scripts:
+      - name: 安装依赖
+        script: |
+          cd mobile
+          flutter pub get
+      - name: 静态检查
+        script: |
+          cd mobile
+          flutter analyze
+      - name: 单元测试
+        script: |
+          cd mobile
+          flutter test
+      - name: 构建并签名 IPA
+        script: |
+          cd mobile
+          flutter build ipa --export-options-plist=ios/export_options.plist
+    artifacts:
+      - mobile/build/ios/ipa/*.ipa
+      - mobile/build/ios/archive/*.xcarchive
+    # Publishing to TestFlight/App Store will be enabled later once signing setup completes
+    # publishing:
+    #   app_store_connect:
+    #     api_key: app_store_connect
+    #     submit_to_testflight: true
+
