@@ -85,10 +85,10 @@ onMounted(async () => {
   try{
     let r = await api.post('/objects/payroll_policy/search', { page:1, pageSize:1, where:[{ json:'isActive', op:'eq', value:true }] })
     let row = (r.data?.data||[])[0]
-    if (row){
-      const pl = row.payload || {}
-      const dsl = pl.dsl || { rules: pl.rules||[], employmentTypes: pl.employmentTypes||[], payrollItems: pl.payrollItems||[], hints: pl.hints||[] }
-      result.value = { dsl, explanation: `現在有効なポリシー：${pl.code||row.policy_code||''} / ${pl.version||row.version||''}` }
+      if (row){
+        const pl = row.payload || {}
+        const dsl = pl.dsl || { rules: pl.rules||[], employmentTypes: pl.employmentTypes||[], hints: pl.hints||[] }
+        result.value = { dsl, explanation: `現在有効なポリシー：${pl.code||row.policy_code||''} / ${pl.version||row.version||''}` }
       try{ dslText.value = JSON.stringify(dsl, null, 2) }catch{ dslText.value = '' }
       policyCode.value = pl.code || ''
       policyName.value = pl.name || ''
@@ -98,7 +98,7 @@ onMounted(async () => {
       row = (r.data?.data||[])[0]
       if (row){
         const pl = row.payload || {}
-        const dsl = pl.dsl || { rules: pl.rules||[], employmentTypes: pl.employmentTypes||[], payrollItems: pl.payrollItems||[], hints: pl.hints||[] }
+        const dsl = pl.dsl || { rules: pl.rules||[], employmentTypes: pl.employmentTypes||[], hints: pl.hints||[] }
         result.value = { dsl, explanation: `直近のポリシー：${pl.code||row.policy_code||''} / ${pl.version||row.version||''}` }
         try{ dslText.value = JSON.stringify(dsl, null, 2) }catch{ dslText.value = '' }
         policyCode.value = pl.code || ''

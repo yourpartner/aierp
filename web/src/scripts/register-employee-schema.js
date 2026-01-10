@@ -21,7 +21,6 @@ async function main(){
       contact:{ type:'object', properties:{ phone:{type:'string'}, email:{type:'string', format:'email'}, postalCode:{type:'string'}, address:{type:'string', maxLength:500}, note:{type:'string', maxLength:1000} } },
       emergencies:{ type:'array', items:{ type:'object', properties:{ nameKana:{type:'string'}, nameKanji:{type:'string'}, relation:{type:'string'}, phone:{type:'string'}, address:{type:'string'} } } },
       contracts:{ type:'array', items:{ type:'object', properties:{ contractType:{type:'string'}, periodFrom:{type:'string', format:'date'}, periodTo:{type:['string','null'], format:'date'}, note:{type:'string'} } } },
-      payrollItems:{ type:'array', items:{ type:'object', properties:{ itemCode:{type:'string'}, itemName:{type:'string'}, startDate:{type:'string', format:'date'}, amount:{type:'number'}, note:{type:'string'} } } },
       departments:{ type:'array', items:{ type:'object', properties:{ departmentId:{type:'string', format:'uuid'}, fromDate:{type:'string', format:'date'}, toDate:{type:['string','null'], format:'date'}, position:{type:'string'} } } },
       bankAccounts:{ type:'array', items:{ type:'object', properties:{ bank:{type:'string'}, branch:{type:'string'}, accountType:{type:'string'}, accountNo:{type:'string'}, holder:{type:'string'}, effectiveDate:{type:'string', format:'date'} } } },
       attachments:{ type:'array', items:{ type:'object', properties:{ fileId:{type:'string', format:'uuid'}, kind:{type:'string'}, sensitivity:{type:'string', enum:['HR','Payroll']}, uploadedAt:{type:'string', format:'date-time'}, note:{type:'string'} } } }
@@ -42,7 +41,6 @@ async function main(){
         { title:'联络', children:[{ field:'contact.phone', label:'电话' },{ field:'contact.email', label:'邮箱' },{ field:'contact.postalCode', label:'邮编' },{ field:'contact.address', label:'住所' },{ field:'contact.note', label:'备注' }]},
         { title:'紧急联络', children:[{ field:'emergencies', label:'紧急联络人' }]},
         { title:'雇佣契约', children:[{ field:'contracts', label:'契约' }]},
-        { title:'给与', children:[{ field:'payrollItems', label:'给与项目' }]},
         { title:'所属部门', children:[{ field:'departments', label:'所属' }]},
         { title:'银行账户', children:[{ field:'bankAccounts', label:'银行账户' }]},
         { title:'附件', children:[{ field:'attachments', label:'附件' }]}

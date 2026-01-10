@@ -1708,7 +1708,7 @@ export const ja: Messages = {
 }
 
 export const en: Messages = {
-  appTitle: 'ERP Hub',
+  appTitle: 'AIMate',
   nav: {
     chat: 'Chat Conversation',
     newSession: 'New Conversation',
@@ -2695,7 +2695,7 @@ export const en: Messages = {
 
 export const zh: Messages = JSON.parse(JSON.stringify(ja)) as Messages
 
-zh.appTitle = 'ERP 中枢'
+zh.appTitle = 'AIMate'
 zh.nav = {
   chat: '聊天会话',
   newSession: '新建会话',

@@ -15,28 +15,6 @@ public class HrCrudService
         return await Crud.InsertRawJson(_ds, table, companyCode, payload.GetRawText());
     }
 
-    public async Task<string> CreatePayrollItem(string companyCode, string table, JsonElement payload)
-    {
-        var providedCode = payload.TryGetProperty("code", out var c) && c.ValueKind==JsonValueKind.String && !string.IsNullOrWhiteSpace(c.GetString()) ? c.GetString() : null;
-        if (!string.IsNullOrEmpty(providedCode))
-        {
-            var inserted = await Crud.InsertRawJson(_ds, table, companyCode, payload.GetRawText())
-                ?? throw new Exception("insert failed");
-            return inserted;
-        }
-        // Generate a unique code: PI + last 8 digits of timestamp.
-        var gen = "PI" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString().Substring(5);
-        await using var conn = await _ds.OpenConnectionAsync();
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"INSERT INTO {table}(company_code, payload) VALUES ($1, jsonb_set($2::jsonb, '{{code}}', to_jsonb($3::text), true)) RETURNING to_jsonb({table})";
-        cmd.Parameters.AddWithValue(companyCode);
-        cmd.Parameters.AddWithValue(payload.GetRawText());
-        cmd.Parameters.AddWithValue(gen);
-        var json = (string?)await cmd.ExecuteScalarAsync();
-        if (json is null) throw new Exception("insert failed");
-        return json;
-    }
-
     public async Task<string> CreatePayrollPolicy(string companyCode, string table, JsonElement payload)
     {
         var versionProvided = payload.TryGetProperty("version", out var v) && v.ValueKind==JsonValueKind.String && !string.IsNullOrWhiteSpace(v.GetString());

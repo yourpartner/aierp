@@ -739,11 +739,6 @@ function validate(): string[] {
     const a = it.periodFrom, b = it.periodTo
     if (a && b && a > b) errs.push('契約：開始日は終了日より後にできません')
   }
-  // 工资项
-  for (const it of (p.payrollItems||[])){
-    if (!it.startDate) errs.push('給与項目：適用開始日は必須です')
-    if (it.amount!==undefined && it.amount!==null && isNaN(Number(it.amount))) errs.push('給与項目：金額は数値で入力してください')
-  }
   // 部门履历
   for (const it of (p.departments||[])){
     if (!it.departmentId) errs.push('部門履歴：部門ID／コードは必須です')

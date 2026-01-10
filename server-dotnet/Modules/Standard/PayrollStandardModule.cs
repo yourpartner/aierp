@@ -18,7 +18,6 @@ public class PayrollStandardModule : ModuleBase
         Menus = new[]
         {
             new MenuConfig { Id = "menu_payroll", Label = "menu.payroll", Icon = "Wallet", Path = "", ParentId = "menu_hr", Order = 210 },
-            new MenuConfig { Id = "menu_payroll_items", Label = "menu.payrollItems", Icon = "List", Path = "/payroll-items", ParentId = "menu_hr", Order = 211, Permission = "payroll.items" },
             new MenuConfig { Id = "menu_payroll_execute", Label = "menu.payrollExecute", Icon = "CircleCheck", Path = "/payroll-execute", ParentId = "menu_hr", Order = 212, Permission = "payroll.execute" },
             new MenuConfig { Id = "menu_payroll_history", Label = "menu.payrollHistory", Icon = "Clock", Path = "/payroll-history", ParentId = "menu_hr", Order = 213, Permission = "payroll.history" },
         }

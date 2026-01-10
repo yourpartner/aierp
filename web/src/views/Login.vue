@@ -9,7 +9,7 @@
         <el-input v-model="form.employeeCode" />
       </el-form-item>
       <el-form-item label="パスワード">
-        <el-input v-model="form.password" type="password" show-password />
+        <el-input v-model="form.password" type="password" show-password @keyup.enter="login" />
       </el-form-item>
       <el-form-item>
         <el-button type="primary" :loading="loading" @click="login">ログイン</el-button>
