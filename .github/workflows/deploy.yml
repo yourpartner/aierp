@@ -9,7 +9,7 @@ name: Build and Deploy to Azure
 on:
   push:
     branches:
-      - main
+      - master
   workflow_dispatch:  # 允许手动触发
 
 env:
