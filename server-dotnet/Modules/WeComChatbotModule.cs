@@ -232,15 +232,15 @@ public static class WeComChatbotModule
                        status, intent, sales_order_no, message_count,
                        created_at, updated_at, completed_at
                 FROM wecom_chat_sessions
-                WHERE company_code = @cc {whereClause}
+                WHERE company_code = $1 {whereClause}
                 ORDER BY created_at DESC
-                LIMIT @limit OFFSET @offset
+                LIMIT $2 OFFSET $3
                 """;
-            cmd.Parameters.AddWithValue("@cc", cc.ToString());
-            cmd.Parameters.AddWithValue("@limit", limit);
-            cmd.Parameters.AddWithValue("@offset", offset);
+            cmd.Parameters.AddWithValue(cc.ToString());
+            cmd.Parameters.AddWithValue(limit);
+            cmd.Parameters.AddWithValue(offset);
             if (!string.IsNullOrEmpty(status))
-                cmd.Parameters.AddWithValue("@status", status);
+                cmd.Parameters.AddWithValue(status);
 
             var sessions = new List<object>();
             await using var reader = await cmd.ExecuteReaderAsync();
@@ -287,10 +287,10 @@ public static class WeComChatbotModule
                            status, intent, pending_order_data, sales_order_id, sales_order_no,
                            message_count, created_at, updated_at, completed_at
                     FROM wecom_chat_sessions
-                    WHERE id = @id AND company_code = @cc
+                    WHERE id = $1 AND company_code = $2
                     """;
-                cmd.Parameters.AddWithValue("@id", id);
-                cmd.Parameters.AddWithValue("@cc", cc.ToString());
+                cmd.Parameters.AddWithValue(id);
+                cmd.Parameters.AddWithValue(cc.ToString());
 
                 await using var reader = await cmd.ExecuteReaderAsync();
                 if (await reader.ReadAsync())
@@ -327,10 +327,10 @@ public static class WeComChatbotModule
                     SELECT id, msg_type, direction, sender_id, sender_name, 
                            content, ai_analysis, created_at
                     FROM wecom_chat_messages
-                    WHERE session_id = @id
+                    WHERE session_id = $1
                     ORDER BY created_at
                     """;
-                cmd.Parameters.AddWithValue("@id", id);
+                cmd.Parameters.AddWithValue(id);
 
                 await using var reader = await cmd.ExecuteReaderAsync();
                 while (await reader.ReadAsync())
@@ -370,19 +370,19 @@ public static class WeComChatbotModule
             await using var conn = await ds.OpenConnectionAsync();
             await using var cmd = conn.CreateCommand();
 
-            var whereClause = string.IsNullOrEmpty(materialCode) ? "" : "AND material_code = @materialCode";
+            var whereClause = string.IsNullOrEmpty(materialCode) ? "" : "AND material_code = $3";
             cmd.CommandText = $"""
                 SELECT id, material_code, material_name, alias, alias_type, 
                        customer_code, priority, match_count, is_active, created_at
                 FROM product_aliases
-                WHERE company_code = @cc AND is_active = true {whereClause}
+                WHERE company_code = $1 AND is_active = true {whereClause}
                 ORDER BY match_count DESC, priority DESC
-                LIMIT @limit
+                LIMIT $2
                 """;
-            cmd.Parameters.AddWithValue("@cc", cc.ToString());
-            cmd.Parameters.AddWithValue("@limit", limit);
+            cmd.Parameters.AddWithValue(cc.ToString());
+            cmd.Parameters.AddWithValue(limit);
             if (!string.IsNullOrEmpty(materialCode))
-                cmd.Parameters.AddWithValue("@materialCode", materialCode);
+                cmd.Parameters.AddWithValue(materialCode);
 
             var aliases = new List<object>();
             await using var reader = await cmd.ExecuteReaderAsync();
@@ -432,17 +432,17 @@ public static class WeComChatbotModule
             cmd.CommandText = """
                 INSERT INTO product_aliases
                 (company_code, material_code, material_name, alias, alias_type, customer_code, priority)
-                VALUES (@cc, @materialCode, @materialName, @alias, @aliasType, @customerCode, @priority)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT DO NOTHING
                 RETURNING id
                 """;
-            cmd.Parameters.AddWithValue("@cc", cc.ToString());
-            cmd.Parameters.AddWithValue("@materialCode", materialCode);
-            cmd.Parameters.AddWithValue("@materialName", (object?)materialName ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("@alias", alias);
-            cmd.Parameters.AddWithValue("@aliasType", aliasType ?? "common");
-            cmd.Parameters.AddWithValue("@customerCode", (object?)customerCode ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("@priority", priority);
+            cmd.Parameters.AddWithValue(cc.ToString());
+            cmd.Parameters.AddWithValue(materialCode);
+            cmd.Parameters.AddWithValue((object?)materialName ?? DBNull.Value);
+            cmd.Parameters.AddWithValue(alias);
+            cmd.Parameters.AddWithValue(aliasType ?? "common");
+            cmd.Parameters.AddWithValue((object?)customerCode ?? DBNull.Value);
+            cmd.Parameters.AddWithValue(priority);
 
             var id = await cmd.ExecuteScalarAsync();
             return id != null
@@ -464,10 +464,10 @@ public static class WeComChatbotModule
             cmd.CommandText = """
                 UPDATE product_aliases
                 SET is_active = false
-                WHERE id = @id AND company_code = @cc
+                WHERE id = $1 AND company_code = $2
                 """;
-            cmd.Parameters.AddWithValue("@id", id);
-            cmd.Parameters.AddWithValue("@cc", cc.ToString());
+            cmd.Parameters.AddWithValue(id);
+            cmd.Parameters.AddWithValue(cc.ToString());
 
             var rows = await cmd.ExecuteNonQueryAsync();
             return rows > 0
@@ -505,11 +505,11 @@ public static class WeComChatbotModule
                 SELECT payload->>'partnerCode' as partner_code,
                        payload->>'partnerName' as partner_name
                 FROM sales_orders
-                WHERE company_code = @cc AND payload->>'soNo' = @soNo
+                WHERE company_code = $1 AND payload->>'soNo' = $2
                 LIMIT 1
                 """;
-            cmd.Parameters.AddWithValue("@cc", cc.ToString());
-            cmd.Parameters.AddWithValue("@soNo", salesOrderNo);
+            cmd.Parameters.AddWithValue(cc.ToString());
+            cmd.Parameters.AddWithValue(salesOrderNo);
 
             string? partnerCode = null;
             string? partnerName = null;
@@ -532,11 +532,11 @@ public static class WeComChatbotModule
                 cmd2.CommandText = """
                     SELECT external_user_id, wecom_user_id
                     FROM wecom_customer_mappings
-                    WHERE company_code = @cc AND partner_code = @partnerCode
+                    WHERE company_code = $1 AND partner_code = $2
                     LIMIT 1
                     """;
-                cmd2.Parameters.AddWithValue("@cc", cc.ToString());
-                cmd2.Parameters.AddWithValue("@partnerCode", partnerCode);
+                cmd2.Parameters.AddWithValue(cc.ToString());
+                cmd2.Parameters.AddWithValue(partnerCode);
 
                 await using var reader = await cmd2.ExecuteReaderAsync();
                 if (await reader.ReadAsync())

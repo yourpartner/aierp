@@ -339,12 +339,14 @@ public sealed class PayrollDeadlineService : BackgroundService
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT u.id, u.payload->>'email' as email, 
+            SELECT u.id, u.email, 
                    dt.bundle_id, dt.token, COALESCE(dt.environment, 'sandbox') as env
             FROM users u
             LEFT JOIN device_tokens dt ON dt.user_id = u.id AND dt.platform = 'ios'
+            JOIN user_roles ur ON ur.user_id = u.id
+            JOIN roles r ON r.id = ur.role_id
             WHERE u.company_code = $1
-              AND (u.payload->'roles' ? 'admin' OR u.payload->'roles' ? 'payroll_admin' OR u.payload->'roles' ? 'hr_admin')
+              AND (r.role_code = 'admin' OR r.role_code = 'payroll_admin' OR r.role_code = 'hr_admin')
             ORDER BY u.created_at;
             """;
         cmd.Parameters.AddWithValue(companyCode);

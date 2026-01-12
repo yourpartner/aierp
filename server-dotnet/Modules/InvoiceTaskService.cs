@@ -48,17 +48,17 @@ public sealed class InvoiceTaskService
         cmd.CommandText = """
             SELECT 1
             FROM ai_invoice_tasks
-            WHERE id = @taskId
-              AND session_id = @sessionId
-              AND company_code = @companyCode
+            WHERE id = $1
+              AND session_id = $2
+              AND company_code = $3
               AND (status IS NULL OR lower(status) <> 'completed')
-              AND (@userId IS NULL OR user_id IS NULL OR user_id = @userId)
+              AND ($4 IS NULL OR user_id IS NULL OR user_id = $4)
             FOR UPDATE;
             """;
-        cmd.Parameters.AddWithValue("@taskId", taskId);
-        cmd.Parameters.AddWithValue("@sessionId", sessionId);
-        cmd.Parameters.AddWithValue("@companyCode", companyCode);
-        cmd.Parameters.AddWithValue("@userId", string.IsNullOrWhiteSpace(userId) ? DBNull.Value : userId);
+        cmd.Parameters.AddWithValue(taskId);
+        cmd.Parameters.AddWithValue(sessionId);
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(userId) ? DBNull.Value : userId);
 
         var exists = await cmd.ExecuteScalarAsync(ct);
         if (exists is null)
@@ -70,16 +70,16 @@ public sealed class InvoiceTaskService
         await using (var deleteCurrent = conn.CreateCommand())
         {
             deleteCurrent.Transaction = tx;
-            deleteCurrent.CommandText = "DELETE FROM ai_messages WHERE task_id = @taskId";
-            deleteCurrent.Parameters.AddWithValue("@taskId", taskId);
+            deleteCurrent.CommandText = "DELETE FROM ai_messages WHERE task_id = $1";
+            deleteCurrent.Parameters.AddWithValue(taskId);
             await deleteCurrent.ExecuteNonQueryAsync(ct);
         }
 
         await using (var deleteArchive = conn.CreateCommand())
         {
             deleteArchive.Transaction = tx;
-            deleteArchive.CommandText = "DELETE FROM ai_messages_archive WHERE task_id = @taskId";
-            deleteArchive.Parameters.AddWithValue("@taskId", taskId);
+            deleteArchive.CommandText = "DELETE FROM ai_messages_archive WHERE task_id = $1";
+            deleteArchive.Parameters.AddWithValue(taskId);
             await deleteArchive.ExecuteNonQueryAsync(ct);
         }
 
@@ -91,17 +91,17 @@ public sealed class InvoiceTaskService
             deleteTask.Transaction = tx;
             deleteTask.CommandText = """
                 DELETE FROM ai_invoice_tasks
-                WHERE id = @taskId
-                  AND session_id = @sessionId
-                  AND company_code = @companyCode
+                WHERE id = $1
+                  AND session_id = $2
+                  AND company_code = $3
                   AND (status IS NULL OR lower(status) <> 'completed')
-                  AND (@userId IS NULL OR user_id IS NULL OR user_id = @userId)
+                  AND ($4 IS NULL OR user_id IS NULL OR user_id = $4)
                 RETURNING blob_name, stored_path;
                 """;
-            deleteTask.Parameters.AddWithValue("@taskId", taskId);
-            deleteTask.Parameters.AddWithValue("@sessionId", sessionId);
-            deleteTask.Parameters.AddWithValue("@companyCode", companyCode);
-            deleteTask.Parameters.AddWithValue("@userId", string.IsNullOrWhiteSpace(userId) ? DBNull.Value : userId);
+            deleteTask.Parameters.AddWithValue(taskId);
+            deleteTask.Parameters.AddWithValue(sessionId);
+            deleteTask.Parameters.AddWithValue(companyCode);
+            deleteTask.Parameters.AddWithValue(string.IsNullOrWhiteSpace(userId) ? DBNull.Value : userId);
 
             await using var reader = await deleteTask.ExecuteReaderAsync(ct);
             if (!await reader.ReadAsync(ct))

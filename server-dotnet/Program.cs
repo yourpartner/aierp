@@ -52,6 +52,7 @@ if (allowedOrigins.Count == 0)
 {
     allowedOrigins.Add("http://localhost:5180");
     allowedOrigins.Add("http://127.0.0.1:5180");
+    allowedOrigins.Add("https://yanxia-web.azurewebsites.net");
 }
 var allowedOriginsArray = allowedOrigins.ToArray();
 
@@ -78,6 +79,8 @@ builder.Services.AddScoped<Server.Modules.AgentScenarioService>();
 builder.Services.AddScoped<Server.Modules.AgentAccountingRuleService>();
 builder.Services.AddScoped<Server.Modules.InvoiceTaskService>();
 builder.Services.AddScoped<Server.Modules.SalesOrderTaskService>();
+builder.Services.AddScoped<Server.Modules.PayrollTaskService>();
+builder.Services.AddScoped<Server.Modules.UnifiedTaskService>();
 builder.Services.Configure<Server.Infrastructure.EmailSettings>(builder.Configuration.GetSection("Email"));
 builder.Services.AddSingleton<Server.Infrastructure.EmailService>();
 // 模块系统（按 EditionOptions 启用/禁用模块，并注册服务/菜单/端点）
@@ -140,6 +143,35 @@ builder.Services.AddScoped<Server.Modules.AgentScenarioService>();
 // Moneytree 服务由模块（moneytree）注册，避免重复注册 HostedService
 
 var app = builder.Build();
+
+// Global Exception Handler to capture 500 errors in logs
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[GLOBAL ERROR] {context.Request.Method} {context.Request.Path}: {ex}");
+        
+        // If not started yet, return JSON error
+        if (!context.Response.HasStarted)
+        {
+            context.Response.StatusCode = 500;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsJsonAsync(new { 
+                error = "Internal Server Error", 
+                message = ex.Message,
+                detail = ex.ToString()
+            });
+        }
+        else
+        {
+            throw; // Re-throw if response already started
+        }
+    }
+});
 var uploadRoot = Path.Combine(AppContext.BaseDirectory, "uploads", "ai-files");
 Directory.CreateDirectory(uploadRoot);
 var uploadedFiles = new ConcurrentDictionary<string, UploadedFileRecord>();
@@ -799,7 +831,7 @@ CREATE TABLE IF NOT EXISTS inventory_balances (
 });
 
 // Register HR payroll endpoints.
-app.MapHrPayrollModule();
+// app.MapHrPayrollModule(); // Registered via PayrollStandardModule
 app.MapTaskSchedulerModule();
 // 以下模块端点已通过 app.UseModuleEndpoints() 由模块系统统一注册，不再重复调用：
 // - InventoryModule / InventoryCountModule (通过 InventoryStandardModule)
@@ -874,19 +906,19 @@ app.MapPost("/sales-orders/lifecycle-summaries", async (HttpRequest req, Server.
 // Register regulatory maintenance endpoints.
 Server.Modules.LawAdminModule.MapLawAdminModule(app);
 // Register push notification endpoints.
-Server.Modules.NotificationsModule.MapNotificationsModule(app);
+// Server.Modules.NotificationsModule.MapNotificationsModule(app); // Registered via NotificationsStandardModule
 // Register notification policy endpoints.
-Server.Modules.NotificationsPoliciesModule.MapNotificationsPoliciesModule(app);
+// Server.Modules.NotificationsPoliciesModule.MapNotificationsPoliciesModule(app); // Registered via NotificationsStandardModule
 // Register localization maintenance endpoints.
 Server.Modules.LocalizationMaintenanceModule.MapLocalizationMaintenanceModule(app);
 // Register CRM endpoints.
-Server.Modules.CrmModule.MapCrmModule(app);
+// Server.Modules.CrmModule.MapCrmModule(app); // Registered via CrmStandardModule
 // Register Finance Reports endpoints (仕訳帳、総勘定元帳、勘定明細、財務諸表).
 Server.Modules.Standard.FinanceReportsModule.MapFinanceReportsModule(app);
 // Register FB Payment endpoints (全銀協フォーマット自動支払).
 Server.Modules.Standard.FbPaymentModule.MapFbPaymentModule(app);
 // Register Moneytree endpoints (銀行データ連携).
-new Server.Modules.Standard.MoneytreeStandardModule().MapEndpoints(app);
+// Note: Moneytree endpoints moved to MoneytreeStandardModule
 
 // Basic root probe endpoint to avoid 405 errors.
 app.MapGet("/", () => Results.Json(new { ok = true })).AllowAnonymous();

@@ -325,21 +325,19 @@ public class MoneytreeStandardModule : ModuleBase
             var pageSize = query.TryGetValue("pageSize", out var sizeVal) && int.TryParse(sizeVal, out var parsedSize) && parsedSize > 0 ? parsedSize : 20;
             pageSize = Math.Min(pageSize, 200);
 
-            var filters = new List<string> { "company_code = @company_code" };
-            var parameters = new List<(string Name, object? Value)>
-            {
-                ("company_code", cc.ToString())
-            };
+            var filters = new List<string> { "company_code = $1" };
+            var parameterValues = new List<object?> { cc.ToString() };
+            var pIdx = 2;
 
             if (startDate.HasValue)
             {
-                filters.Add("transaction_date >= @startDate");
-                parameters.Add(("startDate", startDate.Value));
+                filters.Add($"transaction_date >= ${pIdx++}");
+                parameterValues.Add(startDate.Value);
             }
             if (endDate.HasValue)
             {
-                filters.Add("transaction_date <= @endDate");
-                parameters.Add(("endDate", endDate.Value));
+                filters.Add($"transaction_date <= ${pIdx++}");
+                parameterValues.Add(endDate.Value);
             }
 
             if (string.Equals(typeFilter, "deposit", StringComparison.OrdinalIgnoreCase))
@@ -349,8 +347,8 @@ public class MoneytreeStandardModule : ModuleBase
 
             if (!string.IsNullOrWhiteSpace(keyword))
             {
-                filters.Add("(description ILIKE @keyword)");
-                parameters.Add(("keyword", $"%{keyword}%"));
+                filters.Add($"(description ILIKE ${pIdx++})");
+                parameterValues.Add($"%{keyword}%");
             }
 
             var whereClause = string.Join(" AND ", filters);
@@ -360,8 +358,11 @@ public class MoneytreeStandardModule : ModuleBase
             await using (var countCmd = conn.CreateCommand())
             {
                 countCmd.CommandText = $"SELECT COUNT(*) FROM moneytree_transactions WHERE {whereClause}";
-                foreach (var (name, value) in parameters)
-                    countCmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+                foreach (var val in parameterValues)
+                {
+                    countCmd.Parameters.AddWithValue(val ?? DBNull.Value);
+                }
+                
                 var countObj = await countCmd.ExecuteScalarAsync(req.HttpContext.RequestAborted);
                 if (countObj is not null && countObj != DBNull.Value)
                     total = Convert.ToInt64(countObj);
@@ -370,6 +371,10 @@ public class MoneytreeStandardModule : ModuleBase
             var items = new List<object>();
             await using (var cmd = conn.CreateCommand())
             {
+                // 分页参数紧随其后
+                var limitIdx = pIdx++;
+                var offsetIdx = pIdx++;
+
                 cmd.CommandText = $@"
 SELECT id, transaction_date, deposit_amount, withdrawal_amount, balance, currency, bank_name,
        description, account_name, account_number, posting_status, posting_error,
@@ -377,11 +382,16 @@ SELECT id, transaction_date, deposit_amount, withdrawal_amount, balance, currenc
 FROM moneytree_transactions
 WHERE {whereClause}
 ORDER BY transaction_date DESC NULLS LAST, created_at DESC
-LIMIT @limit OFFSET @offset";
-                foreach (var (name, value) in parameters)
-                    cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("limit", pageSize);
-                cmd.Parameters.AddWithValue("offset", (page - 1) * pageSize);
+LIMIT ${limitIdx} OFFSET ${offsetIdx}";
+
+                // 1. 先按顺序添加 WHERE 条件参数 ($1, $2, $3...)
+                foreach (var val in parameterValues)
+                {
+                    cmd.Parameters.AddWithValue(val ?? DBNull.Value);
+                }
+                // 2. 再按顺序添加 LIMIT 和 OFFSET 参数
+                cmd.Parameters.AddWithValue(pageSize);
+                cmd.Parameters.AddWithValue((page - 1) * pageSize);
 
                 await using var reader = await cmd.ExecuteReaderAsync(req.HttpContext.RequestAborted);
                 while (await reader.ReadAsync(req.HttpContext.RequestAborted))

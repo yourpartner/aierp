@@ -527,7 +527,7 @@ public class PermissionService
         if (updates.Count > 1)
         {
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = $"UPDATE roles SET {string.Join(", ", updates)} WHERE company_code = $1 AND id = $2";
+            cmd.CommandText = $"UPDATE roles SET {string.Join(", ", updates)} WHERE (company_code = $1 OR ($1 IS NULL AND company_code IS NULL)) AND id = $2";
             cmd.Parameters.AddWithValue(companyCode);
             cmd.Parameters.AddWithValue(roleId);
             if (req.RoleName != null) cmd.Parameters.AddWithValue(req.RoleName);
@@ -609,8 +609,8 @@ public class PermissionService
         {
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = @"INSERT INTO role_data_scopes(role_id, entity_type, scope_type, scope_filter)
-                                VALUES ($1, $2, $3, $4)
-                                ON CONFLICT (role_id, entity_type) DO UPDATE SET scope_type = $3, scope_filter = $4";
+                                VALUES ($1, $2, $3, $4::jsonb)
+                                ON CONFLICT (role_id, entity_type) DO UPDATE SET scope_type = $3, scope_filter = $4::jsonb";
             cmd.Parameters.AddWithValue(roleId);
             cmd.Parameters.AddWithValue(scope.EntityType);
             cmd.Parameters.AddWithValue(scope.ScopeType);

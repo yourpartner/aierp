@@ -106,8 +106,8 @@ WITH ranked AS (
 target AS (
     SELECT id, session_id, role, content, payload, task_id, created_at
     FROM ranked
-    WHERE (@p_threshold IS NULL OR created_at < @p_threshold)
-       OR rn > @p_limit
+    WHERE ($1 IS NULL OR created_at < $1)
+       OR rn > $2
 ),
 inserted AS (
     INSERT INTO ai_messages_archive (id, session_id, role, content, payload, task_id, created_at)
@@ -119,9 +119,8 @@ inserted AS (
 DELETE FROM ai_messages WHERE id IN (SELECT id FROM target);
 ";
 
-            var thresholdParam = cmd.Parameters.Add("@p_threshold", NpgsqlDbType.TimestampTz);
-            thresholdParam.Value = threshold.HasValue ? threshold.Value : DBNull.Value;
-            cmd.Parameters.AddWithValue("@p_limit", retainPerSession);
+            cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)threshold ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.TimestampTz });
+            cmd.Parameters.AddWithValue(retainPerSession);
 
             var affected = await cmd.ExecuteNonQueryAsync(ct);
             await tx.CommitAsync(ct);
