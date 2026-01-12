@@ -87,34 +87,10 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ===========================================
-  # 运行数据库迁移
-  # ===========================================
-  migrate:
-    needs: build
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run database migrations
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          # 安装 psql 客户端
-          sudo apt-get update && sudo apt-get install -y postgresql-client
-          
-          # 运行主迁移脚本
-          echo "Running main migration..."
-          psql "$DATABASE_URL" -f ./server-dotnet/migrate.sql
-          
-          echo "Migration completed!"
-
-  # ===========================================
   # 生成 appsettings.json 并部署
   # ===========================================
   prepare-config:
-    needs: migrate
+    needs: build
     runs-on: ubuntu-latest
     
     steps:
