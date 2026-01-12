@@ -64,6 +64,7 @@ JsonNodeTest/
 # 根目录临时文件
 *.sql
 !server-dotnet/migrate.sql
+!server-dotnet/sql/*.sql
 *.csv
 *.xml
 *.zip
