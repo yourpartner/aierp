@@ -69,6 +69,7 @@ JsonNodeTest/
 *.xml
 *.zip
 *.json
+!server-dotnet/*.template.json
 *.txt
 *.html
 *.tsv
