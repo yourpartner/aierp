@@ -779,7 +779,7 @@ DROP INDEX IF EXISTS idx_branches_company_branch_name;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_branches_bank_branch ON branches(bank_code, branch_code);
 CREATE INDEX IF NOT EXISTS idx_branches_branch_name ON branches(branch_name);
 
--- Moneytree 导入批次
+-- Moneytree 导入支持
 CREATE TABLE IF NOT EXISTS moneytree_import_batches (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_code TEXT NOT NULL,
@@ -790,17 +790,6 @@ CREATE TABLE IF NOT EXISTS moneytree_import_batches (
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-ALTER TABLE moneytree_import_batches ADD COLUMN IF NOT EXISTS company_code TEXT;
-ALTER TABLE moneytree_import_batches ADD COLUMN IF NOT EXISTS requested_by TEXT;
-ALTER TABLE moneytree_import_batches ADD COLUMN IF NOT EXISTS total_rows INTEGER DEFAULT 0;
-ALTER TABLE moneytree_import_batches ADD COLUMN IF NOT EXISTS inserted_rows INTEGER DEFAULT 0;
-ALTER TABLE moneytree_import_batches ADD COLUMN IF NOT EXISTS skipped_rows INTEGER DEFAULT 0;
-ALTER TABLE moneytree_import_batches ADD COLUMN IF NOT EXISTS error TEXT;
-ALTER TABLE moneytree_import_batches ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
-ALTER TABLE moneytree_import_batches ALTER COLUMN total_rows SET DEFAULT 0;
-ALTER TABLE moneytree_import_batches ALTER COLUMN inserted_rows SET DEFAULT 0;
-ALTER TABLE moneytree_import_batches ALTER COLUMN skipped_rows SET DEFAULT 0;
-ALTER TABLE moneytree_import_batches ALTER COLUMN created_at SET DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_moneytree_import_batches_company ON moneytree_import_batches(company_code, created_at DESC);
 
 -- Moneytree 导入明细
@@ -823,61 +812,63 @@ CREATE TABLE IF NOT EXISTS moneytree_transactions (
   rule_title TEXT,
   posting_status TEXT NOT NULL DEFAULT 'pending',
   posting_error TEXT,
+  posting_run_id UUID,
   cleared_open_item_id UUID,
   hash TEXT NOT NULL,
+  row_sequence INTEGER,
   imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(company_code, hash)
 );
+
+-- 兜底：确保唯一约束存在
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conname = 'uq_moneytree_transactions_company_hash'
-          AND conrelid = 'moneytree_transactions'::regclass
-    ) THEN
-        ALTER TABLE moneytree_transactions
-            ADD CONSTRAINT uq_moneytree_transactions_company_hash UNIQUE (company_code, hash);
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'moneytree_transactions') THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint 
+            WHERE conname = 'uq_moneytree_transactions_company_hash' 
+              AND conrelid = 'moneytree_transactions'::regclass
+        ) THEN
+            ALTER TABLE moneytree_transactions ADD CONSTRAINT uq_moneytree_transactions_company_hash UNIQUE (company_code, hash);
+        END IF;
+    END IF;
+    
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'payroll_deadlines') THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint 
+            WHERE conname = 'uq_payroll_deadlines_company_month' 
+              AND conrelid = 'payroll_deadlines'::regclass
+        ) THEN
+            ALTER TABLE payroll_deadlines ADD CONSTRAINT uq_payroll_deadlines_company_month UNIQUE (company_code, period_month);
+        END IF;
     END IF;
 END $$;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS batch_id UUID;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS company_code TEXT;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS transaction_date DATE;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS deposit_amount NUMERIC(18,2);
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS withdrawal_amount NUMERIC(18,2);
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS balance NUMERIC(18,2);
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS currency TEXT;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS bank_name TEXT;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS description TEXT;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS account_name TEXT;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS account_number TEXT;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS voucher_id UUID;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS voucher_no TEXT;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS rule_id UUID;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS rule_title TEXT;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS posting_status TEXT NOT NULL DEFAULT 'pending';
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS posting_error TEXT;
--- Link transactions to a specific auto-posting run (confirmation task uses approval_tasks.object_id as run_id)
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS posting_run_id UUID;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS cleared_open_item_id UUID;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS hash TEXT;
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS imported_at TIMESTAMPTZ NOT NULL DEFAULT now();
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
-ALTER TABLE moneytree_transactions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
-ALTER TABLE moneytree_transactions ALTER COLUMN created_at SET DEFAULT now();
-ALTER TABLE moneytree_transactions ALTER COLUMN imported_at SET DEFAULT now();
-ALTER TABLE moneytree_transactions DROP COLUMN IF EXISTS raw;
-ALTER TABLE moneytree_transactions DROP COLUMN IF EXISTS connection_id;
-ALTER TABLE moneytree_transactions DROP COLUMN IF EXISTS amount;
-ALTER TABLE moneytree_transactions DROP COLUMN IF EXISTS transaction_id;
-ALTER TABLE moneytree_transactions DROP COLUMN IF EXISTS account_uuid;
-ALTER TABLE moneytree_transactions DROP COLUMN IF EXISTS category;
+
 CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_company_date ON moneytree_transactions(company_code, transaction_date DESC);
 CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_voucher ON moneytree_transactions(company_code, voucher_id);
 CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_status ON moneytree_transactions(company_code, posting_status, transaction_date DESC);
 CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_run ON moneytree_transactions(company_code, posting_run_id, transaction_date DESC);
+
+-- ---------------------------------------
+-- 薪资计算期限管理
+-- ---------------------------------------
+CREATE TABLE IF NOT EXISTS payroll_deadlines (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_code TEXT NOT NULL,
+    period_month TEXT NOT NULL,              -- YYYY-MM
+    deadline_at TIMESTAMPTZ NOT NULL,
+    warning_at TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending, warning_sent, completed, overdue, cancelled
+    completed_at TIMESTAMPTZ,
+    notified_at TIMESTAMPTZ,
+    metadata JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(company_code, period_month)
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_deadlines_status ON payroll_deadlines(company_code, status, deadline_at);
 -- Moneytree 自动记账规则
 CREATE TABLE IF NOT EXISTS moneytree_posting_rules (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

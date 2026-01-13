@@ -90,16 +90,17 @@ public sealed class MoneytreeImportService
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
         Guid batchId;
-        await using (var insertBatch = new NpgsqlCommand(
-            """
-            INSERT INTO moneytree_import_batches (company_code, requested_by, total_rows, inserted_rows, skipped_rows)
-            VALUES (@company_code, @requested_by, @total, 0, 0)
-            RETURNING id;
-            """, connection, transaction))
+        await using (var insertBatch = connection.CreateCommand())
         {
-            insertBatch.Parameters.AddWithValue("company_code", companyCode);
-            insertBatch.Parameters.AddWithValue("requested_by", (object?)requestedBy ?? DBNull.Value);
-            insertBatch.Parameters.AddWithValue("total", rows.Count);
+            insertBatch.Transaction = transaction;
+            insertBatch.CommandText = """
+                INSERT INTO moneytree_import_batches (company_code, requested_by, total_rows, inserted_rows, skipped_rows)
+                VALUES ($1, $2, $3, 0, 0)
+                RETURNING id;
+                """;
+            insertBatch.Parameters.AddWithValue(companyCode);
+            insertBatch.Parameters.AddWithValue((object?)requestedBy ?? DBNull.Value);
+            insertBatch.Parameters.AddWithValue(rows.Count);
             batchId = (Guid)(await insertBatch.ExecuteScalarAsync(ct))!;
         }
 
@@ -117,15 +118,16 @@ public sealed class MoneytreeImportService
         var maxSeqByDate = new Dictionary<DateTime, int>();
         if (datesInBatch.Count > 0)
         {
-            await using var queryMaxSeq = new NpgsqlCommand(
-                """
+            await using var queryMaxSeq = connection.CreateCommand();
+            queryMaxSeq.Transaction = transaction;
+            queryMaxSeq.CommandText = """
                 SELECT transaction_date::date, COALESCE(MAX(row_sequence), 0)
                 FROM moneytree_transactions
-                WHERE company_code = @company AND transaction_date::date = ANY(@dates)
+                WHERE company_code = $1 AND transaction_date::date = ANY($2)
                 GROUP BY transaction_date::date
-                """, connection, transaction);
-            queryMaxSeq.Parameters.AddWithValue("company", companyCode);
-            queryMaxSeq.Parameters.AddWithValue("dates", datesInBatch.ToArray());
+                """;
+            queryMaxSeq.Parameters.AddWithValue(companyCode);
+            queryMaxSeq.Parameters.AddWithValue(datesInBatch.ToArray());
             await using var reader = await queryMaxSeq.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
@@ -159,27 +161,28 @@ public sealed class MoneytreeImportService
                     rowSeq = currentSeqByDate[date];
                 }
 
-                await using var insertCommand = new NpgsqlCommand(
-                    """
+                await using var insertCommand = connection.CreateCommand();
+                insertCommand.Transaction = transaction;
+                insertCommand.CommandText = """
                     INSERT INTO moneytree_transactions
                     (batch_id, company_code, transaction_date, deposit_amount, withdrawal_amount, balance, currency, bank_name, description, account_name, account_number, hash, row_sequence)
-                    VALUES (@batch, @company, @date, @deposit, @withdrawal, @balance, @currency, @bank_name, @desc, @account_name, @account_number, @hash, @row_seq)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                     ON CONFLICT (company_code, hash) DO NOTHING;
-                    """, connection, transaction);
+                    """;
 
-                insertCommand.Parameters.AddWithValue("batch", batchId);
-                insertCommand.Parameters.AddWithValue("company", companyCode);
-                insertCommand.Parameters.AddWithValue("date", row.TransactionDate.HasValue ? row.TransactionDate.Value : (object)DBNull.Value);
-                insertCommand.Parameters.AddWithValue("deposit", row.DepositAmount.HasValue ? row.DepositAmount.Value : (object)DBNull.Value);
-                insertCommand.Parameters.AddWithValue("withdrawal", row.WithdrawalAmount.HasValue ? row.WithdrawalAmount.Value : (object)DBNull.Value);
-                insertCommand.Parameters.AddWithValue("balance", row.Balance.HasValue ? row.Balance.Value : (object)DBNull.Value);
-                insertCommand.Parameters.AddWithValue("currency", (object?)row.Currency ?? DBNull.Value);
-                insertCommand.Parameters.AddWithValue("bank_name", (object?)row.BankName ?? DBNull.Value);
-                insertCommand.Parameters.AddWithValue("desc", row.Description);
-                insertCommand.Parameters.AddWithValue("account_name", (object?)row.AccountName ?? DBNull.Value);
-                insertCommand.Parameters.AddWithValue("account_number", (object?)row.AccountNumber ?? DBNull.Value);
-                insertCommand.Parameters.AddWithValue("hash", hash);
-                insertCommand.Parameters.AddWithValue("row_seq", rowSeq);  // 日期内序号
+                insertCommand.Parameters.AddWithValue(batchId);
+                insertCommand.Parameters.AddWithValue(companyCode);
+                insertCommand.Parameters.AddWithValue(row.TransactionDate.HasValue ? row.TransactionDate.Value : (object)DBNull.Value);
+                insertCommand.Parameters.AddWithValue(row.DepositAmount.HasValue ? row.DepositAmount.Value : (object)DBNull.Value);
+                insertCommand.Parameters.AddWithValue(row.WithdrawalAmount.HasValue ? row.WithdrawalAmount.Value : (object)DBNull.Value);
+                insertCommand.Parameters.AddWithValue(row.Balance.HasValue ? row.Balance.Value : (object)DBNull.Value);
+                insertCommand.Parameters.AddWithValue((object?)row.Currency ?? DBNull.Value);
+                insertCommand.Parameters.AddWithValue((object?)row.BankName ?? DBNull.Value);
+                insertCommand.Parameters.AddWithValue(row.Description);
+                insertCommand.Parameters.AddWithValue((object?)row.AccountName ?? DBNull.Value);
+                insertCommand.Parameters.AddWithValue((object?)row.AccountNumber ?? DBNull.Value);
+                insertCommand.Parameters.AddWithValue(hash);
+                insertCommand.Parameters.AddWithValue(rowSeq);  // 日期内序号
 
                 var affected = await insertCommand.ExecuteNonQueryAsync(ct);
                 if (affected > 0)
@@ -197,17 +200,18 @@ public sealed class MoneytreeImportService
             }
         }
 
-        await using (var updateBatch = new NpgsqlCommand(
-            """
-            UPDATE moneytree_import_batches
-            SET inserted_rows = @inserted,
-                skipped_rows = @skipped
-            WHERE id = @id;
-            """, connection, transaction))
+        await using (var updateBatch = connection.CreateCommand())
         {
-            updateBatch.Parameters.AddWithValue("inserted", inserted);
-            updateBatch.Parameters.AddWithValue("skipped", skipped);
-            updateBatch.Parameters.AddWithValue("id", batchId);
+            updateBatch.Transaction = transaction;
+            updateBatch.CommandText = """
+                UPDATE moneytree_import_batches
+                SET inserted_rows = $1,
+                    skipped_rows = $2
+                WHERE id = $3;
+                """;
+            updateBatch.Parameters.AddWithValue(inserted);
+            updateBatch.Parameters.AddWithValue(skipped);
+            updateBatch.Parameters.AddWithValue(batchId);
             await updateBatch.ExecuteNonQueryAsync(ct);
         }
 
@@ -241,14 +245,14 @@ public sealed class MoneytreeImportService
         else
         {
             // 正常模式：触发自动记账
-        try
-        {
-            await _jobQueue.EnqueueAsync(new MoneytreePostingJobQueue.MoneytreePostingJob(companyCode, requestedBy, 50), ct);
-        }
-        catch (Exception enqueueEx)
-        {
-            _logger.LogWarning(enqueueEx, "Failed to enqueue Moneytree posting job for company {CompanyCode}", companyCode);
-        }
+            try
+            {
+                await _jobQueue.EnqueueAsync(new MoneytreePostingJobQueue.MoneytreePostingJob(companyCode, requestedBy, 50), ct);
+            }
+            catch (Exception enqueueEx)
+            {
+                _logger.LogWarning(enqueueEx, "Failed to enqueue Moneytree posting job for company {CompanyCode}", companyCode);
+            }
         }
 
         return new MoneytreeImportResult(batchId, rows.Count, inserted, skipped, linkedRows);
@@ -263,11 +267,11 @@ public sealed class MoneytreeImportService
         string? requestedBy,
         CancellationToken ct)
     {
-        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
         
         // 查询批次中所有未处理的银行明细
         var transactions = new List<(Guid Id, DateTime? TransactionDate, decimal? DepositAmount, decimal? WithdrawalAmount, string? Description, string? BankName)>();
-        await using (var cmd = conn.CreateCommand())
+        await using (var cmd = connection.CreateCommand())
         {
             cmd.CommandText = @"
                 SELECT id, transaction_date, deposit_amount, withdrawal_amount, description, bank_name
@@ -297,7 +301,7 @@ public sealed class MoneytreeImportService
         
         // 获取银行科目列表
         var bankAccounts = new List<string>();
-        await using (var cmd = conn.CreateCommand())
+        await using (var cmd = connection.CreateCommand())
         {
             cmd.CommandText = @"
                 SELECT account_code FROM accounts 
@@ -333,7 +337,7 @@ public sealed class MoneytreeImportService
             Guid? matchedVoucherId = null;
             string? matchedVoucherNo = null;
             
-            await using (var cmd = conn.CreateCommand())
+            await using (var cmd = connection.CreateCommand())
             {
                 cmd.CommandText = @"
                     SELECT v.id, v.payload->'header'->>'voucherNo'
@@ -370,7 +374,7 @@ public sealed class MoneytreeImportService
             if (matchedVoucherId.HasValue)
             {
                 // 更新银行明细状态为linked
-                await using var updateCmd = conn.CreateCommand();
+                await using var updateCmd = connection.CreateCommand();
                 updateCmd.CommandText = @"
                     UPDATE moneytree_transactions 
                     SET posting_status = 'linked',
@@ -392,7 +396,7 @@ public sealed class MoneytreeImportService
             else
             {
                 // 没有匹配的凭证，标记为unmatched
-                await using var updateCmd = conn.CreateCommand();
+                await using var updateCmd = connection.CreateCommand();
                 updateCmd.CommandText = @"
                     UPDATE moneytree_transactions 
                     SET posting_status = 'unmatched',
@@ -452,4 +456,3 @@ public sealed class MoneytreeImportService
         return Convert.ToHexString(sha.ComputeHash(bytes));
     }
 }
-

@@ -6,30 +6,17 @@ WORKDIR /app
 EXPOSE 80
 EXPOSE 443
 
-# 安装 Playwright 依赖（如果需要）
-RUN apt-get update && apt-get install -y \
-    libglib2.0-0 \
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libdbus-1-3 \
-    libxcb1 \
-    libxkbcommon0 \
-    libatspi2.0-0 \
-    libx11-6 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libasound2 \
-    && rm -rf /var/lib/apt/lists/*
+# 安装 Playwright 依赖和浏览器
+# 注意：在 final 镜像中也需要安装浏览器二进制文件
+RUN apt-get update && apt-get install -y curl && \
+    curl -sL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    npx playwright install-deps chromium && \
+    npx playwright install chromium && \
+    rm -rf /var/lib/apt/lists/*
+
+# 设置 Playwright 浏览器路径环境变量（如果需要）
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim AS build
 WORKDIR /src
@@ -53,4 +40,3 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:80/health || exit 1
 
 ENTRYPOINT ["dotnet", "Server.dll"]
-
