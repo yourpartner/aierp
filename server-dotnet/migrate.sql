@@ -826,6 +826,11 @@ CREATE TABLE IF NOT EXISTS moneytree_transactions (
 DO $$
 BEGIN
     IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'moneytree_transactions') THEN
+        -- 确保 row_sequence 列存在
+        IF NOT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'moneytree_transactions' AND column_name = 'row_sequence') THEN
+            ALTER TABLE moneytree_transactions ADD COLUMN row_sequence INTEGER DEFAULT 0;
+        END IF;
+
         IF NOT EXISTS (
             SELECT 1 FROM pg_constraint 
             WHERE conname = 'uq_moneytree_transactions_company_hash' 
@@ -847,6 +852,7 @@ BEGIN
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_company_date ON moneytree_transactions(company_code, transaction_date DESC);
+CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_sequence ON moneytree_transactions (company_code, transaction_date, row_sequence);
 CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_voucher ON moneytree_transactions(company_code, voucher_id);
 CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_status ON moneytree_transactions(company_code, posting_status, transaction_date DESC);
 CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_run ON moneytree_transactions(company_code, posting_run_id, transaction_date DESC);

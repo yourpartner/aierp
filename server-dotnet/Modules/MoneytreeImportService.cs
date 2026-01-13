@@ -127,7 +127,14 @@ public sealed class MoneytreeImportService
                 GROUP BY transaction_date::date
                 """;
             queryMaxSeq.Parameters.AddWithValue(companyCode);
-            queryMaxSeq.Parameters.AddWithValue(datesInBatch.ToArray());
+            // 显式指定类型以避免 Npgsql 在某些环境下的解析问题
+            var pDates = new NpgsqlParameter
+            {
+                ParameterName = "$2",
+                Value = datesInBatch.ToArray(),
+                NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Date
+            };
+            queryMaxSeq.Parameters.Add(pDates);
             await using var reader = await queryMaxSeq.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {

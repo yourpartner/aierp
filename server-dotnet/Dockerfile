@@ -8,15 +8,15 @@ EXPOSE 443
 
 # 安装 Playwright 依赖和浏览器
 # 注意：在 final 镜像中也需要安装浏览器二进制文件
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN apt-get update && apt-get install -y curl && \
     curl -sL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
+    mkdir -p /ms-playwright && \
     npx playwright install-deps chromium && \
     npx playwright install chromium && \
+    chmod -R 777 /ms-playwright && \
     rm -rf /var/lib/apt/lists/*
-
-# 设置 Playwright 浏览器路径环境变量（如果需要）
-ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim AS build
 WORKDIR /src
