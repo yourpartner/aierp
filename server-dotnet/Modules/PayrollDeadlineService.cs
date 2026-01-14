@@ -285,19 +285,42 @@ public sealed class PayrollDeadlineService : BackgroundService
         CancellationToken ct)
     {
         await using var conn = await _ds.OpenConnectionAsync(ct);
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO payroll_deadlines (company_code, period_month, deadline_at, warning_at, status)
-            VALUES ($1, $2, $3, $4, 'pending')
-            ON CONFLICT (company_code, period_month)
-            DO UPDATE SET deadline_at = excluded.deadline_at, warning_at = excluded.warning_at, updated_at = now()
-            WHERE payroll_deadlines.status IN ('pending', 'warning_sent');
-            """;
-        cmd.Parameters.AddWithValue(companyCode);
-        cmd.Parameters.AddWithValue(month);
-        cmd.Parameters.AddWithValue(deadline);
-        cmd.Parameters.AddWithValue(warning.HasValue ? warning.Value : DBNull.Value);
-        await cmd.ExecuteNonQueryAsync(ct);
+        // NOTE:
+        // 生产库可能因为历史重复数据导致 UNIQUE(company_code, period_month) 约束创建失败，
+        // 从而触发 ON CONFLICT (...) 的 42P10 异常。这里改为“先 UPDATE 再 INSERT”的幂等写法，
+        // 不依赖唯一约束即可工作（即使存在重复行，也会更新所有匹配行）。
+
+        await using (var update = conn.CreateCommand())
+        {
+            update.CommandText = """
+                UPDATE payroll_deadlines
+                SET deadline_at = $3,
+                    warning_at = $4,
+                    updated_at = now()
+                WHERE company_code = $1
+                  AND period_month = $2
+                  AND status IN ('pending', 'warning_sent');
+                """;
+            update.Parameters.AddWithValue(companyCode);
+            update.Parameters.AddWithValue(month);
+            update.Parameters.AddWithValue(deadline);
+            update.Parameters.AddWithValue(warning.HasValue ? warning.Value : DBNull.Value);
+            var updated = await update.ExecuteNonQueryAsync(ct);
+            if (updated > 0) return;
+        }
+
+        await using (var insert = conn.CreateCommand())
+        {
+            insert.CommandText = """
+                INSERT INTO payroll_deadlines (company_code, period_month, deadline_at, warning_at, status)
+                VALUES ($1, $2, $3, $4, 'pending');
+                """;
+            insert.Parameters.AddWithValue(companyCode);
+            insert.Parameters.AddWithValue(month);
+            insert.Parameters.AddWithValue(deadline);
+            insert.Parameters.AddWithValue(warning.HasValue ? warning.Value : DBNull.Value);
+            await insert.ExecuteNonQueryAsync(ct);
+        }
     }
 
     /// <summary>

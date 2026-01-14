@@ -172,7 +172,9 @@ public sealed class MoneytreeImportService
                     INSERT INTO moneytree_transactions
                     (batch_id, company_code, transaction_date, deposit_amount, withdrawal_amount, balance, currency, bank_name, description, account_name, account_number, hash, row_sequence)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-                    ON CONFLICT (company_code, hash) DO NOTHING;
+                    -- Azure/生产库可能尚未成功创建 (company_code, hash) 的唯一约束（历史重复数据会导致迁移失败并被忽略）
+                    -- 这里使用无目标的 DO NOTHING，避免 42P10 直接导致银行连携 500。
+                    ON CONFLICT DO NOTHING;
                     """;
 
                 insertCommand.Parameters.AddWithValue(batchId);
