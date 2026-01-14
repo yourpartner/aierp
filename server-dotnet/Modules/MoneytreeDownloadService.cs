@@ -61,9 +61,10 @@ public sealed class MoneytreeDownloadService
             _logger.LogInformation("[Moneytree] 填写登录凭据");
             await page.FillAsync("input#guest\\[email\\]", request.Email);
             await page.FillAsync("input#guest\\[password\\]", request.Password);
-            await Task.Delay(1000);
+            await Task.Delay(2000);
 
             await page.ClickAsync("body > nil > div.app-page > div > div.login-form-container > form > button");
+        
             await page.WaitForLoadStateAsync();
 
             await Task.Delay(2000);

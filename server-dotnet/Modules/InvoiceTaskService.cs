@@ -47,10 +47,11 @@ public sealed class InvoiceTaskService
         cmd.Transaction = tx;
         cmd.CommandText = """
             SELECT 1
-            FROM ai_invoice_tasks
+            FROM ai_tasks
             WHERE id = $1
               AND session_id = $2
               AND company_code = $3
+              AND task_type = 'invoice'
               AND (status IS NULL OR lower(status) <> 'completed')
               AND ($4 IS NULL OR user_id IS NULL OR user_id = $4)
             FOR UPDATE;
@@ -90,13 +91,14 @@ public sealed class InvoiceTaskService
         {
             deleteTask.Transaction = tx;
             deleteTask.CommandText = """
-                DELETE FROM ai_invoice_tasks
+                DELETE FROM ai_tasks
                 WHERE id = $1
                   AND session_id = $2
                   AND company_code = $3
+                  AND task_type = 'invoice'
                   AND (status IS NULL OR lower(status) <> 'completed')
                   AND ($4 IS NULL OR user_id IS NULL OR user_id = $4)
-                RETURNING blob_name, stored_path;
+                RETURNING payload->>'blobName', metadata->>'storedPath';
                 """;
             deleteTask.Parameters.AddWithValue(taskId);
             deleteTask.Parameters.AddWithValue(sessionId);
@@ -127,7 +129,7 @@ public sealed class InvoiceTaskService
 
     public sealed record InvoiceTask(
         Guid Id,
-        Guid SessionId,
+        Guid? SessionId,
         string CompanyCode,
         string FileId,
         string DocumentSessionId,
@@ -171,26 +173,35 @@ public sealed class InvoiceTaskService
         var analysisClone = analysis?.DeepClone().AsObject();
         var summary = BuildSummary(analysisClone);
 
+        var payload = new JsonObject
+        {
+            ["fileId"] = fileId,
+            ["documentSessionId"] = documentSessionId,
+            ["fileName"] = record.FileName ?? "uploaded",
+            ["contentType"] = string.IsNullOrWhiteSpace(record.ContentType) ? "application/octet-stream" : record.ContentType,
+            ["fileSize"] = record.Size,
+            ["blobName"] = record.BlobName,
+            ["documentLabel"] = documentLabel,
+            ["analysis"] = analysisClone
+        };
+
         cmd.CommandText = """
-            INSERT INTO ai_invoice_tasks
-            (id, session_id, company_code, file_id, document_session_id, file_name, content_type, file_size, blob_name, document_label, stored_path, user_id, status, summary, analysis, metadata, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending', $13, $14::jsonb, $15::jsonb, now(), now())
-            RETURNING id, session_id, company_code, file_id, document_session_id, file_name, content_type, file_size, blob_name, document_label, stored_path, user_id, status, summary, analysis, metadata, created_at, updated_at;
+            INSERT INTO ai_tasks
+            (id, session_id, company_code, task_type, status, title, summary, user_id, payload, metadata, created_at, updated_at)
+            VALUES ($1, $2, $3, 'invoice', 'pending', $4, $5, $6, $7::jsonb, $8::jsonb, now(), now())
+            RETURNING id, session_id, company_code, 
+                      payload->>'fileId', payload->>'documentSessionId', title, 
+                      payload->>'contentType', (payload->>'fileSize')::bigint, payload->>'blobName', 
+                      payload->>'documentLabel', metadata->>'storedPath', user_id, status, summary, 
+                      payload->'analysis', metadata, created_at, updated_at;
             """;
         cmd.Parameters.AddWithValue(id);
         cmd.Parameters.AddWithValue(sessionId);
         cmd.Parameters.AddWithValue(companyCode);
-        cmd.Parameters.AddWithValue(fileId);
-        cmd.Parameters.AddWithValue(documentSessionId);
         cmd.Parameters.AddWithValue(record.FileName ?? "uploaded");
-        cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(record.ContentType) ? "application/octet-stream" : record.ContentType);
-        cmd.Parameters.AddWithValue(record.Size);
-        cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(record.BlobName) ? DBNull.Value : record.BlobName);
-        cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(documentLabel) ? DBNull.Value : documentLabel);
-        cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(record.StoredPath) ? DBNull.Value : record.StoredPath);
-        cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(record.UserId) ? DBNull.Value : record.UserId);
         cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(summary) ? DBNull.Value : summary);
-        cmd.Parameters.AddWithValue(analysisClone is null ? DBNull.Value : JsonSerializer.Serialize(analysisClone, JsonOptions));
+        cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(record.UserId) ? DBNull.Value : record.UserId);
+        cmd.Parameters.AddWithValue(JsonSerializer.Serialize(payload, JsonOptions));
         cmd.Parameters.AddWithValue(JsonSerializer.Serialize(metadata, JsonOptions));
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -210,9 +221,13 @@ public sealed class InvoiceTaskService
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, session_id, company_code, file_id, document_session_id, file_name, content_type, file_size, blob_name, document_label, stored_path, user_id, status, summary, analysis, metadata, created_at, updated_at
-            FROM ai_invoice_tasks
-            WHERE session_id = $1
+            SELECT id, session_id, company_code, 
+                   payload->>'fileId', payload->>'documentSessionId', title, 
+                   payload->>'contentType', (payload->>'fileSize')::bigint, payload->>'blobName', 
+                   payload->>'documentLabel', metadata->>'storedPath', user_id, status, summary, 
+                   payload->'analysis', metadata, created_at, updated_at
+            FROM ai_tasks
+            WHERE session_id = $1 AND task_type = 'invoice'
             ORDER BY created_at;
             """;
         cmd.Parameters.AddWithValue(sessionId);
@@ -232,9 +247,13 @@ public sealed class InvoiceTaskService
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, session_id, company_code, file_id, document_session_id, file_name, content_type, file_size, blob_name, document_label, stored_path, user_id, status, summary, analysis, metadata, created_at, updated_at
-            FROM ai_invoice_tasks
-            WHERE id = $1;
+            SELECT id, session_id, company_code, 
+                   payload->>'fileId', payload->>'documentSessionId', title, 
+                   payload->>'contentType', (payload->>'fileSize')::bigint, payload->>'blobName', 
+                   payload->>'documentLabel', metadata->>'storedPath', user_id, status, summary, 
+                   payload->'analysis', metadata, created_at, updated_at
+            FROM ai_tasks
+            WHERE id = $1 AND task_type = 'invoice';
             """;
         cmd.Parameters.AddWithValue(taskId);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -255,9 +274,9 @@ public sealed class InvoiceTaskService
         if (metadata is null)
         {
             cmd.CommandText = """
-                UPDATE ai_invoice_tasks
+                UPDATE ai_tasks
                 SET status = $2, updated_at = now()
-                WHERE id = $1;
+                WHERE id = $1 AND task_type = 'invoice';
                 """;
             cmd.Parameters.AddWithValue(taskId);
             cmd.Parameters.AddWithValue(status);
@@ -265,11 +284,11 @@ public sealed class InvoiceTaskService
         else
         {
             cmd.CommandText = """
-                UPDATE ai_invoice_tasks
+                UPDATE ai_tasks
                 SET status = $2,
                     metadata = metadata || $3::jsonb,
                     updated_at = now()
-                WHERE id = $1;
+                WHERE id = $1 AND task_type = 'invoice';
                 """;
             cmd.Parameters.AddWithValue(taskId);
             cmd.Parameters.AddWithValue(status);
@@ -291,7 +310,7 @@ public sealed class InvoiceTaskService
             : (JsonNode.Parse(reader.GetString(15))?.AsObject() ?? new JsonObject());
         return new InvoiceTask(
             reader.GetGuid(0),
-            reader.GetGuid(1),
+            reader.IsDBNull(1) ? null : reader.GetGuid(1),
             reader.GetString(2),
             reader.GetString(3),
             reader.GetString(4),
@@ -357,4 +376,3 @@ public sealed class InvoiceTaskService
         return null;
     }
 }
-

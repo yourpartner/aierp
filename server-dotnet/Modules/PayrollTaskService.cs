@@ -11,7 +11,7 @@ namespace Server.Modules;
 
 /// <summary>
 /// Orchestrates the storage and retrieval of AI-review tasks that are created
-/// after payroll runs. Tasks are stored in <c>ai_payroll_tasks</c> and later
+/// after payroll runs. Tasks are stored in <c>ai_tasks</c> and later
 /// consumed by the AI session UI so reviewers can approve or reject results.
 /// </summary>
 public sealed class PayrollTaskService
@@ -55,7 +55,7 @@ public sealed class PayrollTaskService
     /// </summary>
     public sealed record PayrollTask(
         Guid Id,
-        Guid SessionId,
+        Guid? SessionId,
         string CompanyCode,
         Guid RunId,
         Guid EntryId,
@@ -113,7 +113,7 @@ public sealed class PayrollTaskService
 
     /// <summary>
     /// Creates payroll tasks for the supplied candidates inside the current AI session.
-    /// Each candidate becomes a row in <c>ai_payroll_tasks</c> with status = pending.
+    /// Each candidate becomes a row in <c>ai_tasks</c> with status = pending.
     /// Task type is determined based on anomaly flags.
     /// </summary>
     public async Task<int> CreateTasksAsync(
@@ -138,23 +138,17 @@ public sealed class PayrollTaskService
 
             await using var cmd = conn.CreateCommand();
             cmd.Transaction = tx;
-            cmd.CommandText = """
-                INSERT INTO ai_payroll_tasks(
-                    id, session_id, company_code, run_id, entry_id, employee_id, employee_code, employee_name,
-                    period_month, status, task_type, summary, metadata, diff_summary, target_user_id, created_at, updated_at)
-                VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, $11::jsonb, $12::jsonb, $13, $14, $14)
-                ON CONFLICT (company_code, run_id, entry_id) DO NOTHING;
-                """;
-            cmd.Parameters.AddWithValue(sessionId);
-            cmd.Parameters.AddWithValue(companyCode);
-            cmd.Parameters.AddWithValue(runId);
-            cmd.Parameters.AddWithValue(candidate.EntryId);
-            cmd.Parameters.AddWithValue(candidate.EmployeeId);
-            cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(candidate.EmployeeCode) ? DBNull.Value : candidate.EmployeeCode);
-            cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(candidate.EmployeeName) ? DBNull.Value : candidate.EmployeeName);
-            cmd.Parameters.AddWithValue(candidate.PeriodMonth);
-            cmd.Parameters.AddWithValue(taskType);
-            cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(candidate.Summary) ? DBNull.Value : candidate.Summary);
+            
+            var payload = new JsonObject
+            {
+                ["runId"] = runId.ToString(),
+                ["entryId"] = candidate.EntryId.ToString(),
+                ["employeeId"] = candidate.EmployeeId.ToString(),
+                ["employeeCode"] = candidate.EmployeeCode,
+                ["employeeName"] = candidate.EmployeeName,
+                ["periodMonth"] = candidate.PeriodMonth,
+                ["diffSummary"] = candidate.DiffSummary?.DeepClone()
+            };
 
             var metadata = new JsonObject
             {
@@ -167,8 +161,20 @@ public sealed class PayrollTaskService
             {
                 metadata["anomalyReason"] = candidate.AnomalyReason;
             }
+
+            cmd.CommandText = """
+                INSERT INTO ai_tasks(
+                    id, session_id, company_code, task_type, status, title, summary, 
+                    payload, metadata, target_user_id, created_at, updated_at)
+                VALUES (gen_random_uuid(), $1, $2, 'payroll', 'pending', $3, $4, $5::jsonb, $6::jsonb, $7, $8, $8)
+                ON CONFLICT DO NOTHING;
+                """;
+            cmd.Parameters.AddWithValue(sessionId);
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(candidate.EmployeeName ?? "Payroll Task");
+            cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(candidate.Summary) ? DBNull.Value : candidate.Summary);
+            cmd.Parameters.AddWithValue(JsonSerializer.Serialize(payload, JsonOptions));
             cmd.Parameters.AddWithValue(JsonSerializer.Serialize(metadata, JsonOptions));
-            cmd.Parameters.AddWithValue(candidate.DiffSummary is null ? (object)DBNull.Value : JsonSerializer.Serialize(candidate.DiffSummary, JsonOptions));
             cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(targetUserId) ? DBNull.Value : targetUserId);
             cmd.Parameters.AddWithValue(now);
 
@@ -207,14 +213,19 @@ public sealed class PayrollTaskService
         if (isCompleting)
         {
             cmd.CommandText = """
-                UPDATE ai_payroll_tasks
+                UPDATE ai_tasks
                 SET status = $2, 
-                    completed_by_user_id = $3, 
-                    comments = COALESCE($4, comments),
+                    completed_by = $3, 
+                    metadata = metadata || jsonb_build_object('comments', $4),
                     completed_at = $5,
                     updated_at = $5
-                WHERE id = $1 AND company_code = $6
-                RETURNING *;
+                WHERE id = $1 AND company_code = $6 AND task_type = 'payroll'
+                RETURNING id, session_id, company_code, 
+                          payload->>'runId', payload->>'entryId', payload->>'employeeId', 
+                          payload->>'employeeCode', payload->>'employeeName', payload->>'periodMonth', 
+                          status, metadata->>'taskType', summary, metadata, payload->'diffSummary', 
+                          target_user_id, assigned_user_id, completed_by, metadata->>'comments', 
+                          created_at, updated_at, completed_at;
                 """;
             cmd.Parameters.AddWithValue(taskId);
             cmd.Parameters.AddWithValue(newStatus);
@@ -226,13 +237,18 @@ public sealed class PayrollTaskService
         else
         {
             cmd.CommandText = """
-                UPDATE ai_payroll_tasks
+                UPDATE ai_tasks
                 SET status = $2,
                     assigned_user_id = COALESCE($3, assigned_user_id),
-                    comments = COALESCE($4, comments),
+                    metadata = metadata || jsonb_build_object('comments', $4),
                     updated_at = $5
-                WHERE id = $1 AND company_code = $6
-                RETURNING *;
+                WHERE id = $1 AND company_code = $6 AND task_type = 'payroll'
+                RETURNING id, session_id, company_code, 
+                          payload->>'runId', payload->>'entryId', payload->>'employeeId', 
+                          payload->>'employeeCode', payload->>'employeeName', payload->>'periodMonth', 
+                          status, metadata->>'taskType', summary, metadata, payload->'diffSummary', 
+                          target_user_id, assigned_user_id, completed_by, metadata->>'comments', 
+                          created_at, updated_at, completed_at;
                 """;
             cmd.Parameters.AddWithValue(taskId);
             cmd.Parameters.AddWithValue(newStatus);
@@ -264,10 +280,15 @@ public sealed class PayrollTaskService
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            UPDATE ai_payroll_tasks
+            UPDATE ai_tasks
             SET assigned_user_id = $2, status = 'in_progress', updated_at = now()
-            WHERE id = $1 AND company_code = $3
-            RETURNING *;
+            WHERE id = $1 AND company_code = $3 AND task_type = 'payroll'
+            RETURNING id, session_id, company_code, 
+                      payload->>'runId', payload->>'entryId', payload->>'employeeId', 
+                      payload->>'employeeCode', payload->>'employeeName', payload->>'periodMonth', 
+                      status, metadata->>'taskType', summary, metadata, payload->'diffSummary', 
+                      target_user_id, assigned_user_id, completed_by, metadata->>'comments', 
+                      created_at, updated_at, completed_at;
             """;
         cmd.Parameters.AddWithValue(taskId);
         cmd.Parameters.AddWithValue(assigneeUserId);
@@ -414,7 +435,7 @@ public sealed class PayrollTaskService
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
 
-        var monthFilter = string.IsNullOrWhiteSpace(month) ? "" : " AND period_month = $2";
+        var monthFilter = string.IsNullOrWhiteSpace(month) ? "" : " AND payload->>'periodMonth' = $2";
         cmd.CommandText = $"""
             SELECT 
                 COUNT(*) as total,
@@ -422,10 +443,10 @@ public sealed class PayrollTaskService
                 COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress,
                 COUNT(*) FILTER (WHERE status = 'approved') as approved,
                 COUNT(*) FILTER (WHERE status = 'rejected') as rejected,
-                COUNT(*) FILTER (WHERE task_type = 'anomaly_handling') as anomaly,
-                COUNT(*) FILTER (WHERE task_type = 'critical_anomaly') as critical
-            FROM ai_payroll_tasks
-            WHERE company_code = $1{monthFilter};
+                COUNT(*) FILTER (WHERE metadata->>'taskType' = 'anomaly_handling') as anomaly,
+                COUNT(*) FILTER (WHERE metadata->>'taskType' = 'critical_anomaly') as critical
+            FROM ai_tasks
+            WHERE company_code = $1 AND task_type = 'payroll'{monthFilter};
             """;
         cmd.Parameters.AddWithValue(companyCode);
         if (!string.IsNullOrWhiteSpace(month))
@@ -453,11 +474,14 @@ public sealed class PayrollTaskService
     {
         var orderClause = string.IsNullOrWhiteSpace(orderBy) ? "" : $" ORDER BY {orderBy}";
         return $"""
-            SELECT id, session_id, company_code, run_id, entry_id, employee_id, employee_code, employee_name,
-                   period_month, status, COALESCE(task_type, 'confirmation') as task_type, summary, metadata, diff_summary, 
-                   target_user_id, assigned_user_id, completed_by_user_id, comments, created_at, updated_at, completed_at
-            FROM ai_payroll_tasks
-            WHERE {whereClause}{orderClause}
+            SELECT id, session_id, company_code, 
+                   payload->>'runId', payload->>'entryId', payload->>'employeeId', 
+                   payload->>'employeeCode', payload->>'employeeName', payload->>'periodMonth', 
+                   status, metadata->>'taskType', summary, metadata, payload->'diffSummary', 
+                   target_user_id, assigned_user_id, completed_by, metadata->>'comments', 
+                   created_at, updated_at, completed_at
+            FROM ai_tasks
+            WHERE task_type = 'payroll' AND ({whereClause}){orderClause}
             """;
     }
 
@@ -467,16 +491,16 @@ public sealed class PayrollTaskService
         var diff = reader.IsDBNull(13) ? null : JsonNode.Parse(reader.GetString(13))?.AsObject();
         return new PayrollTask(
             reader.GetGuid(0),
-            reader.GetGuid(1),
+            reader.IsDBNull(1) ? null : reader.GetGuid(1),
             reader.GetString(2),
-            reader.GetGuid(3),
-            reader.GetGuid(4),
-            reader.GetGuid(5),
+            reader.IsDBNull(3) ? Guid.Empty : Guid.TryParse(reader.GetString(3), out var rid) ? rid : Guid.Empty,
+            reader.IsDBNull(4) ? Guid.Empty : Guid.TryParse(reader.GetString(4), out var eid) ? eid : Guid.Empty,
+            reader.IsDBNull(5) ? Guid.Empty : Guid.TryParse(reader.GetString(5), out var emid) ? emid : Guid.Empty,
             reader.IsDBNull(6) ? null : reader.GetString(6),
             reader.IsDBNull(7) ? null : reader.GetString(7),
-            reader.GetString(8),
+            reader.IsDBNull(8) ? "" : reader.GetString(8),
             reader.GetString(9),
-            reader.GetString(10),
+            reader.IsDBNull(10) ? "confirmation" : reader.GetString(10),
             reader.IsDBNull(11) ? null : reader.GetString(11),
             metadata,
             diff,
@@ -495,4 +519,3 @@ public sealed class PayrollTaskService
     public async Task<IReadOnlyList<PayrollTask>> ListAsync(Guid sessionId, CancellationToken ct)
         => await ListBySessionAsync(sessionId, ct);
 }
-

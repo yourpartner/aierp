@@ -25,7 +25,7 @@ public sealed class SalesOrderTaskService
 
     public sealed record SalesOrderTask(
         Guid Id,
-        Guid SessionId,
+        Guid? SessionId,
         string CompanyCode,
         string? UserId,
         string Status,
@@ -54,11 +54,11 @@ public sealed class SalesOrderTaskService
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO ai_sales_order_tasks
-            (id, session_id, company_code, user_id, status, summary, payload, metadata, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, now(), now())
+            INSERT INTO ai_tasks
+            (id, session_id, company_code, task_type, user_id, status, summary, payload, metadata, created_at, updated_at)
+            VALUES ($1, $2, $3, 'sales_order', $4, $5, $6, $7::jsonb, $8::jsonb, now(), now())
             RETURNING id, session_id, company_code, user_id, status, summary, payload, metadata,
-                      sales_order_id, sales_order_no, customer_code, customer_name,
+                      payload->>'salesOrderId', payload->>'salesOrderNo', payload->>'customerCode', payload->>'customerName',
                       created_at, updated_at, completed_at;
             """;
         cmd.Parameters.AddWithValue(id);
@@ -83,10 +83,10 @@ public sealed class SalesOrderTaskService
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT id, session_id, company_code, user_id, status, summary, payload, metadata,
-                   sales_order_id, sales_order_no, customer_code, customer_name,
+                   payload->>'salesOrderId', payload->>'salesOrderNo', payload->>'customerCode', payload->>'customerName',
                    created_at, updated_at, completed_at
-            FROM ai_sales_order_tasks
-            WHERE id = $1;
+            FROM ai_tasks
+            WHERE id = $1 AND task_type = 'sales_order';
             """;
         cmd.Parameters.AddWithValue(id);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -104,10 +104,10 @@ public sealed class SalesOrderTaskService
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT id, session_id, company_code, user_id, status, summary, payload, metadata,
-                   sales_order_id, sales_order_no, customer_code, customer_name,
+                   payload->>'salesOrderId', payload->>'salesOrderNo', payload->>'customerCode', payload->>'customerName',
                    created_at, updated_at, completed_at
-            FROM ai_sales_order_tasks
-            WHERE session_id = $1
+            FROM ai_tasks
+            WHERE session_id = $1 AND task_type = 'sales_order'
             ORDER BY created_at;
             """;
         cmd.Parameters.AddWithValue(sessionId);
@@ -126,10 +126,10 @@ public sealed class SalesOrderTaskService
         if (metadata is null)
         {
             cmd.CommandText = """
-                UPDATE ai_sales_order_tasks
+                UPDATE ai_tasks
                 SET status = $2,
                     updated_at = now()
-                WHERE id = $1;
+                WHERE id = $1 AND task_type = 'sales_order';
                 """;
             cmd.Parameters.AddWithValue(id);
             cmd.Parameters.AddWithValue(status);
@@ -137,11 +137,11 @@ public sealed class SalesOrderTaskService
         else
         {
             cmd.CommandText = """
-                UPDATE ai_sales_order_tasks
+                UPDATE ai_tasks
                 SET status = $2,
                     metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
                     updated_at = now()
-                WHERE id = $1;
+                WHERE id = $1 AND task_type = 'sales_order';
                 """;
             cmd.Parameters.AddWithValue(id);
             cmd.Parameters.AddWithValue(status);
@@ -165,31 +165,38 @@ public sealed class SalesOrderTaskService
     {
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
+        
+        // Construct payload update
+        var payloadUpdates = new JsonObject();
+        if (salesOrderId.HasValue) payloadUpdates["salesOrderId"] = salesOrderId.Value.ToString();
+        if (!string.IsNullOrWhiteSpace(salesOrderNo)) payloadUpdates["salesOrderNo"] = salesOrderNo;
+        if (!string.IsNullOrWhiteSpace(customerCode)) payloadUpdates["customerCode"] = customerCode;
+        if (!string.IsNullOrWhiteSpace(customerName)) payloadUpdates["customerName"] = customerName;
+        if (payload != null)
+        {
+            foreach (var kvp in payload)
+            {
+                payloadUpdates[kvp.Key] = kvp.Value?.DeepClone();
+            }
+        }
+
         cmd.CommandText = """
-            UPDATE ai_sales_order_tasks
+            UPDATE ai_tasks
             SET status = $2,
-                payload = COALESCE($3::jsonb, payload),
+                payload = payload || $3::jsonb,
                 metadata = CASE
                     WHEN $4::jsonb IS NULL THEN metadata
                     ELSE COALESCE(metadata, '{}'::jsonb) || $4::jsonb
                 END,
-                sales_order_id = $5,
-                sales_order_no = $6,
-                customer_code = $7,
-                customer_name = $8,
-                summary = COALESCE($9, summary),
+                summary = COALESCE($5, summary),
                 updated_at = now(),
-                completed_at = CASE WHEN $10 THEN now() ELSE completed_at END
-            WHERE id = $1;
+                completed_at = CASE WHEN $6 THEN now() ELSE completed_at END
+            WHERE id = $1 AND task_type = 'sales_order';
             """;
         cmd.Parameters.AddWithValue(id);
         cmd.Parameters.AddWithValue(status);
-        cmd.Parameters.AddWithValue(payload is null ? (object)DBNull.Value : JsonSerializer.Serialize(payload, JsonOptions));
+        cmd.Parameters.AddWithValue(JsonSerializer.Serialize(payloadUpdates, JsonOptions));
         cmd.Parameters.AddWithValue(metadata is null ? (object)DBNull.Value : JsonSerializer.Serialize(metadata, JsonOptions));
-        cmd.Parameters.AddWithValue(salesOrderId.HasValue ? (object)salesOrderId.Value : DBNull.Value);
-        cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(salesOrderNo) ? (object)DBNull.Value : salesOrderNo);
-        cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(customerCode) ? (object)DBNull.Value : customerCode);
-        cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(customerName) ? (object)DBNull.Value : customerName);
         cmd.Parameters.AddWithValue(string.IsNullOrWhiteSpace(summary) ? (object)DBNull.Value : summary);
         cmd.Parameters.AddWithValue(markCompleted);
         await cmd.ExecuteNonQueryAsync(ct);
@@ -206,14 +213,14 @@ public sealed class SalesOrderTaskService
 
         return new SalesOrderTask(
             reader.GetGuid(0),
-            reader.GetGuid(1),
+            reader.IsDBNull(1) ? null : reader.GetGuid(1),
             reader.GetString(2),
             reader.IsDBNull(3) ? null : reader.GetString(3),
             reader.GetString(4),
             reader.IsDBNull(5) ? null : reader.GetString(5),
             payload,
             metadata,
-            reader.IsDBNull(8) ? null : reader.GetGuid(8),
+            reader.IsDBNull(8) ? null : Guid.TryParse(reader.GetString(8), out var soid) ? soid : null,
             reader.IsDBNull(9) ? null : reader.GetString(9),
             reader.IsDBNull(10) ? null : reader.GetString(10),
             reader.IsDBNull(11) ? null : reader.GetString(11),
