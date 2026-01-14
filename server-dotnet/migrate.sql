@@ -836,7 +836,32 @@ BEGIN
             WHERE conname = 'uq_moneytree_transactions_company_hash' 
               AND conrelid = 'moneytree_transactions'::regclass
         ) THEN
-            ALTER TABLE moneytree_transactions ADD CONSTRAINT uq_moneytree_transactions_company_hash UNIQUE (company_code, hash);
+            -- 生产库可能已经存在重复数据，直接加 UNIQUE 会失败并导致整份 migrate.sql 被中断（随后在程序里被 catch 吞掉）。
+            -- 这里先按 (company_code, hash) 去重：保留最新导入的一条，其余删除。
+            BEGIN
+                DELETE FROM moneytree_transactions t
+                USING (
+                    SELECT id
+                    FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY company_code, hash
+                                   ORDER BY imported_at DESC, created_at DESC, id DESC
+                               ) AS rn
+                        FROM moneytree_transactions
+                    ) ranked
+                    WHERE ranked.rn > 1
+                ) d
+                WHERE t.id = d.id;
+            EXCEPTION WHEN OTHERS THEN
+                RAISE NOTICE 'dedupe moneytree_transactions skipped: %', SQLERRM;
+            END;
+
+            BEGIN
+                ALTER TABLE moneytree_transactions ADD CONSTRAINT uq_moneytree_transactions_company_hash UNIQUE (company_code, hash);
+            EXCEPTION WHEN OTHERS THEN
+                RAISE NOTICE 'add constraint uq_moneytree_transactions_company_hash skipped: %', SQLERRM;
+            END;
         END IF;
     END IF;
     
@@ -846,7 +871,31 @@ BEGIN
             WHERE conname = 'uq_payroll_deadlines_company_month' 
               AND conrelid = 'payroll_deadlines'::regclass
         ) THEN
-            ALTER TABLE payroll_deadlines ADD CONSTRAINT uq_payroll_deadlines_company_month UNIQUE (company_code, period_month);
+            -- 同理：生产库可能已有重复 (company_code, period_month)，先去重再加 UNIQUE。
+            BEGIN
+                DELETE FROM payroll_deadlines p
+                USING (
+                    SELECT id
+                    FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY company_code, period_month
+                                   ORDER BY updated_at DESC, created_at DESC, id DESC
+                               ) AS rn
+                        FROM payroll_deadlines
+                    ) ranked
+                    WHERE ranked.rn > 1
+                ) d
+                WHERE p.id = d.id;
+            EXCEPTION WHEN OTHERS THEN
+                RAISE NOTICE 'dedupe payroll_deadlines skipped: %', SQLERRM;
+            END;
+
+            BEGIN
+                ALTER TABLE payroll_deadlines ADD CONSTRAINT uq_payroll_deadlines_company_month UNIQUE (company_code, period_month);
+            EXCEPTION WHEN OTHERS THEN
+                RAISE NOTICE 'add constraint uq_payroll_deadlines_company_month skipped: %', SQLERRM;
+            END;
         END IF;
     END IF;
 END $$;

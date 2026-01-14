@@ -300,7 +300,8 @@ app.Lifetime.ApplicationStarted.Register(async () =>
     }
     catch (Exception ex)
     {
-        try { Console.WriteLine("[migrate] skipped: " + ex.Message); } catch {}
+        // 打印完整异常，便于在 Azure LogStream 里定位“迁移没落地”的真实原因（例如 UNIQUE 约束因重复数据创建失败）。
+        try { Console.WriteLine("[migrate] failed: " + ex); } catch {}
         // Ignore migration failures so the service can still start.
     }
 
