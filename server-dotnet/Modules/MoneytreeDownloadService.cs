@@ -46,29 +46,59 @@ public sealed class MoneytreeDownloadService
 
             var page = await context.NewPageAsync();
 
-            _logger.LogInformation("[Moneytree] 导航到登录页面");
+            // 导航到登录页面
             await page.GotoAsync(LandingUrl, new PageGotoOptions
             {
-                WaitUntil = WaitUntilState.NetworkIdle,
+                WaitUntil = WaitUntilState.DOMContentLoaded,
                 Timeout = 60000
             });
 
-            await page.WaitForLoadStateAsync();
-
-            await page.ClickAsync("body > div.split-container > div.mtb-landing-hero-div.moneytree-business-lp > div > div.mtb-landing-hero-content.toppage > div.buttoncontainer > a.moneytree-button.button-secondary-hero.ga-track.moneytree-business-gray-button.w-button");
-            await page.WaitForLoadStateAsync();
-
-            _logger.LogInformation("[Moneytree] 填写登录凭据");
+            // 点击登录入口按钮（带重试机制）
+            var loginEntrySelector = "a[custom-id='login-button']";
+            var emailInputSelector = "input#guest\\[email\\]";
+            
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                await page.WaitForSelectorAsync(loginEntrySelector, new() { State = WaitForSelectorState.Visible, Timeout = 30000 });
+                await page.ClickAsync(loginEntrySelector);
+                
+                try
+                {
+                    await page.WaitForSelectorAsync(emailInputSelector, new() { State = WaitForSelectorState.Visible, Timeout = 10000 });
+                    break;
+                }
+                catch (TimeoutException)
+                {
+                    if (attempt == 3)
+                    {
+                        throw new InvalidOperationException("无法进入登录表单页面，请检查 Moneytree 网站是否有变化");
+                    }
+                    await Task.Delay(2000);
+                }
+            }
+            
+            // 填写登录凭据
+            await page.WaitForSelectorAsync(emailInputSelector, new() { State = WaitForSelectorState.Visible, Timeout = 10000 });
             await page.FillAsync("input#guest\\[email\\]", request.Email);
             await page.FillAsync("input#guest\\[password\\]", request.Password);
             await Task.Delay(2000);
 
-            await page.ClickAsync("body > nil > div.app-page > div > div.login-form-container > form > button");
-        
-            await page.WaitForLoadStateAsync();
+            // 点击登录按钮
+            var loginButtonSelector = "button.login-form-button";
+            try 
+            {
+                await page.WaitForSelectorAsync($"{loginButtonSelector}:not([disabled])", new() { Timeout = 10000 });
+            }
+            catch (Exception)
+            {
+                // 按钮可能没有 disabled 状态，继续尝试点击
+            }
 
+            await page.ClickAsync(loginButtonSelector);
+            await page.WaitForLoadStateAsync();
             await Task.Delay(2000);
 
+            // 获取 token
             var token = await page.EvaluateAsync<string>(@"() => {
                 const tokenStr = sessionStorage.getItem('mtb');
                 if (!tokenStr) { return ''; }
@@ -83,13 +113,12 @@ public sealed class MoneytreeDownloadService
             {
                 throw new InvalidOperationException("Unable to read Moneytree sessionStorage token.");
             }
-            _logger.LogInformation("[Moneytree] 登录成功, 获取到 token");
+            _logger.LogInformation("[Moneytree] 登录成功");
 
+            // 设置日期范围
             var settingsPayload = BuildSettingsPayload(
                 request.StartDate.ToUniversalTime(),
                 request.EndDate.ToUniversalTime());
-
-            _logger.LogInformation("[Moneytree] 设置日期范围 API 请求: {Payload}", settingsPayload);
 
             var response = await context.APIRequest.PutAsync("https://myaccount.getmoneytree.com/internal/app_state/settings.json", new()
             {
@@ -104,28 +133,25 @@ public sealed class MoneytreeDownloadService
             if (!response.Ok)
             {
                 var responseBody = await response.TextAsync();
-                _logger.LogError("[Moneytree] 设置日期范围失败: HTTP {Status}, Body: {Body}", (int)response.Status, responseBody);
+                _logger.LogError("[Moneytree] 设置日期范围失败: HTTP {Status}", (int)response.Status);
                 throw new InvalidOperationException($"Failed to update Moneytree date range: HTTP {(int)response.Status}");
             }
-            _logger.LogInformation("[Moneytree] 日期范围设置成功");
 
-            // 设置完日期范围后，刷新页面以应用新设置
-            _logger.LogInformation("[Moneytree] 刷新页面以应用日期范围设置");
-            
             await Task.Delay(2000);
 
-            _logger.LogInformation("[Moneytree] 导航到交易页面");
+            // 导航到交易页面
             await page.ClickAsync(TransactionsNavXPath);
             await page.WaitForLoadStateAsync();
             await Task.Delay(1000);
 
-            _logger.LogInformation("[Moneytree] 点击导出按钮");
+            // 点击导出按钮
             await page.ClickAsync(ExportButtonXPath);
-
             await Task.Delay(500);
+            
+            // 选择残高データ
             await page.ClickAsync("//button[contains(text(), '残高データ')]");
 
-            _logger.LogInformation("[Moneytree] 等待下载");
+            // 等待下载
             var download = await page.RunAndWaitForDownloadAsync(async () =>
             {
                 await page.ClickAsync(DownloadButtonXPath);
@@ -167,4 +193,3 @@ public sealed class MoneytreeDownloadService
         return SettingsTemplate.Replace("START_DATE", start).Replace("END_DATE", end);
     }
 }
-
