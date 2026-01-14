@@ -98,9 +98,9 @@ public sealed class MoneytreeImportService
                 VALUES ($1, $2, $3, 0, 0)
                 RETURNING id;
                 """;
-            insertBatch.Parameters.AddWithValue(companyCode);
-            insertBatch.Parameters.AddWithValue((object?)requestedBy ?? DBNull.Value);
-            insertBatch.Parameters.AddWithValue(rows.Count);
+            insertBatch.Parameters.AddWithValue("$1", companyCode);
+            insertBatch.Parameters.AddWithValue("$2", (object?)requestedBy ?? DBNull.Value);
+            insertBatch.Parameters.AddWithValue("$3", rows.Count);
             batchId = (Guid)(await insertBatch.ExecuteScalarAsync(ct))!;
         }
 
@@ -177,19 +177,19 @@ public sealed class MoneytreeImportService
                     ON CONFLICT (company_code, hash) DO NOTHING;
                     """;
 
-                insertCommand.Parameters.AddWithValue(batchId);
-                insertCommand.Parameters.AddWithValue(companyCode);
-                insertCommand.Parameters.AddWithValue(row.TransactionDate.HasValue ? row.TransactionDate.Value : (object)DBNull.Value);
-                insertCommand.Parameters.AddWithValue(row.DepositAmount.HasValue ? row.DepositAmount.Value : (object)DBNull.Value);
-                insertCommand.Parameters.AddWithValue(row.WithdrawalAmount.HasValue ? row.WithdrawalAmount.Value : (object)DBNull.Value);
-                insertCommand.Parameters.AddWithValue(row.Balance.HasValue ? row.Balance.Value : (object)DBNull.Value);
-                insertCommand.Parameters.AddWithValue((object?)row.Currency ?? DBNull.Value);
-                insertCommand.Parameters.AddWithValue((object?)row.BankName ?? DBNull.Value);
-                insertCommand.Parameters.AddWithValue(row.Description);
-                insertCommand.Parameters.AddWithValue((object?)row.AccountName ?? DBNull.Value);
-                insertCommand.Parameters.AddWithValue((object?)row.AccountNumber ?? DBNull.Value);
-                insertCommand.Parameters.AddWithValue(hash);
-                insertCommand.Parameters.AddWithValue(rowSeq);  // 日期内序号
+                insertCommand.Parameters.AddWithValue("$1", batchId);
+                insertCommand.Parameters.AddWithValue("$2", companyCode);
+                insertCommand.Parameters.AddWithValue("$3", row.TransactionDate.HasValue ? row.TransactionDate.Value : (object)DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$4", row.DepositAmount.HasValue ? row.DepositAmount.Value : (object)DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$5", row.WithdrawalAmount.HasValue ? row.WithdrawalAmount.Value : (object)DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$6", row.Balance.HasValue ? row.Balance.Value : (object)DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$7", (object?)row.Currency ?? DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$8", (object?)row.BankName ?? DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$9", row.Description);
+                insertCommand.Parameters.AddWithValue("$10", (object?)row.AccountName ?? DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$11", (object?)row.AccountNumber ?? DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$12", hash);
+                insertCommand.Parameters.AddWithValue("$13", rowSeq);  // 日期内序号
 
                 var affected = await insertCommand.ExecuteNonQueryAsync(ct);
                 if (affected > 0)
@@ -216,9 +216,9 @@ public sealed class MoneytreeImportService
                     skipped_rows = $2
                 WHERE id = $3;
                 """;
-            updateBatch.Parameters.AddWithValue(inserted);
-            updateBatch.Parameters.AddWithValue(skipped);
-            updateBatch.Parameters.AddWithValue(batchId);
+            updateBatch.Parameters.AddWithValue("$1", inserted);
+            updateBatch.Parameters.AddWithValue("$2", skipped);
+            updateBatch.Parameters.AddWithValue("$3", batchId);
             await updateBatch.ExecuteNonQueryAsync(ct);
         }
 
@@ -285,8 +285,8 @@ public sealed class MoneytreeImportService
                 FROM moneytree_transactions
                 WHERE company_code = $1 AND batch_id = $2 AND posting_status = 'pending'
                 ORDER BY transaction_date";
-            cmd.Parameters.AddWithValue(companyCode);
-            cmd.Parameters.AddWithValue(batchId);
+            cmd.Parameters.AddWithValue("$1", companyCode);
+            cmd.Parameters.AddWithValue("$2", batchId);
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
@@ -313,7 +313,7 @@ public sealed class MoneytreeImportService
             cmd.CommandText = @"
                 SELECT account_code FROM accounts 
                 WHERE company_code = $1 AND (payload->>'isBank')::boolean = true";
-            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue("$1", companyCode);
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
@@ -363,12 +363,12 @@ public sealed class MoneytreeImportService
                       )
                     ORDER BY ABS((v.payload->'header'->>'postingDate')::date - $2::date), v.created_at DESC
                     LIMIT 1";
-                cmd.Parameters.AddWithValue(companyCode);
-                cmd.Parameters.AddWithValue(transactionDate);
-                cmd.Parameters.AddWithValue(dateTolerance);
-                cmd.Parameters.AddWithValue(amount);
-                cmd.Parameters.AddWithValue(bankAccounts.ToArray());
-                cmd.Parameters.AddWithValue(bankSide);
+                cmd.Parameters.AddWithValue("$1", companyCode);
+                cmd.Parameters.AddWithValue("$2", transactionDate);
+                cmd.Parameters.AddWithValue("$3", dateTolerance);
+                cmd.Parameters.AddWithValue("$4", amount);
+                cmd.Parameters.AddWithValue("$5", bankAccounts.ToArray());
+                cmd.Parameters.AddWithValue("$6", bankSide);
                 
                 await using var reader = await cmd.ExecuteReaderAsync(ct);
                 if (await reader.ReadAsync(ct))
@@ -390,11 +390,11 @@ public sealed class MoneytreeImportService
                         voucher_no = $5,
                         updated_at = now()
                     WHERE id = $1 AND company_code = $2";
-                updateCmd.Parameters.AddWithValue(tx.Id);
-                updateCmd.Parameters.AddWithValue(companyCode);
-                updateCmd.Parameters.AddWithValue($"既存伝票に紐付け済み：{matchedVoucherNo}");
-                updateCmd.Parameters.AddWithValue(matchedVoucherId.Value);
-                updateCmd.Parameters.AddWithValue(matchedVoucherNo ?? "");
+                updateCmd.Parameters.AddWithValue("$1", tx.Id);
+                updateCmd.Parameters.AddWithValue("$2", companyCode);
+                updateCmd.Parameters.AddWithValue("$3", $"既存伝票に紐付け済み：{matchedVoucherNo}");
+                updateCmd.Parameters.AddWithValue("$4", matchedVoucherId.Value);
+                updateCmd.Parameters.AddWithValue("$5", matchedVoucherNo ?? "");
                 await updateCmd.ExecuteNonQueryAsync(ct);
                 
                 linkedCount++;
@@ -410,8 +410,8 @@ public sealed class MoneytreeImportService
                         posting_error = '既存凭証が見つかりませんでした（履歴インポートモード）',
                         updated_at = now()
                     WHERE id = $1 AND company_code = $2";
-                updateCmd.Parameters.AddWithValue(tx.Id);
-                updateCmd.Parameters.AddWithValue(companyCode);
+                updateCmd.Parameters.AddWithValue("$1", tx.Id);
+                updateCmd.Parameters.AddWithValue("$2", companyCode);
                 await updateCmd.ExecuteNonQueryAsync(ct);
             }
         }
