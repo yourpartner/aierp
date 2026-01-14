@@ -6064,10 +6064,10 @@ app.MapGet("/ai/tasks/{taskId:guid}", async (Guid taskId, HttpRequest req, Invoi
     var invoiceTask = await invoiceTasks.GetAsync(taskId, req.HttpContext.RequestAborted);
     if (invoiceTask is not null)
     {
-        if (!await VerifySessionAsync(invoiceTask.SessionId))
+        if (invoiceTask.SessionId is null || !await VerifySessionAsync(invoiceTask.SessionId.Value))
             return Results.Forbid();
 
-        var displayLabel = await ResolveDisplayLabelAsync(invoiceTask.SessionId);
+        var displayLabel = await ResolveDisplayLabelAsync(invoiceTask.SessionId.Value);
     return Results.Json(new
     {
             kind = "invoice",
@@ -6094,10 +6094,10 @@ app.MapGet("/ai/tasks/{taskId:guid}", async (Guid taskId, HttpRequest req, Invoi
     if (salesTask is null)
         return Results.NotFound();
 
-    if (!await VerifySessionAsync(salesTask.SessionId))
+    if (salesTask.SessionId is null || !await VerifySessionAsync(salesTask.SessionId.Value))
         return Results.Forbid();
 
-    var salesDisplayLabel = await ResolveDisplayLabelAsync(salesTask.SessionId);
+    var salesDisplayLabel = await ResolveDisplayLabelAsync(salesTask.SessionId.Value);
     return Results.Json(new
     {
         kind = "sales_order",
