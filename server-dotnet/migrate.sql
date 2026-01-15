@@ -1,4 +1,4 @@
--- ---------------------------------------
+﻿-- ---------------------------------------
 -- 数据库迁移脚本（PostgreSQL）：
 -- - 启用 pgcrypto（用于 gen_random_uuid）
 -- - 创建公司、结构定义、凭证与主数据表
@@ -941,59 +941,58 @@ BEGIN
             ALTER TABLE moneytree_transactions ADD COLUMN row_sequence INTEGER DEFAULT 0;
         END IF;
 
+        -- B 方案（安全）：无论是否已有唯一约束，都输出重复数量/明细（不做删除），便于人工判断是否需要去重。
+        BEGIN
+            RAISE NOTICE 'moneytree_transactions duplicates (company_code,hash) = %',
+              (SELECT COUNT(*) FROM (
+                SELECT company_code, hash
+                FROM moneytree_transactions
+                GROUP BY company_code, hash
+                HAVING COUNT(*) > 1
+              ) dups);
+
+            -- 输出重复 key 与样本行（前 50 组，每组前 5 行），便于人工判断是否需要去重
+            DECLARE g RECORD;
+            DECLARE r RECORD;
+            DECLARE shown_groups INT := 0;
+            DECLARE shown_rows INT := 0;
+            BEGIN
+              FOR g IN
+                SELECT company_code, hash, COUNT(*) AS cnt
+                FROM moneytree_transactions
+                GROUP BY company_code, hash
+                HAVING COUNT(*) > 1
+                ORDER BY cnt DESC
+              LOOP
+                shown_groups := shown_groups + 1;
+                EXIT WHEN shown_groups > 50;
+                RAISE NOTICE 'moneytree_transactions dup key: company_code=%, hash=%, count=%',
+                  COALESCE(g.company_code, '<NULL>'), g.hash, g.cnt;
+
+                shown_rows := 0;
+                FOR r IN
+                  SELECT id, transaction_date, row_sequence, imported_at, updated_at, posting_status, voucher_id
+                  FROM moneytree_transactions
+                  WHERE company_code IS NOT DISTINCT FROM g.company_code
+                    AND hash = g.hash
+                  ORDER BY updated_at DESC NULLS LAST, imported_at DESC NULLS LAST
+                  LIMIT 5
+                LOOP
+                  shown_rows := shown_rows + 1;
+                  RAISE NOTICE '  row %: id=%, date=%, seq=%, imported_at=%, updated_at=%, status=%, voucher_id=%',
+                    shown_rows, r.id, r.transaction_date, r.row_sequence, r.imported_at, r.updated_at, r.posting_status, r.voucher_id;
+                END LOOP;
+              END LOOP;
+            END;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'moneytree_transactions duplicate check skipped: %', SQLERRM;
+        END;
+
         IF NOT EXISTS (
             SELECT 1 FROM pg_constraint 
             WHERE conname = 'uq_moneytree_transactions_company_hash' 
               AND conrelid = 'moneytree_transactions'::regclass
         ) THEN
-            -- 生产库可能已经存在重复数据，直接加 UNIQUE 会失败并导致整份 migrate.sql 被中断（随后在程序里被 catch 吞掉）。
-            -- B 方案（安全）：只统计重复数量并输出 NOTICE（不做删除），需要的话再手工去重。
-            BEGIN
-                RAISE NOTICE 'moneytree_transactions duplicates (company_code,hash) = %',
-                  (SELECT COUNT(*) FROM (
-                    SELECT company_code, hash
-                    FROM moneytree_transactions
-                    GROUP BY company_code, hash
-                    HAVING COUNT(*) > 1
-                  ) dups);
-
-                -- 输出重复 key 与样本行（前 50 组，每组前 5 行），便于人工判断是否需要去重
-                DECLARE g RECORD;
-                DECLARE r RECORD;
-                DECLARE shown_groups INT := 0;
-                DECLARE shown_rows INT := 0;
-                BEGIN
-                  FOR g IN
-                    SELECT company_code, hash, COUNT(*) AS cnt
-                    FROM moneytree_transactions
-                    GROUP BY company_code, hash
-                    HAVING COUNT(*) > 1
-                    ORDER BY cnt DESC
-                  LOOP
-                    shown_groups := shown_groups + 1;
-                    EXIT WHEN shown_groups > 50;
-                    RAISE NOTICE 'moneytree_transactions dup key: company_code=%, hash=%, count=%',
-                      COALESCE(g.company_code, '<NULL>'), g.hash, g.cnt;
-
-                    shown_rows := 0;
-                    FOR r IN
-                      SELECT id, transaction_date, row_sequence, imported_at, updated_at, posting_status, voucher_id
-                      FROM moneytree_transactions
-                      WHERE company_code IS NOT DISTINCT FROM g.company_code
-                        AND hash = g.hash
-                      ORDER BY updated_at DESC NULLS LAST, imported_at DESC NULLS LAST
-                      LIMIT 5
-                    LOOP
-                      shown_rows := shown_rows + 1;
-                      RAISE NOTICE '  row %: id=%, date=%, seq=%, imported_at=%, updated_at=%, status=%, voucher_id=%',
-                        shown_rows, r.id, r.transaction_date, r.row_sequence, r.imported_at, r.updated_at, r.posting_status, r.voucher_id;
-                    END LOOP;
-                  END LOOP;
-                END;
-            EXCEPTION WHEN OTHERS THEN
-                RAISE NOTICE 'moneytree_transactions duplicate check skipped: %', SQLERRM;
-            END;
-
             BEGIN
                 ALTER TABLE moneytree_transactions ADD CONSTRAINT uq_moneytree_transactions_company_hash UNIQUE (company_code, hash);
             EXCEPTION WHEN OTHERS THEN
@@ -1003,58 +1002,58 @@ BEGIN
     END IF;
     
     IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'payroll_deadlines') THEN
+        -- B 方案（安全）：无论是否已有唯一约束，都输出重复数量/明细（不做删除），便于人工判断是否需要去重。
+        BEGIN
+            RAISE NOTICE 'payroll_deadlines duplicates (company_code,period_month) = %',
+              (SELECT COUNT(*) FROM (
+                SELECT company_code, period_month
+                FROM payroll_deadlines
+                GROUP BY company_code, period_month
+                HAVING COUNT(*) > 1
+              ) dups);
+
+            -- 输出重复 key 与样本行（前 50 组，每组前 5 行）
+            DECLARE g2 RECORD;
+            DECLARE r2 RECORD;
+            DECLARE shown_groups2 INT := 0;
+            DECLARE shown_rows2 INT := 0;
+            BEGIN
+              FOR g2 IN
+                SELECT company_code, period_month, COUNT(*) AS cnt
+                FROM payroll_deadlines
+                GROUP BY company_code, period_month
+                HAVING COUNT(*) > 1
+                ORDER BY cnt DESC
+              LOOP
+                shown_groups2 := shown_groups2 + 1;
+                EXIT WHEN shown_groups2 > 50;
+                RAISE NOTICE 'payroll_deadlines dup key: company_code=%, period_month=%, count=%',
+                  COALESCE(g2.company_code, '<NULL>'), g2.period_month, g2.cnt;
+
+                shown_rows2 := 0;
+                FOR r2 IN
+                  SELECT id, status, deadline_at, warning_at, updated_at, created_at
+                  FROM payroll_deadlines
+                  WHERE company_code IS NOT DISTINCT FROM g2.company_code
+                    AND period_month = g2.period_month
+                  ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+                  LIMIT 5
+                LOOP
+                  shown_rows2 := shown_rows2 + 1;
+                  RAISE NOTICE '  row %: id=%, status=%, deadline_at=%, warning_at=%, updated_at=%',
+                    shown_rows2, r2.id, r2.status, r2.deadline_at, r2.warning_at, r2.updated_at;
+                END LOOP;
+              END LOOP;
+            END;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'payroll_deadlines duplicate check skipped: %', SQLERRM;
+        END;
+
         IF NOT EXISTS (
             SELECT 1 FROM pg_constraint 
             WHERE conname = 'uq_payroll_deadlines_company_month' 
               AND conrelid = 'payroll_deadlines'::regclass
         ) THEN
-            -- 同理：生产库可能已有重复 (company_code, period_month)，先去重再加 UNIQUE。
-            BEGIN
-                RAISE NOTICE 'payroll_deadlines duplicates (company_code,period_month) = %',
-                  (SELECT COUNT(*) FROM (
-                    SELECT company_code, period_month
-                    FROM payroll_deadlines
-                    GROUP BY company_code, period_month
-                    HAVING COUNT(*) > 1
-                  ) dups);
-
-                -- 输出重复 key 与样本行（前 50 组，每组前 5 行）
-                DECLARE g2 RECORD;
-                DECLARE r2 RECORD;
-                DECLARE shown_groups2 INT := 0;
-                DECLARE shown_rows2 INT := 0;
-                BEGIN
-                  FOR g2 IN
-                    SELECT company_code, period_month, COUNT(*) AS cnt
-                    FROM payroll_deadlines
-                    GROUP BY company_code, period_month
-                    HAVING COUNT(*) > 1
-                    ORDER BY cnt DESC
-                  LOOP
-                    shown_groups2 := shown_groups2 + 1;
-                    EXIT WHEN shown_groups2 > 50;
-                    RAISE NOTICE 'payroll_deadlines dup key: company_code=%, period_month=%, count=%',
-                      COALESCE(g2.company_code, '<NULL>'), g2.period_month, g2.cnt;
-
-                    shown_rows2 := 0;
-                    FOR r2 IN
-                      SELECT id, status, deadline_at, warning_at, updated_at, created_at
-                      FROM payroll_deadlines
-                      WHERE company_code IS NOT DISTINCT FROM g2.company_code
-                        AND period_month = g2.period_month
-                      ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
-                      LIMIT 5
-                    LOOP
-                      shown_rows2 := shown_rows2 + 1;
-                      RAISE NOTICE '  row %: id=%, status=%, deadline_at=%, warning_at=%, updated_at=%',
-                        shown_rows2, r2.id, r2.status, r2.deadline_at, r2.warning_at, r2.updated_at;
-                    END LOOP;
-                  END LOOP;
-                END;
-            EXCEPTION WHEN OTHERS THEN
-                RAISE NOTICE 'payroll_deadlines duplicate check skipped: %', SQLERRM;
-            END;
-
             BEGIN
                 ALTER TABLE payroll_deadlines ADD CONSTRAINT uq_payroll_deadlines_company_month UNIQUE (company_code, period_month);
             EXCEPTION WHEN OTHERS THEN
