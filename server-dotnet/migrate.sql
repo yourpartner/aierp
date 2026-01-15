@@ -155,27 +155,23 @@ CREATE TABLE IF NOT EXISTS schemas (
 );
 
 -- 兜底：历史环境可能已有 schemas 表但缺少对应的唯一索引/约束，导致 ON CONFLICT (company_code,name,version) 报 42P10
--- 这里先去重，再补一个命名唯一索引供 ON CONFLICT 推断使用（若失败会输出 NOTICE，避免整份迁移中断）
+-- B 方案（安全）：先统计重复数量并输出 NOTICE（不做删除），再尝试补一个命名唯一索引。
+-- 若因重复数据导致索引创建失败，会输出 NOTICE，但不会中断整份迁移。
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='schemas') THEN
     BEGIN
-      DELETE FROM schemas s
-      USING (
-        SELECT id
-        FROM (
-          SELECT id,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY company_code, name, version
-                   ORDER BY updated_at DESC, created_at DESC, id DESC
-                 ) AS rn
+      -- 只统计重复，不删除（需要的话我会提供一条可手工执行的去重 SQL）
+      PERFORM 1;
+      RAISE NOTICE 'schemas duplicates (company_code,name,version) = %',
+        (SELECT COUNT(*) FROM (
+          SELECT company_code, name, version
           FROM schemas
-        ) ranked
-        WHERE ranked.rn > 1
-      ) d
-      WHERE s.id = d.id;
+          GROUP BY company_code, name, version
+          HAVING COUNT(*) > 1
+        ) dups);
     EXCEPTION WHEN OTHERS THEN
-      RAISE NOTICE 'dedupe schemas skipped: %', SQLERRM;
+      RAISE NOTICE 'schemas duplicate check skipped: %', SQLERRM;
     END;
 
     BEGIN
@@ -873,24 +869,17 @@ BEGIN
               AND conrelid = 'moneytree_transactions'::regclass
         ) THEN
             -- 生产库可能已经存在重复数据，直接加 UNIQUE 会失败并导致整份 migrate.sql 被中断（随后在程序里被 catch 吞掉）。
-            -- 这里先按 (company_code, hash) 去重：保留最新导入的一条，其余删除。
+            -- B 方案（安全）：只统计重复数量并输出 NOTICE（不做删除），需要的话再手工去重。
             BEGIN
-                DELETE FROM moneytree_transactions t
-                USING (
-                    SELECT id
-                    FROM (
-                        SELECT id,
-                               ROW_NUMBER() OVER (
-                                   PARTITION BY company_code, hash
-                                   ORDER BY imported_at DESC, created_at DESC, id DESC
-                               ) AS rn
-                        FROM moneytree_transactions
-                    ) ranked
-                    WHERE ranked.rn > 1
-                ) d
-                WHERE t.id = d.id;
+                RAISE NOTICE 'moneytree_transactions duplicates (company_code,hash) = %',
+                  (SELECT COUNT(*) FROM (
+                    SELECT company_code, hash
+                    FROM moneytree_transactions
+                    GROUP BY company_code, hash
+                    HAVING COUNT(*) > 1
+                  ) dups);
             EXCEPTION WHEN OTHERS THEN
-                RAISE NOTICE 'dedupe moneytree_transactions skipped: %', SQLERRM;
+                RAISE NOTICE 'moneytree_transactions duplicate check skipped: %', SQLERRM;
             END;
 
             BEGIN
@@ -909,22 +898,15 @@ BEGIN
         ) THEN
             -- 同理：生产库可能已有重复 (company_code, period_month)，先去重再加 UNIQUE。
             BEGIN
-                DELETE FROM payroll_deadlines p
-                USING (
-                    SELECT id
-                    FROM (
-                        SELECT id,
-                               ROW_NUMBER() OVER (
-                                   PARTITION BY company_code, period_month
-                                   ORDER BY updated_at DESC, created_at DESC, id DESC
-                               ) AS rn
-                        FROM payroll_deadlines
-                    ) ranked
-                    WHERE ranked.rn > 1
-                ) d
-                WHERE p.id = d.id;
+                RAISE NOTICE 'payroll_deadlines duplicates (company_code,period_month) = %',
+                  (SELECT COUNT(*) FROM (
+                    SELECT company_code, period_month
+                    FROM payroll_deadlines
+                    GROUP BY company_code, period_month
+                    HAVING COUNT(*) > 1
+                  ) dups);
             EXCEPTION WHEN OTHERS THEN
-                RAISE NOTICE 'dedupe payroll_deadlines skipped: %', SQLERRM;
+                RAISE NOTICE 'payroll_deadlines duplicate check skipped: %', SQLERRM;
             END;
 
             BEGIN
@@ -1581,7 +1563,9 @@ WHERE NOT EXISTS (
 
 -- Seed: CRM schemas（contact/deal/quote/sales_order/activity）
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-VALUES
+SELECT v.company_code, v.name, v.version, v.is_active, v.schema, v.ui, v.query, v.core_fields, v.validators, v.numbering, v.ai_hints
+FROM (
+  VALUES
   ('JP01','contact', 1, TRUE,
   '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"},"partnerCode":{"type":"string"},"email":{"type":["string","null"],"format":"email"},"mobile":{"type":["string","null"]},"language":{"type":["string","null"],"enum":["zh","ja","en",null]},"status":{"type":["string","null"],"enum":["active","inactive",null]}},"required":["name","partnerCode"]}',
   '{"list":{"columns":["contact_code","name","partner_code","email","status"]},"form":{"layout":[]}}',
@@ -1627,7 +1611,14 @@ VALUES
   NULL::jsonb,
   NULL::jsonb
  )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+) AS v(company_code,name,version,is_active,schema,ui,query,core_fields,validators,numbering,ai_hints)
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM schemas s
+  WHERE s.company_code IS NOT DISTINCT FROM v.company_code
+    AND s.name = v.name
+    AND s.version = v.version
+);
 
 -- 审批待办：统一投影表（任意实体的审批步骤分发）
 CREATE TABLE IF NOT EXISTS approval_tasks (
