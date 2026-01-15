@@ -32,6 +32,9 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # 复制 Nginx 配置
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+# 构建期校验 nginx 配置，避免因语法错误导致容器启动即退出（Azure 会直接报 Application Error）
+RUN nginx -t
+
 # 暴露端口
 EXPOSE 80
 
