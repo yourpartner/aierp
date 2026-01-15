@@ -170,6 +170,41 @@ BEGIN
           GROUP BY company_code, name, version
           HAVING COUNT(*) > 1
         ) dups);
+
+      -- 输出重复 key 与样本行（前 50 组，每组前 5 行）
+      DECLARE g RECORD;
+      DECLARE r RECORD;
+      DECLARE shown_groups INT := 0;
+      DECLARE shown_rows INT := 0;
+      BEGIN
+        FOR g IN
+          SELECT company_code, name, version, COUNT(*) AS cnt
+          FROM schemas
+          GROUP BY company_code, name, version
+          HAVING COUNT(*) > 1
+          ORDER BY cnt DESC
+        LOOP
+          shown_groups := shown_groups + 1;
+          EXIT WHEN shown_groups > 50;
+          RAISE NOTICE 'schemas dup key: company_code=%, name=%, version=%, count=%',
+            COALESCE(g.company_code, '<NULL>'), g.name, g.version, g.cnt;
+
+          shown_rows := 0;
+          FOR r IN
+            SELECT id, updated_at, created_at
+            FROM schemas
+            WHERE company_code IS NOT DISTINCT FROM g.company_code
+              AND name = g.name
+              AND version = g.version
+            ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+            LIMIT 5
+          LOOP
+            shown_rows := shown_rows + 1;
+            RAISE NOTICE '  row %: id=%, updated_at=%, created_at=%',
+              shown_rows, r.id, r.updated_at, r.created_at;
+          END LOOP;
+        END LOOP;
+      END;
     EXCEPTION WHEN OTHERS THEN
       RAISE NOTICE 'schemas duplicate check skipped: %', SQLERRM;
     END;
@@ -878,6 +913,40 @@ BEGIN
                     GROUP BY company_code, hash
                     HAVING COUNT(*) > 1
                   ) dups);
+
+                -- 输出重复 key 与样本行（前 50 组，每组前 5 行），便于人工判断是否需要去重
+                DECLARE g RECORD;
+                DECLARE r RECORD;
+                DECLARE shown_groups INT := 0;
+                DECLARE shown_rows INT := 0;
+                BEGIN
+                  FOR g IN
+                    SELECT company_code, hash, COUNT(*) AS cnt
+                    FROM moneytree_transactions
+                    GROUP BY company_code, hash
+                    HAVING COUNT(*) > 1
+                    ORDER BY cnt DESC
+                  LOOP
+                    shown_groups := shown_groups + 1;
+                    EXIT WHEN shown_groups > 50;
+                    RAISE NOTICE 'moneytree_transactions dup key: company_code=%, hash=%, count=%',
+                      COALESCE(g.company_code, '<NULL>'), g.hash, g.cnt;
+
+                    shown_rows := 0;
+                    FOR r IN
+                      SELECT id, transaction_date, row_sequence, imported_at, updated_at, posting_status, voucher_id
+                      FROM moneytree_transactions
+                      WHERE company_code IS NOT DISTINCT FROM g.company_code
+                        AND hash = g.hash
+                      ORDER BY updated_at DESC NULLS LAST, imported_at DESC NULLS LAST
+                      LIMIT 5
+                    LOOP
+                      shown_rows := shown_rows + 1;
+                      RAISE NOTICE '  row %: id=%, date=%, seq=%, imported_at=%, updated_at=%, status=%, voucher_id=%',
+                        shown_rows, r.id, r.transaction_date, r.row_sequence, r.imported_at, r.updated_at, r.posting_status, r.voucher_id;
+                    END LOOP;
+                  END LOOP;
+                END;
             EXCEPTION WHEN OTHERS THEN
                 RAISE NOTICE 'moneytree_transactions duplicate check skipped: %', SQLERRM;
             END;
@@ -905,6 +974,40 @@ BEGIN
                     GROUP BY company_code, period_month
                     HAVING COUNT(*) > 1
                   ) dups);
+
+                -- 输出重复 key 与样本行（前 50 组，每组前 5 行）
+                DECLARE g2 RECORD;
+                DECLARE r2 RECORD;
+                DECLARE shown_groups2 INT := 0;
+                DECLARE shown_rows2 INT := 0;
+                BEGIN
+                  FOR g2 IN
+                    SELECT company_code, period_month, COUNT(*) AS cnt
+                    FROM payroll_deadlines
+                    GROUP BY company_code, period_month
+                    HAVING COUNT(*) > 1
+                    ORDER BY cnt DESC
+                  LOOP
+                    shown_groups2 := shown_groups2 + 1;
+                    EXIT WHEN shown_groups2 > 50;
+                    RAISE NOTICE 'payroll_deadlines dup key: company_code=%, period_month=%, count=%',
+                      COALESCE(g2.company_code, '<NULL>'), g2.period_month, g2.cnt;
+
+                    shown_rows2 := 0;
+                    FOR r2 IN
+                      SELECT id, status, deadline_at, warning_at, updated_at, created_at
+                      FROM payroll_deadlines
+                      WHERE company_code IS NOT DISTINCT FROM g2.company_code
+                        AND period_month = g2.period_month
+                      ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+                      LIMIT 5
+                    LOOP
+                      shown_rows2 := shown_rows2 + 1;
+                      RAISE NOTICE '  row %: id=%, status=%, deadline_at=%, warning_at=%, updated_at=%',
+                        shown_rows2, r2.id, r2.status, r2.deadline_at, r2.warning_at, r2.updated_at;
+                    END LOOP;
+                  END LOOP;
+                END;
             EXCEPTION WHEN OTHERS THEN
                 RAISE NOTICE 'payroll_deadlines duplicate check skipped: %', SQLERRM;
             END;

@@ -288,6 +288,21 @@ app.Lifetime.ApplicationStarted.Register(async () =>
         var ds = app.Services.GetRequiredService<NpgsqlDataSource>();
         await using (var conn = await ds.OpenConnectionAsync())
         {
+            // 将 PostgreSQL 的 RAISE NOTICE 输出到控制台（Azure LogStream 可见），便于在“不删除数据”的前提下查看重复数据明细。
+            conn.Notice += (_, e) =>
+            {
+                try
+                {
+                    var n = e.Notice;
+                    Console.WriteLine("[migrate][notice] " + n.MessageText);
+                    if (!string.IsNullOrWhiteSpace(n.Detail))
+                        Console.WriteLine("[migrate][notice] detail: " + n.Detail);
+                    if (!string.IsNullOrWhiteSpace(n.Where))
+                        Console.WriteLine("[migrate][notice] where: " + n.Where);
+                }
+                catch { }
+            };
+
             var sqlPath = Path.Combine(AppContext.BaseDirectory, "migrate.sql");
             if (File.Exists(sqlPath))
             {
