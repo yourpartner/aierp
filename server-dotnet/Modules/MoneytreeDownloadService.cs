@@ -36,7 +36,16 @@ public sealed class MoneytreeDownloadService
             using var playwright = await Playwright.CreateAsync();
             await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
-                Headless = true
+                Headless = true,
+                // Azure App Service Linux 容器环境下 Chromium 常见需要关闭 sandbox，否则会在启动/渲染阶段失败
+                //（本地一般没问题，所以只做最小兼容性参数，不改爬虫业务流程）
+                Args = new[]
+                {
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu"
+                }
             });
 
             var context = await browser.NewContextAsync(new BrowserNewContextOptions
