@@ -87,7 +87,7 @@ public class StaffingProjectModule : ModuleBase
             // data
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = $@"
-                SELECT p.id, p.payload, bp.partner_code as client_code, bp.payload->>'name' as client_name
+                SELECT p.id, p.payload, bp.partner_code as client_code, bp.payload->>'name' as bp_name
                 FROM {projectTable} p
                 LEFT JOIN businesspartners bp ON p.client_partner_id = bp.id
                 WHERE {whereSql}
@@ -104,6 +104,9 @@ public class StaffingProjectModule : ModuleBase
                 var id = reader.GetGuid(0);
                 using var payloadDoc = JsonDocument.Parse(reader.GetString(1));
                 var p = payloadDoc.RootElement;
+                // 客户名：优先使用 businesspartner 的名称，其次使用手工输入的 client_name
+                var bpName = reader.IsDBNull(3) ? null : reader.GetString(3);
+                var manualClientName = p.TryGetProperty("client_name", out var mcn) ? mcn.GetString() : null;
                 rows.Add(new
                 {
                     id,
@@ -123,7 +126,7 @@ public class StaffingProjectModule : ModuleBase
                     priority = p.TryGetProperty("priority", out var pr) ? pr.GetString() : "normal",
                     clientPartnerId = p.TryGetProperty("client_partner_id", out var cpid) && cpid.ValueKind == JsonValueKind.String ? cpid.GetString() : null,
                     clientCode = reader.IsDBNull(2) ? null : reader.GetString(2),
-                    clientName = reader.IsDBNull(3) ? null : reader.GetString(3)
+                    clientName = bpName ?? manualClientName // 优先 BP 名称，其次手工输入
                 });
             }
 
@@ -176,6 +179,7 @@ public class StaffingProjectModule : ModuleBase
                 job_category = body.TryGetProperty("jobCategory", out var jc) ? jc.GetString() : null,
                 job_description = body.TryGetProperty("jobDescription", out var jd) ? jd.GetString() : null,
                 client_partner_id = body.TryGetProperty("clientPartnerId", out var cpid) ? cpid.GetString() : null,
+                client_name = body.TryGetProperty("clientName", out var cn) ? cn.GetString() : null, // 手工输入的客户名（潜在客户）
                 contract_type = body.TryGetProperty("contractType", out var ct) ? ct.GetString() : null,
                 headcount = body.TryGetProperty("headcount", out var hc) && hc.ValueKind == JsonValueKind.Number ? hc.GetInt32() : 1,
                 filled_count = 0,
@@ -215,6 +219,7 @@ public class StaffingProjectModule : ModuleBase
                 job_category = body.TryGetProperty("jobCategory", out var jc) ? jc.GetString() : null,
                 job_description = body.TryGetProperty("jobDescription", out var jd) ? jd.GetString() : null,
                 client_partner_id = body.TryGetProperty("clientPartnerId", out var cpid) ? cpid.GetString() : null,
+                client_name = body.TryGetProperty("clientName", out var cn) ? cn.GetString() : null, // 手工输入的客户名（潜在客户）
                 contract_type = body.TryGetProperty("contractType", out var ct) ? ct.GetString() : null,
                 headcount = body.TryGetProperty("headcount", out var hc) && hc.ValueKind == JsonValueKind.Number ? hc.GetInt32() : (int?)null,
                 experience_years_min = body.TryGetProperty("experienceYearsMin", out var eym) && eym.ValueKind == JsonValueKind.Number ? eym.GetInt32() : (int?)null,

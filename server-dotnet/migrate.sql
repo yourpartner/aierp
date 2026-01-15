@@ -1257,44 +1257,25 @@ CREATE TABLE IF NOT EXISTS invoice_issuers (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_issuers_no ON invoice_issuers(registration_no);
 
 -- voucher schema 增补：允许インボイス登録番号相关字段
-UPDATE schemas
-SET schema = jsonb_set(
-              jsonb_set(
-                jsonb_set(
-                  jsonb_set(
-                    jsonb_set(
-                      jsonb_set(
-                        jsonb_set(schema,
-                          '{properties,header,properties,invoiceRegistrationNo}',
-                          '{"type":"string","pattern":"^T\\d{13}$","maxLength":14}'::jsonb,
-                          true
-                        ),
-                        '{properties,header,properties,invoiceRegistrationStatus}',
-                        '{"type":["string","null"]}'::jsonb,
-                        true
-                      ),
-                      '{properties,header,properties,invoiceRegistrationName}',
-                      '{"type":["string","null"]}'::jsonb,
-                      true
-                    ),
-                    '{properties,header,properties,invoiceRegistrationCheckedAt}',
-                    '{"type":["string","null"],"format":"date-time"}'::jsonb,
-                    true
-                  ),
-                  '{properties,header,properties,invoiceRegistrationEffectiveFrom}',
-                  '{"type":["string","null"],"format":"date"}'::jsonb,
-                  true
-                ),
-                '{properties,header,properties,invoiceRegistrationEffectiveTo}',
-                '{"type":["string","null"],"format":"date"}'::jsonb,
-                true
-              ),
-              '{properties,header,properties,invoiceRegistrationNote}',
-              '{"type":["string","null"]}'::jsonb,
-              true
-           ),
-    updated_at = now()
-WHERE name='voucher';
+-- 使用 DO 块逐个添加字段，避免 jsonb_set 嵌套导致的类型推断问题
+DO $$
+DECLARE
+  v_schema jsonb;
+BEGIN
+  SELECT schema INTO v_schema FROM schemas WHERE name = 'voucher' AND company_code IS NULL LIMIT 1;
+  IF v_schema IS NOT NULL THEN
+    -- 逐个添加字段
+    v_schema := jsonb_set(v_schema, '{properties,header,properties,invoiceRegistrationNo}', '{"type":"string","pattern":"^T\\d{13}$","maxLength":14}'::jsonb, true);
+    v_schema := jsonb_set(v_schema, '{properties,header,properties,invoiceRegistrationStatus}', '{"type":["string","null"]}'::jsonb, true);
+    v_schema := jsonb_set(v_schema, '{properties,header,properties,invoiceRegistrationName}', '{"type":["string","null"]}'::jsonb, true);
+    v_schema := jsonb_set(v_schema, '{properties,header,properties,invoiceRegistrationCheckedAt}', '{"type":["string","null"],"format":"date-time"}'::jsonb, true);
+    v_schema := jsonb_set(v_schema, '{properties,header,properties,invoiceRegistrationEffectiveFrom}', '{"type":["string","null"],"format":"date"}'::jsonb, true);
+    v_schema := jsonb_set(v_schema, '{properties,header,properties,invoiceRegistrationEffectiveTo}', '{"type":["string","null"],"format":"date"}'::jsonb, true);
+    v_schema := jsonb_set(v_schema, '{properties,header,properties,invoiceRegistrationNote}', '{"type":["string","null"]}'::jsonb, true);
+    -- 更新
+    UPDATE schemas SET schema = v_schema, updated_at = now() WHERE name = 'voucher' AND company_code IS NULL;
+  END IF;
+END $$;
 
 -- AI 会话与消息表（ChatKit 持久化）
 CREATE TABLE IF NOT EXISTS ai_sessions (
@@ -1648,17 +1629,17 @@ CREATE INDEX IF NOT EXISTS idx_ai_role_generations_status ON ai_role_generations
 
 -- 种子：voucher/businesspartner 的结构定义（可在应用内编辑/版本化）
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-SELECT v.company_code, v.name, v.version, v.is_active, v.schema, v.ui, v.query, v.core_fields, v.validators, v.numbering, v.ai_hints
+SELECT v.company_code, v.name, v.version, v.is_active, v.schema::jsonb, v.ui::jsonb, v.query::jsonb, v.core_fields::jsonb, v.validators::jsonb, v.numbering::jsonb, v.ai_hints::jsonb
 FROM (
   VALUES
- (NULL,'voucher', 1, TRUE,
+ (NULL::text,'voucher', 1, TRUE,
  '{"type":"object","properties":{"header":{"type":"object","properties":{"companyCode":{"type":"string"},"postingDate":{"type":"string","format":"date"},"voucherType":{"type":"string","enum":["GL","AP","AR","AA","SA","IN","OT"]},"voucherNo":{"type":"string"},"summary":{"type":"string"}},"required":["companyCode","postingDate","voucherType"]},"lines":{"type":"array","items":{"type":"object","properties":{"lineNo":{"type":"integer"},"accountCode":{"type":"string"},"debit":{"type":"integer"},"credit":{"type":"integer"},"vendorId":{"type":["string","null"]},"customerId":{"type":["string","null"]},"departmentId":{"type":["string","null"]},"employeeId":{"type":["string","null"]},"tax":{"type":["object","null"],"properties":{"rate":{"type":"number"},"amount":{"type":"integer"}}}},"required":["lineNo","accountCode","debit","credit"]}}},"required":["header","lines"]}',
  '{"list":{"columns":["posting_date","voucher_type","voucher_no"]},"form":{"layout":[]}}',
  '{"filters":["posting_date","voucher_type","voucher_no","lines[].employeeId"],"sorts":["posting_date","voucher_no"]}',
  '{"coreFields":[{"name":"posting_date","path":"header.postingDate","type":"date","index":{"strategy":"generated_column","unique":false}},{"name":"voucher_type","path":"header.voucherType","type":"string","index":{"strategy":"generated_column","unique":false}},{"name":"voucher_no","path":"header.voucherNo","type":"string","index":{"strategy":"generated_column","unique":true,"scope":["company_code"]}}]}',
- '["voucher_balance_check"]'::jsonb,
- '{"strategy":"yymm6","targetPath":"header.voucherNo"}'::jsonb,
- '{"displayNames":{"ja":"仕訳","zh":"会计凭证","en":"Voucher"},"synonyms":["凭证","仕訳","会计分录","journal"],"typeMap":{"工资凭证":"SA","給与仕訳":"SA","入金":"IN","出金":"OT"}}'::jsonb
+ '["voucher_balance_check"]',
+ '{"strategy":"yymm6","targetPath":"header.voucherNo"}',
+ '{"displayNames":{"ja":"仕訳","zh":"会计凭证","en":"Voucher"},"synonyms":["凭证","仕訳","会计分录","journal"],"typeMap":{"工资凭证":"SA","給与仕訳":"SA","入金":"IN","出金":"OT"}}'
 )
 ) AS v(company_code,name,version,is_active,schema,ui,query,core_fields,validators,numbering,ai_hints)
 WHERE NOT EXISTS (
@@ -1668,7 +1649,7 @@ WHERE NOT EXISTS (
 
 -- Schema: 通知规则运行记录（只读列表）
 INSERT INTO schemas(company_code, name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-SELECT v.company_code, v.name, v.version, v.is_active, v.schema, v.ui, v.query, v.core_fields, v.validators, v.numbering, v.ai_hints
+SELECT v.company_code, v.name, v.version, v.is_active, v.schema::jsonb, v.ui::jsonb, v.query::jsonb, v.core_fields::jsonb, v.validators::jsonb, v.numbering::jsonb, v.ai_hints::jsonb
 FROM (
 VALUES
  (NULL,'notification_rule_run', 1, TRUE,
@@ -1688,7 +1669,7 @@ WHERE NOT EXISTS (
 
 -- Schema: 通知发送日志（只读列表）
 INSERT INTO schemas(company_code, name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-SELECT v.company_code, v.name, v.version, v.is_active, v.schema, v.ui, v.query, v.core_fields, v.validators, v.numbering, v.ai_hints
+SELECT v.company_code, v.name, v.version, v.is_active, v.schema::jsonb, v.ui::jsonb, v.query::jsonb, v.core_fields::jsonb, v.validators::jsonb, v.numbering::jsonb, v.ai_hints::jsonb
 FROM (
 VALUES
  (NULL,'notification_log', 1, TRUE,
@@ -1708,7 +1689,7 @@ WHERE NOT EXISTS (
 
 -- Seed: CRM schemas（contact/deal/quote/sales_order/activity）
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-SELECT v.company_code, v.name, v.version, v.is_active, v.schema, v.ui, v.query, v.core_fields, v.validators, v.numbering, v.ai_hints
+SELECT v.company_code, v.name, v.version, v.is_active, v.schema::jsonb, v.ui::jsonb, v.query::jsonb, v.core_fields::jsonb, v.validators::jsonb, v.numbering::jsonb, v.ai_hints::jsonb
 FROM (
   VALUES
   ('JP01','contact', 1, TRUE,
@@ -1793,35 +1774,37 @@ CREATE TABLE IF NOT EXISTS certificate_requests (
 
 -- 种子：审批待办与证明申请的 schema（用于通用搜索/表单与权限）
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-VALUES
- (NULL,'approval_task', 1, TRUE,
-  '{"type":"object","properties":{}}',
-  '{"list":{"columns":["entity","step_no","step_name","status","created_at"]},"form":{"layout":[]}}',
-  '{"filters":["approver_user_id","status","entity","created_at"],"sorts":["created_at"]}',
-  '{"coreFields":[]}',
+SELECT NULL,'approval_task', 1, TRUE,
+  '{"type":"object","properties":{}}'::jsonb,
+  '{"list":{"columns":["entity","step_no","step_name","status","created_at"]},"form":{"layout":[]}}'::jsonb,
+  '{"filters":["approver_user_id","status","entity","created_at"],"sorts":["created_at"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
   '[]'::jsonb,
   NULL::jsonb,
   NULL::jsonb
- ),
- (NULL,'certificate_request', 1, TRUE,
-  '{"type":"object","properties":{"employeeId":{"type":"string"},"type":{"type":"string"},"language":{"type":"string"},"purpose":{"type":"string"},"toEmail":{"type":"string"},"subject":{"type":"string"},"bodyText":{"type":"string"},"status":{"type":"string"}},"required":["employeeId","type"]}',
-  '{"list":{"columns":["created_at","status"]},"form":{"layout":[]}}',
-  '{"filters":["status","created_at"],"sorts":["created_at"]}',
-  '{"coreFields":[]}',
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='approval_task' AND version=1);
+
+INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT NULL,'certificate_request', 1, TRUE,
+  '{"type":"object","properties":{"employeeId":{"type":"string"},"type":{"type":"string"},"language":{"type":"string"},"purpose":{"type":"string"},"toEmail":{"type":"string"},"subject":{"type":"string"},"bodyText":{"type":"string"},"status":{"type":"string"}},"required":["employeeId","type"]}'::jsonb,
+  '{"list":{"columns":["created_at","status"]},"form":{"layout":[]}}'::jsonb,
+  '{"filters":["status","created_at"],"sorts":["created_at"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
   '[]'::jsonb,
   NULL::jsonb,
   NULL::jsonb
- ),
- (NULL,'company_setting', 1, TRUE,
-  '{"type":"object","properties":{"companyName":{"type":"string"},"companyAddress":{"type":"string"},"companyRep":{"type":"string"},"workdayDefaultStart":{"type":"string","pattern":"^\\d{2}:\\d{2}$"},"workdayDefaultEnd":{"type":"string","pattern":"^\\d{2}:\\d{2}$"},"lunchMinutes":{"type":"number","minimum":0,"maximum":240}},"required":[]}',
-  '{"list":{"columns":["created_at"]},"form":{"layout":[{"type":"grid","cols":[{"field":"companyName","label":"公司名称","span":12},{"field":"companyAddress","label":"公司地址","span":12},{"field":"companyRep","label":"代表者","span":6},{"field":"workdayDefaultStart","label":"上班(HH:mm)","span":6},{"field":"workdayDefaultEnd","label":"下班(HH:mm)","span":6},{"field":"lunchMinutes","label":"午休(分钟)","span":6,"props":{"type":"number"}}]}]}}',
-  '{"filters":["created_at"],"sorts":["created_at"]}',
-  '{"coreFields":[]}',
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='certificate_request' AND version=1);
+
+INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT NULL,'company_setting', 1, TRUE,
+  '{"type":"object","properties":{"companyName":{"type":"string"},"companyAddress":{"type":"string"},"companyRep":{"type":"string"},"workdayDefaultStart":{"type":"string","pattern":"^\\d{2}:\\d{2}$"},"workdayDefaultEnd":{"type":"string","pattern":"^\\d{2}:\\d{2}$"},"lunchMinutes":{"type":"number","minimum":0,"maximum":240}},"required":[]}'::jsonb,
+  '{"list":{"columns":["created_at"]},"form":{"layout":[{"type":"grid","cols":[{"field":"companyName","label":"公司名称","span":12},{"field":"companyAddress","label":"公司地址","span":12},{"field":"companyRep","label":"代表者","span":6},{"field":"workdayDefaultStart","label":"上班(HH:mm)","span":6},{"field":"workdayDefaultEnd","label":"下班(HH:mm)","span":6},{"field":"lunchMinutes","label":"午休(分钟)","span":6,"props":{"type":"number"}}]}]}}'::jsonb,
+  '{"filters":["created_at"],"sorts":["created_at"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
   '[]'::jsonb,
   NULL::jsonb,
   NULL::jsonb
- )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='company_setting' AND version=1);
 
 -- ===============================
 -- 库存模块表结构（物料/仓库/仓位/批次/库存移动/现存量）
@@ -1950,180 +1933,152 @@ CREATE TABLE IF NOT EXISTS inventory_balances (
 CREATE INDEX IF NOT EXISTS idx_inv_bal_company_wh ON inventory_balances(company_code, warehouse_code);
 
 -- 最小 schema 种子：materials/warehouse/bin/stock_status/batch/inventory_movement
+-- 使用 WHERE NOT EXISTS 正确处理 company_code=NULL 的情况
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-VALUES
- (NULL,'material', 1, TRUE,
-  '{"type":"object","properties":{"code":{"type":"string"},"baseUom":{"type":"string"},"batchManagement":{"type":"boolean"},"price":{"type":"number"}}}',
-  '{"list":{"columns":["material_code","base_uom","is_batch_mgmt"]},"form":{"layout":[{"type":"grid","cols":[{"field":"code","label":"编码","span":6},{"field":"baseUom","label":"基本单位","span":6},{"field":"batchManagement","label":"批次管理","widget":"switch","span":6}]}]}}',
-  '{"filters":["material_code","is_batch_mgmt"],"sorts":["material_code"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- ),
- (NULL,'warehouse', 1, TRUE,
-  '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"}}}',
-  '{"list":{"columns":["warehouse_code","name"]}}',
-  '{"filters":["warehouse_code","name"],"sorts":["warehouse_code","name"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- ),
- (NULL,'bin', 1, TRUE,
-  '{"type":"object","properties":{"warehouseCode":{"type":"string"},"code":{"type":"string"},"name":{"type":"string"}}}',
-  '{"list":{"columns":["warehouse_code","bin_code","name"]}}',
-  '{"filters":["warehouse_code","bin_code"],"sorts":["warehouse_code","bin_code"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- ),
- (NULL,'stock_status', 1, TRUE,
-  '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"}}}',
-  '{"list":{"columns":["status_code","name"]}}',
-  '{"filters":["status_code","name"],"sorts":["status_code","name"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- ),
- (NULL,'batch', 1, TRUE,
-  '{"type":"object","properties":{"materialCode":{"type":"string"},"batchNo":{"type":"string"},"mfgDate":{"type":"string","format":"date"},"expDate":{"type":"string","format":"date"}}}',
-  '{"list":{"columns":["material_code","batch_no","mfg_date","exp_date"]}}',
-  '{"filters":["material_code","batch_no"],"sorts":["material_code","batch_no"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- ),
- (NULL,'inventory_movement', 1, TRUE,
-  '{"type":"object","properties":{"movementType":{"type":"string","enum":["IN","OUT","TRANSFER"]},"movementDate":{"type":"string","format":"date"},"fromWarehouse":{"type":["string","null"]},"fromBin":{"type":["string","null"]},"toWarehouse":{"type":["string","null"]},"toBin":{"type":["string","null"]},"referenceNo":{"type":["string","null"]},"lines":{"type":"array","items":{"type":"object","properties":{"lineNo":{"type":"integer"},"materialCode":{"type":"string"},"quantity":{"type":"number"},"uom":{"type":"string"},"batchNo":{"type":["string","null"]},"statusCode":{"type":["string","null"]}}}}}}',
-  '{"list":{"columns":["movement_date","movement_type","reference_no"]}}',
-  '{"filters":["movement_date","movement_type","reference_no"],"sorts":["movement_date"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+SELECT NULL,'material', 1, TRUE,
+  '{"type":"object","properties":{"code":{"type":"string"},"baseUom":{"type":"string"},"batchManagement":{"type":"boolean"},"price":{"type":"number"}}}'::jsonb,
+  '{"list":{"columns":["material_code","base_uom","is_batch_mgmt"]},"form":{"layout":[{"type":"grid","cols":[{"field":"code","label":"编码","span":6},{"field":"baseUom","label":"基本单位","span":6},{"field":"batchManagement","label":"批次管理","widget":"switch","span":6}]}]}}'::jsonb,
+  '{"filters":["material_code","is_batch_mgmt"],"sorts":["material_code"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='material' AND version=1);
 
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-VALUES
- (NULL,'businesspartner', 1, TRUE,
- '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"},"flags":{"type":"object","properties":{"customer":{"type":"boolean"},"vendor":{"type":"boolean"}}},"status":{"type":"string"}},"required":["code","name"]}',
- '{"list":{"columns":["partner_code","name","flag_customer","flag_vendor","status"]},"form":{"labelWidth":"140px","layout":[{"type":"grid","cols":[{"field":"code","label":"取引先コード","span":8},{"field":"name","label":"名称","span":16}]},{"type":"grid","cols":[{"field":"flags.customer","label":"顧客区分","span":8,"widget":"switch","props":{"activeText":"あり","inactiveText":"なし"}},{"field":"flags.vendor","label":"仕入先区分","span":8,"widget":"switch","props":{"activeText":"あり","inactiveText":"なし"}},{"field":"status","label":"ステータス","span":8}]}]}}',
- '{"filters":["partner_code","name","flag_customer","flag_vendor","status"],"sorts":["partner_code","name"]}',
- '{"coreFields":[{"name":"partner_code","path":"code","type":"string","index":{"strategy":"generated_column","unique":true,"scope":["company_code"]}},{"name":"name","path":"name","type":"string","index":{"strategy":"generated_column"}},{"name":"flag_customer","path":"flags.customer","type":"boolean","index":{"strategy":"generated_column"}},{"name":"flag_vendor","path":"flags.vendor","type":"boolean","index":{"strategy":"generated_column"}},{"name":"status","path":"status","type":"string","index":{"strategy":"generated_column"}}]}',
- '[]'::jsonb,
- NULL::jsonb,
- NULL::jsonb
-)
-ON CONFLICT (company_code, name, version) DO NOTHING;
+SELECT NULL,'warehouse', 1, TRUE,
+  '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"}}}'::jsonb,
+  '{"list":{"columns":["warehouse_code","name"]}}'::jsonb,
+  '{"filters":["warehouse_code","name"],"sorts":["warehouse_code","name"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='warehouse' AND version=1);
+
+INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT NULL,'bin', 1, TRUE,
+  '{"type":"object","properties":{"warehouseCode":{"type":"string"},"code":{"type":"string"},"name":{"type":"string"}}}'::jsonb,
+  '{"list":{"columns":["warehouse_code","bin_code","name"]}}'::jsonb,
+  '{"filters":["warehouse_code","bin_code"],"sorts":["warehouse_code","bin_code"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='bin' AND version=1);
+
+INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT NULL,'stock_status', 1, TRUE,
+  '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"}}}'::jsonb,
+  '{"list":{"columns":["status_code","name"]}}'::jsonb,
+  '{"filters":["status_code","name"],"sorts":["status_code","name"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='stock_status' AND version=1);
+
+INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT NULL,'batch', 1, TRUE,
+  '{"type":"object","properties":{"materialCode":{"type":"string"},"batchNo":{"type":"string"},"mfgDate":{"type":"string","format":"date"},"expDate":{"type":"string","format":"date"}}}'::jsonb,
+  '{"list":{"columns":["material_code","batch_no","mfg_date","exp_date"]}}'::jsonb,
+  '{"filters":["material_code","batch_no"],"sorts":["material_code","batch_no"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='batch' AND version=1);
+
+INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT NULL,'inventory_movement', 1, TRUE,
+  '{"type":"object","properties":{"movementType":{"type":"string","enum":["IN","OUT","TRANSFER"]},"movementDate":{"type":"string","format":"date"},"fromWarehouse":{"type":["string","null"]},"fromBin":{"type":["string","null"]},"toWarehouse":{"type":["string","null"]},"toBin":{"type":["string","null"]},"referenceNo":{"type":["string","null"]},"lines":{"type":"array","items":{"type":"object","properties":{"lineNo":{"type":"integer"},"materialCode":{"type":"string"},"quantity":{"type":"number"},"uom":{"type":"string"},"batchNo":{"type":["string","null"]},"statusCode":{"type":["string","null"]}}}}}}'::jsonb,
+  '{"list":{"columns":["movement_date","movement_type","reference_no"]}}'::jsonb,
+  '{"filters":["movement_date","movement_type","reference_no"],"sorts":["movement_date"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='inventory_movement' AND version=1);
+
+INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT NULL,'businesspartner', 1, TRUE,
+ '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"},"flags":{"type":"object","properties":{"customer":{"type":"boolean"},"vendor":{"type":"boolean"}}},"status":{"type":"string"}},"required":["code","name"]}'::jsonb,
+ '{"list":{"columns":["partner_code","name","flag_customer","flag_vendor","status"]},"form":{"labelWidth":"140px","layout":[{"type":"grid","cols":[{"field":"code","label":"取引先コード","span":8},{"field":"name","label":"名称","span":16}]},{"type":"grid","cols":[{"field":"flags.customer","label":"顧客区分","span":8,"widget":"switch","props":{"activeText":"あり","inactiveText":"なし"}},{"field":"flags.vendor","label":"仕入先区分","span":8,"widget":"switch","props":{"activeText":"あり","inactiveText":"なし"}},{"field":"status","label":"ステータス","span":8}]}]}}'::jsonb,
+ '{"filters":["partner_code","name","flag_customer","flag_vendor","status"],"sorts":["partner_code","name"]}'::jsonb,
+ '{"coreFields":[{"name":"partner_code","path":"code","type":"string","index":{"strategy":"generated_column","unique":true,"scope":["company_code"]}},{"name":"name","path":"name","type":"string","index":{"strategy":"generated_column"}},{"name":"flag_customer","path":"flags.customer","type":"boolean","index":{"strategy":"generated_column"}},{"name":"flag_vendor","path":"flags.vendor","type":"boolean","index":{"strategy":"generated_column"}},{"name":"status","path":"status","type":"string","index":{"strategy":"generated_column"}}]}'::jsonb,
+ '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='businesspartner' AND version=1);
 
 -- Seed: HR/Payroll 基础 schema（最小骨架）
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-VALUES
- (NULL,'employment_type', 1, TRUE,
-  '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"},"isActive":{"type":"boolean"}},"required":["code","name"]}',
-  '{"list":{"columns":["type_code","name","is_active"]},"form":{"layout":[]}}',
-  '{"filters":["type_code","name","is_active"],"sorts":["type_code","name"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- ),
- -- payroll_item schema 移除
- (NULL,'payroll_policy', 1, TRUE,
-  '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"},"rules":{"type":"array"}},"required":["code","name"]}',
-  '{"list":{"columns":["policy_code","name"]},"form":{"layout":[]}}',
-  '{"filters":["policy_code","name"],"sorts":["policy_code","name"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+SELECT NULL,'employment_type', 1, TRUE,
+  '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"},"isActive":{"type":"boolean"}},"required":["code","name"]}'::jsonb,
+  '{"list":{"columns":["type_code","name","is_active"]},"form":{"layout":[]}}'::jsonb,
+  '{"filters":["type_code","name","is_active"],"sorts":["type_code","name"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='employment_type' AND version=1);
+
+INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT NULL,'payroll_policy', 1, TRUE,
+  '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"},"rules":{"type":"array"}},"required":["code","name"]}'::jsonb,
+  '{"list":{"columns":["policy_code","name"]},"form":{"layout":[]}}'::jsonb,
+  '{"filters":["policy_code","name"],"sorts":["policy_code","name"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='payroll_policy' AND version=1);
 
 -- Seed: openitem schema（用于通用搜索 DSL，便于前端查询未清项）
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-VALUES
- (NULL,'openitem', 1, TRUE,
-  '{"type":"object","properties":{}}',
-  '{"list":{"columns":["doc_date","partner_id","account_code","currency","original_amount","residual_amount"]},"form":{"layout":[]}}',
-  '{"filters":["doc_date","partner_id","account_code","currency","original_amount","residual_amount"],"sorts":["doc_date","residual_amount"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+SELECT NULL,'openitem', 1, TRUE,
+  '{"type":"object","properties":{}}'::jsonb,
+  '{"list":{"columns":["doc_date","partner_id","account_code","currency","original_amount","residual_amount"]},"form":{"layout":[]}}'::jsonb,
+  '{"filters":["doc_date","partner_id","account_code","currency","original_amount","residual_amount"],"sorts":["doc_date","residual_amount"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='openitem' AND version=1);
 
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-VALUES
- (NULL,'account', 1, TRUE,
-  '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"},"category":{"type":"string"}},"required":["code","name","category"]}',
-  '{"list":{"columns":["account_code","name","category"]},"form":{"layout":[]}}',
-  '{"filters":["account_code","name","category"],"sorts":["account_code"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- ),
- (NULL,'openitem_projection', 1, TRUE,
-  '{"type":"object","properties":{"voucher_id":{"type":"string"},"voucher_line_no":{"type":"integer"},"account_code":{"type":"string"}},"required":["voucher_id","voucher_line_no","account_code"]}',
-  '{"list":{"columns":["voucher_id","voucher_line_no","account_code"]},"form":{"layout":[]}}',
-  '{"filters":["voucher_id","account_code"],"sorts":["voucher_line_no"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+SELECT NULL,'account', 1, TRUE,
+  '{"type":"object","properties":{"code":{"type":"string"},"name":{"type":"string"},"category":{"type":"string"}},"required":["code","name","category"]}'::jsonb,
+  '{"list":{"columns":["account_code","name","category"]},"form":{"layout":[]}}'::jsonb,
+  '{"filters":["account_code","name","category"],"sorts":["account_code"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='account' AND version=1);
 
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-VALUES
- (NULL,'bank', 1, TRUE,
-  '{"type":"object","properties":{"bankCode":{"type":"string"},"name":{"type":"string"}},"required":["bankCode","name"]}',
-  '{"list":{"columns":["bank_code","name"]},"form":{"layout":[]}}',
-  '{"filters":["bank_code","name"],"sorts":["bank_code"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- ),
- (NULL,'branch', 1, TRUE,
-  '{"type":"object","properties":{"bankCode":{"type":"string"},"branchCode":{"type":"string"},"name":{"type":"string"}},"required":["bankCode","branchCode","name"]}',
-  '{"list":{"columns":["bank_code","branch_code","name"]},"form":{"layout":[]}}',
-  '{"filters":["bank_code","branch_code","name"],"sorts":["branch_code"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+SELECT NULL,'openitem_projection', 1, TRUE,
+  '{"type":"object","properties":{"voucher_id":{"type":"string"},"voucher_line_no":{"type":"integer"},"account_code":{"type":"string"}},"required":["voucher_id","voucher_line_no","account_code"]}'::jsonb,
+  '{"list":{"columns":["voucher_id","voucher_line_no","account_code"]},"form":{"layout":[]}}'::jsonb,
+  '{"filters":["voucher_id","account_code"],"sorts":["voucher_line_no"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='openitem_projection' AND version=1);
 
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-VALUES
- (NULL,'accounting_period', 1, TRUE,
-  '{"type":"object","properties":{"periodStart":{"type":"string","format":"date"},"periodEnd":{"type":"string","format":"date"},"isOpen":{"type":"boolean"}},"required":["periodStart","periodEnd"]}',
-  '{"list":{"columns":["period_start","period_end","is_open"]},"form":{"layout":[]}}',
-  '{"filters":["period_start","period_end","is_open"],"sorts":["period_start"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- ),
- (NULL,'invoice_issuer', 1, TRUE,
-  '{"type":"object","properties":{"registrationNo":{"type":"string"},"name":{"type":"string"}},"required":["registrationNo","name"]}',
-  '{"list":{"columns":["registration_no","name"]},"form":{"layout":[]}}',
-  '{"filters":["registration_no","name"],"sorts":["registration_no"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+SELECT NULL,'bank', 1, TRUE,
+  '{"type":"object","properties":{"bankCode":{"type":"string"},"name":{"type":"string"}},"required":["bankCode","name"]}'::jsonb,
+  '{"list":{"columns":["bank_code","name"]},"form":{"layout":[]}}'::jsonb,
+  '{"filters":["bank_code","name"],"sorts":["bank_code"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='bank' AND version=1);
+
+INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT NULL,'branch', 1, TRUE,
+  '{"type":"object","properties":{"bankCode":{"type":"string"},"branchCode":{"type":"string"},"name":{"type":"string"}},"required":["bankCode","branchCode","name"]}'::jsonb,
+  '{"list":{"columns":["bank_code","branch_code","name"]},"form":{"layout":[]}}'::jsonb,
+  '{"filters":["bank_code","branch_code","name"],"sorts":["branch_code"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='branch' AND version=1);
+
+INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT NULL,'accounting_period', 1, TRUE,
+  '{"type":"object","properties":{"periodStart":{"type":"string","format":"date"},"periodEnd":{"type":"string","format":"date"},"isOpen":{"type":"boolean"}},"required":["periodStart","periodEnd"]}'::jsonb,
+  '{"list":{"columns":["period_start","period_end","is_open"]},"form":{"layout":[]}}'::jsonb,
+  '{"filters":["period_start","period_end","is_open"],"sorts":["period_start"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='accounting_period' AND version=1);
+
+INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT NULL,'invoice_issuer', 1, TRUE,
+  '{"type":"object","properties":{"registrationNo":{"type":"string"},"name":{"type":"string"}},"required":["registrationNo","name"]}'::jsonb,
+  '{"list":{"columns":["registration_no","name"]},"form":{"layout":[]}}'::jsonb,
+  '{"filters":["registration_no","name"],"sorts":["registration_no"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='invoice_issuer' AND version=1);
 
  
 -- 推送设备令牌（用于 APNs/FCM 等）
@@ -2181,17 +2136,13 @@ CREATE TABLE IF NOT EXISTS notification_rule_runs (
 
 -- Schema: 通知策略（用于 UI 渲染与权限控制）
 INSERT INTO schemas(company_code, name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-VALUES
- (NULL,'notification_policy', 1, TRUE,
-  '{"type":"object","properties":{"name":{"type":"string"},"nl":{"type":["string","null"]},"compiled":{"type":"object"},"isActive":{"type":"boolean"}},"required":["name"]}',
-  '{"list":{"columns":["name","is_active","updated_at"]},"form":{"layout":[{"type":"grid","cols":[{"field":"name","label":"策略名称","span":12},{"field":"isActive","label":"启用","widget":"switch","span":4}]},{"type":"grid","cols":[{"field":"nl","label":"自然语言描述","span":24,"props":{"type":"textarea","rows":3}},{"field":"compiled","label":"编译结果(JSON)","span":24,"props":{"type":"json"}}]}]}}',
-  '{"filters":["name","is_active"],"sorts":["updated_at"]}',
-  '{"coreFields":[]}',
-  '[]'::jsonb,
-  NULL::jsonb,
-  NULL::jsonb
- )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+SELECT NULL,'notification_policy', 1, TRUE,
+  '{"type":"object","properties":{"name":{"type":"string"},"nl":{"type":["string","null"]},"compiled":{"type":"object"},"isActive":{"type":"boolean"}},"required":["name"]}'::jsonb,
+  '{"list":{"columns":["name","is_active","updated_at"]},"form":{"layout":[{"type":"grid","cols":[{"field":"name","label":"策略名称","span":12},{"field":"isActive","label":"启用","widget":"switch","span":4}]},{"type":"grid","cols":[{"field":"nl","label":"自然语言描述","span":24,"props":{"type":"textarea","rows":3}},{"field":"compiled","label":"编译结果(JSON)","span":24,"props":{"type":"json"}}]}]}}'::jsonb,
+  '{"filters":["name","is_active"],"sorts":["updated_at"]}'::jsonb,
+  '{"coreFields":[]}'::jsonb,
+  '[]'::jsonb, NULL::jsonb, NULL::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM schemas WHERE company_code IS NULL AND name='notification_policy' AND version=1);
 
 CREATE TABLE IF NOT EXISTS ai_workflow_rules (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2522,6 +2473,14 @@ CREATE INDEX IF NOT EXISTS idx_depreciation_runs_company ON depreciation_runs(co
 
 -- 5. 资产编号序列表
 CREATE TABLE IF NOT EXISTS asset_sequences (
+  company_code TEXT NOT NULL,
+  last_number INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY(company_code)
+);
+
+-- 取引先编号序列表
+CREATE TABLE IF NOT EXISTS partner_sequences (
   company_code TEXT NOT NULL,
   last_number INTEGER NOT NULL DEFAULT 0,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),

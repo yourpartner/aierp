@@ -3233,6 +3233,24 @@ public sealed class AgentKitService
                     var payload = await GetVoucherByNumberAsync(context.CompanyCode, voucherNo!, ct);
                     return ToolExecutionResult.FromModel(payload);
                 }
+                case "create_business_partner":
+                {
+                    var partnerName = args.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(partnerName))
+                        throw new Exception(Localize(context.Language, "取引先名を指定してください。", "取引先名不能为空"));
+                    _logger.LogInformation("[AgentKit] 调用工具 create_business_partner，name={Name}", partnerName);
+                    var result = await CreateBusinessPartnerAsync(context, args, ct);
+                    return result;
+                }
+                case "fetch_webpage":
+                {
+                    var url = args.TryGetProperty("url", out var urlEl) ? urlEl.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(url))
+                        throw new Exception(Localize(context.Language, "url を指定してください。", "url 不能为空"));
+                    _logger.LogInformation("[AgentKit] 调用工具 fetch_webpage，url={Url}", url);
+                    var content = await FetchWebpageContentAsync(url!, ct);
+                    return ToolExecutionResult.FromModel(new { status = "ok", url, content });
+                }
                 default:
                     throw new Exception(Localize(context.Language, $"未登録のツールです：{name}", $"未知的工具：{name}"));
             }
@@ -4781,6 +4799,180 @@ public sealed class AgentKitService
         return ToolExecutionResult.FromModel(model, new List<AgentResultMessage> { msg });
     }
 
+    /// <summary>
+    /// 创建取引先（业务伙伴）主数据，并自动匹配インボイス登録番号
+    /// </summary>
+    private async Task<ToolExecutionResult> CreateBusinessPartnerAsync(AgentExecutionContext context, JsonElement args, CancellationToken ct)
+    {
+        var partnerName = args.TryGetProperty("name", out var nameEl) ? nameEl.GetString()?.Trim() : null;
+        if (string.IsNullOrWhiteSpace(partnerName))
+            throw new Exception(Localize(context.Language, "取引先名を指定してください。", "取引先名不能为空"));
+        
+        var nameKana = args.TryGetProperty("nameKana", out var kanaEl) ? kanaEl.GetString()?.Trim() : null;
+        var isCustomer = args.TryGetProperty("isCustomer", out var custEl) && custEl.GetBoolean();
+        var isVendor = args.TryGetProperty("isVendor", out var vendEl) && vendEl.GetBoolean();
+        var postalCode = args.TryGetProperty("postalCode", out var pcEl) ? pcEl.GetString()?.Trim() : null;
+        var prefecture = args.TryGetProperty("prefecture", out var prefEl) ? prefEl.GetString()?.Trim() : null;
+        var address = args.TryGetProperty("address", out var addrEl) ? addrEl.GetString()?.Trim() : null;
+        var phone = args.TryGetProperty("phone", out var phoneEl) ? phoneEl.GetString()?.Trim() : null;
+        var fax = args.TryGetProperty("fax", out var faxEl) ? faxEl.GetString()?.Trim() : null;
+        var email = args.TryGetProperty("email", out var emailEl) ? emailEl.GetString()?.Trim() : null;
+        var contactPerson = args.TryGetProperty("contactPerson", out var cpEl) ? cpEl.GetString()?.Trim() : null;
+
+        // 自动从 invoice_issuers 表中匹配 T 番号
+        string? invoiceRegNo = null;
+        DateOnly? invoiceStartDate = null;
+        string? matchedIssuerName = null;
+        
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        
+        // 查找匹配的インボイス登録番号（基于公司名称模糊匹配）
+        await using (var searchCmd = conn.CreateCommand())
+        {
+            searchCmd.CommandText = @"
+                SELECT registration_no, name, effective_from
+                FROM invoice_issuers
+                WHERE (name ILIKE '%' || $1 || '%' OR name_kana ILIKE '%' || $1 || '%')
+                  AND (effective_to IS NULL OR effective_to >= CURRENT_DATE)
+                ORDER BY 
+                    CASE WHEN name = $1 THEN 0 ELSE 1 END,
+                    CASE WHEN name ILIKE $1 || '%' THEN 0 ELSE 1 END
+                LIMIT 1";
+            searchCmd.Parameters.AddWithValue(partnerName);
+            
+            await using var reader = await searchCmd.ExecuteReaderAsync(ct);
+            if (await reader.ReadAsync(ct))
+            {
+                invoiceRegNo = reader.GetString(0);
+                matchedIssuerName = reader.IsDBNull(1) ? null : reader.GetString(1);
+                invoiceStartDate = reader.IsDBNull(2) ? null : DateOnly.FromDateTime(reader.GetDateTime(2));
+                _logger.LogInformation("[AgentKit] 自动匹配到インボイス登録番号 {RegNo}，匹配名称={MatchedName}", invoiceRegNo, matchedIssuerName);
+            }
+        }
+
+        // 生成取引先编号
+        string partnerCode;
+        await using (var seqCmd = conn.CreateCommand())
+        {
+            seqCmd.CommandText = @"
+                INSERT INTO partner_sequences (company_code, last_number, updated_at)
+                VALUES ($1, 1, now())
+                ON CONFLICT (company_code) DO UPDATE SET last_number = partner_sequences.last_number + 1, updated_at = now()
+                RETURNING last_number";
+            seqCmd.Parameters.AddWithValue(context.CompanyCode);
+            var seqNo = (int)(await seqCmd.ExecuteScalarAsync(ct) ?? 1);
+            partnerCode = $"BP{seqNo:D6}";
+        }
+
+        // 构建 payload
+        var payloadObj = new JsonObject
+        {
+            ["name"] = partnerName,
+            ["status"] = "active",
+            ["flags"] = new JsonObject { ["customer"] = isCustomer, ["vendor"] = isVendor }
+        };
+        if (!string.IsNullOrWhiteSpace(nameKana)) payloadObj["nameKana"] = nameKana;
+        if (!string.IsNullOrWhiteSpace(invoiceRegNo)) payloadObj["invoiceRegistrationNumber"] = invoiceRegNo;
+        if (invoiceStartDate.HasValue) payloadObj["invoiceRegistrationStartDate"] = invoiceStartDate.Value.ToString("yyyy-MM-dd");
+        
+        // 住所信息
+        if (!string.IsNullOrWhiteSpace(postalCode) || !string.IsNullOrWhiteSpace(prefecture) || !string.IsNullOrWhiteSpace(address))
+        {
+            var addrObj = new JsonObject();
+            if (!string.IsNullOrWhiteSpace(postalCode)) addrObj["postalCode"] = postalCode;
+            if (!string.IsNullOrWhiteSpace(prefecture)) addrObj["prefecture"] = prefecture;
+            if (!string.IsNullOrWhiteSpace(address)) addrObj["address"] = address;
+            payloadObj["address"] = addrObj;
+        }
+        
+        // 联系方式
+        if (!string.IsNullOrWhiteSpace(phone) || !string.IsNullOrWhiteSpace(fax) || !string.IsNullOrWhiteSpace(email) || !string.IsNullOrWhiteSpace(contactPerson))
+        {
+            var contactObj = new JsonObject();
+            if (!string.IsNullOrWhiteSpace(phone)) contactObj["phone"] = phone;
+            if (!string.IsNullOrWhiteSpace(fax)) contactObj["fax"] = fax;
+            if (!string.IsNullOrWhiteSpace(email)) contactObj["email"] = email;
+            if (!string.IsNullOrWhiteSpace(contactPerson)) contactObj["contactPerson"] = contactPerson;
+            payloadObj["contact"] = contactObj;
+        }
+
+        // 插入数据库
+        Guid newId;
+        await using (var insertCmd = conn.CreateCommand())
+        {
+            insertCmd.CommandText = @"
+                INSERT INTO businesspartners (company_code, payload)
+                VALUES ($1, $2)
+                RETURNING id";
+            insertCmd.Parameters.AddWithValue(context.CompanyCode);
+            insertCmd.Parameters.AddWithValue(payloadObj.ToJsonString());
+            newId = (Guid)(await insertCmd.ExecuteScalarAsync(ct))!;
+        }
+
+        var resultMsg = Localize(context.Language,
+            invoiceRegNo != null 
+                ? $"取引先「{partnerName}」を登録しました（コード：{partnerCode}）。インボイス登録番号 {invoiceRegNo} を自動設定しました。" 
+                : $"取引先「{partnerName}」を登録しました（コード：{partnerCode}）。",
+            invoiceRegNo != null
+                ? $"已创建取引先「{partnerName}」（编码：{partnerCode}）。已自动匹配 T 番号 {invoiceRegNo}。"
+                : $"已创建取引先「{partnerName}」（编码：{partnerCode}）。");
+
+        var msg = new AgentResultMessage("assistant", resultMsg, "success", new
+        {
+            label = partnerCode,
+            action = "openEmbed",
+            key = "bp.list",
+            payload = new { partnerId = newId.ToString(), partnerCode }
+        });
+
+        return ToolExecutionResult.FromModel(new
+        {
+            status = "ok",
+            partnerId = newId,
+            partnerCode,
+            name = partnerName,
+            invoiceRegistrationNumber = invoiceRegNo,
+            invoiceRegistrationStartDate = invoiceStartDate?.ToString("yyyy-MM-dd"),
+            matchedIssuerName
+        }, new List<AgentResultMessage> { msg });
+    }
+
+    /// <summary>
+    /// 获取网页内容（用于从URL提取公司信息）
+    /// </summary>
+    private async Task<string> FetchWebpageContentAsync(string url, CancellationToken ct)
+    {
+        using var http = new HttpClient();
+        http.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (compatible; YanxiaBot/1.0)");
+        http.Timeout = TimeSpan.FromSeconds(30);
+        
+        try
+        {
+            var response = await http.GetAsync(url, ct);
+            response.EnsureSuccessStatusCode();
+            var html = await response.Content.ReadAsStringAsync(ct);
+            
+            // 简单的 HTML 清理：移除脚本、样式等，保留文本内容
+            html = System.Text.RegularExpressions.Regex.Replace(html, @"<script[^>]*>[\s\S]*?</script>", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            html = System.Text.RegularExpressions.Regex.Replace(html, @"<style[^>]*>[\s\S]*?</style>", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            html = System.Text.RegularExpressions.Regex.Replace(html, @"<[^>]+>", " ");
+            html = System.Text.RegularExpressions.Regex.Replace(html, @"\s+", " ");
+            
+            // 限制返回内容长度
+            if (html.Length > 15000)
+            {
+                html = html.Substring(0, 15000) + "...(truncated)";
+            }
+            
+            return html.Trim();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[AgentKit] fetch_webpage 失败，url={Url}", url);
+            throw new Exception($"无法获取网页内容：{ex.Message}");
+        }
+    }
+
     private async Task PersistAssistantMessagesAsync(Guid sessionId, Guid? taskId, IReadOnlyList<AgentResultMessage> messages, CancellationToken ct)
     {
         if (messages.Count == 0) return;
@@ -5151,6 +5343,52 @@ public sealed class AgentKitService
                             voucher_no = new { type = "string" }
                         },
                         required = new[] { "voucher_no" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "create_business_partner",
+                    description = "創建取引先（業務夥伴）マスタ。可以是顧客（客戶）或仕入先（供應商）。系統會自動從インボイス登録番號數據庫中匹配T番號。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            name = new { type = "string", description = "取引先名稱（正式名稱）- 必須" },
+                            nameKana = new { type = "string", description = "取引先名稱假名" },
+                            isCustomer = new { type = "boolean", description = "是否為顧客（客戶）" },
+                            isVendor = new { type = "boolean", description = "是否為仕入先（供應商）" },
+                            postalCode = new { type = "string", description = "郵便番號" },
+                            prefecture = new { type = "string", description = "都道府縣" },
+                            address = new { type = "string", description = "住所（市區町村・番地・建物名）" },
+                            phone = new { type = "string", description = "電話番號" },
+                            fax = new { type = "string", description = "FAX番號" },
+                            email = new { type = "string", description = "電子郵件" },
+                            contactPerson = new { type = "string", description = "擔當者名" }
+                        },
+                        required = new[] { "name" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "fetch_webpage",
+                    description = "獲取指定URL的網頁內容。用於從企業官網提取公司信息。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            url = new { type = "string", description = "要獲取的網頁URL" }
+                        },
+                        required = new[] { "url" }
                     }
                 }
             }

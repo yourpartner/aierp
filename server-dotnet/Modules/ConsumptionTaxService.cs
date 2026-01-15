@@ -126,7 +126,6 @@ public class ConsumptionTaxService
         
         // 伝票明細を集計
         // インボイス登録番号（T番号）の有無により仕入税額控除率を計算
-        // 仕入の場合は仕入先（vendorId）のインボイス登録番号をチェック
         await using (var voucherCmd = conn.CreateCommand())
         {
             voucherCmd.CommandText = @"
@@ -136,13 +135,10 @@ public class ConsumptionTaxService
                     COALESCE((line->>'amount')::numeric, 0) as amount,
                     COALESCE((line->>'taxAmount')::numeric, 0) as tax_amount,
                     (v.payload->'header'->>'postingDate')::date as posting_date,
-                    line->>'vendorId' as vendor_id,
-                    bp.payload->>'invoiceRegistrationNumber' as vendor_invoice_no
-                FROM vouchers v
-                CROSS JOIN LATERAL jsonb_array_elements(v.payload->'lines') as line
-                LEFT JOIN businesspartners bp 
-                    ON bp.company_code = v.company_code 
-                    AND bp.partner_code = line->>'vendorId'
+                    v.payload->'header'->>'invoiceRegistrationNo' as invoice_no,
+                    v.payload->'header'->>'invoiceRegistrationStatus' as invoice_status
+                FROM vouchers v,
+                     jsonb_array_elements(v.payload->'lines') as line
                 WHERE v.company_code = $1
                   AND (v.payload->'header'->>'postingDate')::date >= $2
                   AND (v.payload->'header'->>'postingDate')::date <= $3";
@@ -158,8 +154,8 @@ public class ConsumptionTaxService
                 var amount = reader.GetDecimal(2);
                 var taxAmount = reader.GetDecimal(3);
                 var postingDate = reader.IsDBNull(4) ? fromDate : reader.GetDateTime(4);
-                var vendorId = reader.IsDBNull(5) ? null : reader.GetString(5);
-                var vendorInvoiceNo = reader.IsDBNull(6) ? null : reader.GetString(6);
+                var invoiceNo = reader.IsDBNull(5) ? null : reader.GetString(5);
+                var invoiceStatus = reader.IsDBNull(6) ? null : reader.GetString(6);
                 
                 if (!accountTaxTypes.TryGetValue(accountCode, out var taxInfo))
                     continue;
@@ -206,9 +202,9 @@ public class ConsumptionTaxService
                     var purchaseAmount = -signedAmount;
                     var purchaseTax = -signedTax;
                     
-                    // インボイス制度：仕入先のT番号の有無で控除率を決定
-                    // 仕入先に有効なT番号がある場合は100%控除、ない場合は経過措置により80%/50%/0%
-                    var deductionRate = GetInvoiceDeductionRate(vendorInvoiceNo, postingDate);
+                    // インボイス制度：T番号の有無で控除率を決定
+                    // 有効なT番号がある場合は100%控除、ない場合は経過措置により80%/50%/0%
+                    var deductionRate = GetInvoiceDeductionRate(invoiceNo, invoiceStatus, postingDate);
                     
                     // 控除可能な税額と控除対象外の税額を計算
                     var actualTax = purchaseTax != 0 ? purchaseTax : Math.Round(purchaseAmount * 0.10m, 0);
@@ -316,23 +312,21 @@ public class ConsumptionTaxService
     
     /// <summary>
     /// インボイス制度に基づく仕入税額控除率を計算
-    /// 仕入先のT番号（インボイス登録番号）の有無と経過措置により控除率を決定
+    /// T番号（インボイス登録番号）の有無と経過措置により控除率を決定
     /// </summary>
-    /// <param name="vendorInvoiceNo">仕入先のインボイス登録番号（T + 13桁）</param>
+    /// <param name="invoiceNo">インボイス登録番号（T + 13桁）</param>
+    /// <param name="invoiceStatus">検証結果（valid/invalid/null）</param>
     /// <param name="postingDate">転記日</param>
     /// <returns>控除率（1.0 = 100%, 0.8 = 80%, 0.5 = 50%, 0.0 = 0%）</returns>
-    private static decimal GetInvoiceDeductionRate(string? vendorInvoiceNo, DateTime postingDate)
+    private static decimal GetInvoiceDeductionRate(string? invoiceNo, string? invoiceStatus, DateTime postingDate)
     {
-        // 仕入先に有効なT番号がある場合は100%控除
-        // T番号の形式: T + 13桁の数字
-        if (!string.IsNullOrEmpty(vendorInvoiceNo) && 
-            vendorInvoiceNo.Length == 14 && 
-            vendorInvoiceNo.StartsWith("T", StringComparison.OrdinalIgnoreCase))
+        // 有効なT番号がある場合は100%控除
+        if (!string.IsNullOrEmpty(invoiceNo) && invoiceStatus == "valid")
         {
             return 1.00m;
         }
         
-        // T番号がない場合は経過措置を適用
+        // T番号がない、または無効な場合は経過措置を適用
         // 2023/10/01 ~ 2026/09/30: 80%控除
         // 2026/10/01 ~ 2029/09/30: 50%控除
         // 2029/10/01 ~          : 0%控除（控除不可）

@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Http;
 using Npgsql;
 using Server.Infrastructure;
 using Server.Infrastructure.Modules;
+using Server.Services;
+using StaffingEmailService = Server.Services.StaffingEmailService;
 
 namespace Server.Modules.Staffing;
 
@@ -591,6 +593,83 @@ public class EmailEngineModule : ModuleBase
             var json = (string?)await cmd.ExecuteScalarAsync(req.HttpContext.RequestAborted);
             if (json is null) return Results.NotFound(new { error = "not found" });
             return Results.Text(json, "application/json");
+        }).RequireAuthorization();
+
+        // ========== 邮件同步 (IMAP) ==========
+        app.MapPost("/staffing/email/sync", async (HttpRequest req, StaffingEmailService emailService) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            try
+            {
+                var maxMessages = 50;
+                if (req.Query.TryGetValue("max", out var maxStr) && int.TryParse(maxStr, out var m))
+                    maxMessages = Math.Clamp(m, 1, 200);
+
+                var (newCount, totalCount) = await emailService.SyncInboxAsync(cc.ToString()!, maxMessages, req.HttpContext.RequestAborted);
+                return Results.Ok(new 
+                { 
+                    success = true,
+                    newEmails = newCount, 
+                    totalInbox = totalCount,
+                    message = $"同期完了: {newCount}件の新規メールを取得しました"
+                });
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem($"邮件同步失败: {ex.Message}");
+            }
+        }).RequireAuthorization();
+
+        // ========== 处理发送队列 ==========
+        app.MapPost("/staffing/email/process-queue", async (HttpRequest req, StaffingEmailService emailService) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            try
+            {
+                var sentCount = await emailService.ProcessQueueAsync(cc.ToString()!, req.HttpContext.RequestAborted);
+                return Results.Ok(new 
+                { 
+                    success = true,
+                    sentCount,
+                    message = $"キュー処理完了: {sentCount}件のメールを送信しました"
+                });
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem($"发送队列处理失败: {ex.Message}");
+            }
+        }).RequireAuthorization();
+
+        // ========== 测试连接 ==========
+        app.MapGet("/staffing/email/test-connection", async (HttpRequest req, StaffingEmailService emailService) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            try
+            {
+                // 尝试同步0条消息来测试连接
+                var (_, totalCount) = await emailService.SyncInboxAsync(cc.ToString()!, 0, req.HttpContext.RequestAborted);
+                return Results.Ok(new 
+                { 
+                    success = true,
+                    totalInbox = totalCount,
+                    message = "接続テスト成功"
+                });
+            }
+            catch (Exception ex)
+            {
+                return Results.Ok(new 
+                { 
+                    success = false,
+                    error = ex.Message,
+                    message = "接続テスト失敗"
+                });
+            }
         }).RequireAuthorization();
     }
 }
