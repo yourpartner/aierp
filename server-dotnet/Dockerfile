@@ -35,6 +35,11 @@ RUN apt-get update && apt-get install -y \
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim AS build
 WORKDIR /src
+
+# Playwright 的 .NET 包内部 CLI 是 Node 脚本；在 build/publish 阶段安装 Node，
+# 然后把下载好的浏览器目录拷贝到 final 镜像，避免 final 镜像也要装 Node。
+RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists/*
+
 COPY ["Server.csproj", "."]
 RUN dotnet restore "Server.csproj"
 COPY . .
@@ -43,15 +48,15 @@ RUN dotnet build "Server.csproj" -c Release -o /app/build
 FROM build AS publish
 RUN dotnet publish "Server.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
+# 安装与 Microsoft.Playwright 版本匹配的浏览器到 /ms-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p /ms-playwright && \
+    node /app/publish/.playwright/package/cli.js install chromium
+
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
-
-# 使用 Microsoft.Playwright 自带 CLI 安装浏览器（避免 npx Playwright 与 .NET Playwright 浏览器版本不一致）
-# 需要将浏览器下载安装到 PLAYWRIGHT_BROWSERS_PATH，供运行时查找，例如 /ms-playwright/chromium-1140/...
-RUN mkdir -p /ms-playwright && \
-    chmod -R 777 /ms-playwright && \
-    node ./.playwright/package/cli.js install chromium
+COPY --from=publish /ms-playwright /ms-playwright
 
 # 设置时区
 ENV TZ=Asia/Tokyo
