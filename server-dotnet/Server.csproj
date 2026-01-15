@@ -7,7 +7,7 @@
   <ItemGroup>
     <PackageReference Include="Npgsql" Version="8.0.3" />
     <PackageReference Include="Azure.Storage.Blobs" Version="12.22.2" />
-    <PackageReference Include="JsonSchema.Net" Version="5.3.7" />
+    <PackageReference Include="JsonSchema.Net" Version="5.4.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.10" />
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
     <PackageReference Include="MailKit" Version="4.6.0" />
@@ -15,10 +15,10 @@
     <PackageReference Include="Otp.NET" Version="1.4.0" />
     <PackageReference Include="PdfPig" Version="0.1.9" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
-    <PackageReference Include="Cronos" Version="0.7.2" />
+    <PackageReference Include="Cronos" Version="0.8.0" />
     <PackageReference Include="Microsoft.Playwright" Version="1.48.0" />
     <PackageReference Include="CsvHelper" Version="30.0.3" />
-    <PackageReference Include="ClosedXML" Version="0.103.0" />
+    <PackageReference Include="ClosedXML" Version="0.104.0" />
     <PackageReference Include="Nager.Date" Version="1.41.0" />
   </ItemGroup>
   <ItemGroup>
