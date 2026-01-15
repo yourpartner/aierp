@@ -154,14 +154,50 @@ CREATE TABLE IF NOT EXISTS schemas (
   UNIQUE(company_code, name, version)
 );
 
+-- 兜底：历史环境可能已有 schemas 表但缺少对应的唯一索引/约束，导致 ON CONFLICT (company_code,name,version) 报 42P10
+-- 这里先去重，再补一个命名唯一索引供 ON CONFLICT 推断使用（若失败会输出 NOTICE，避免整份迁移中断）
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='schemas') THEN
+    BEGIN
+      DELETE FROM schemas s
+      USING (
+        SELECT id
+        FROM (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY company_code, name, version
+                   ORDER BY updated_at DESC, created_at DESC, id DESC
+                 ) AS rn
+          FROM schemas
+        ) ranked
+        WHERE ranked.rn > 1
+      ) d
+      WHERE s.id = d.id;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'dedupe schemas skipped: %', SQLERRM;
+    END;
+
+    BEGIN
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_schemas_company_name_version ON schemas(company_code, name, version);
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'create unique index uq_schemas_company_name_version skipped: %', SQLERRM;
+    END;
+  END IF;
+END $$;
+
 -- 兼容迁移：若历史存在 jsonstructures，则将其拷贝为全局 schemas（company_code=NULL）
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='jsonstructures') THEN
+    -- company_code=NULL 时 UNIQUE 不会触发冲突（NULL 不相等），因此不用 ON CONFLICT，改为 NOT EXISTS 保证幂等
     INSERT INTO schemas(company_code, name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-    SELECT NULL, name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints
+    SELECT NULL, js.name, js.version, js.is_active, js.schema, js.ui, js.query, js.core_fields, js.validators, js.numbering, js.ai_hints
     FROM jsonstructures js
-    ON CONFLICT (company_code, name, version) DO NOTHING;
+    WHERE NOT EXISTS (
+      SELECT 1 FROM schemas s
+      WHERE s.company_code IS NULL AND s.name = js.name AND s.version = js.version
+    );
   END IF;
 END $$;
 
@@ -1485,7 +1521,9 @@ CREATE INDEX IF NOT EXISTS idx_ai_role_generations_status ON ai_role_generations
 
 -- 种子：voucher/businesspartner 的结构定义（可在应用内编辑/版本化）
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
-VALUES
+SELECT v.company_code, v.name, v.version, v.is_active, v.schema, v.ui, v.query, v.core_fields, v.validators, v.numbering, v.ai_hints
+FROM (
+  VALUES
  (NULL,'voucher', 1, TRUE,
  '{"type":"object","properties":{"header":{"type":"object","properties":{"companyCode":{"type":"string"},"postingDate":{"type":"string","format":"date"},"voucherType":{"type":"string","enum":["GL","AP","AR","AA","SA","IN","OT"]},"voucherNo":{"type":"string"},"summary":{"type":"string"}},"required":["companyCode","postingDate","voucherType"]},"lines":{"type":"array","items":{"type":"object","properties":{"lineNo":{"type":"integer"},"accountCode":{"type":"string"},"debit":{"type":"integer"},"credit":{"type":"integer"},"vendorId":{"type":["string","null"]},"customerId":{"type":["string","null"]},"departmentId":{"type":["string","null"]},"employeeId":{"type":["string","null"]},"tax":{"type":["object","null"],"properties":{"rate":{"type":"number"},"amount":{"type":"integer"}}}},"required":["lineNo","accountCode","debit","credit"]}}},"required":["header","lines"]}',
  '{"list":{"columns":["posting_date","voucher_type","voucher_no"]},"form":{"layout":[]}}',
@@ -1495,10 +1533,16 @@ VALUES
  '{"strategy":"yymm6","targetPath":"header.voucherNo"}'::jsonb,
  '{"displayNames":{"ja":"仕訳","zh":"会计凭证","en":"Voucher"},"synonyms":["凭证","仕訳","会计分录","journal"],"typeMap":{"工资凭证":"SA","給与仕訳":"SA","入金":"IN","出金":"OT"}}'::jsonb
 )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+) AS v(company_code,name,version,is_active,schema,ui,query,core_fields,validators,numbering,ai_hints)
+WHERE NOT EXISTS (
+  SELECT 1 FROM schemas s
+  WHERE s.company_code IS NULL AND s.name = 'voucher' AND s.version = 1
+);
 
 -- Schema: 通知规则运行记录（只读列表）
 INSERT INTO schemas(company_code, name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT v.company_code, v.name, v.version, v.is_active, v.schema, v.ui, v.query, v.core_fields, v.validators, v.numbering, v.ai_hints
+FROM (
 VALUES
  (NULL,'notification_rule_run', 1, TRUE,
   '{"type":"object","properties":{"company_code":{"type":"string"},"policy_id":{"type":"string"},"rule_key":{"type":"string"},"last_run_at":{"type":"string","format":"date-time"}},"required":[]}',
@@ -1509,10 +1553,16 @@ VALUES
   NULL::jsonb,
   NULL::jsonb
  )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+) AS v(company_code,name,version,is_active,schema,ui,query,core_fields,validators,numbering,ai_hints)
+WHERE NOT EXISTS (
+  SELECT 1 FROM schemas s
+  WHERE s.company_code IS NULL AND s.name = 'notification_rule_run' AND s.version = 1
+);
 
 -- Schema: 通知发送日志（只读列表）
 INSERT INTO schemas(company_code, name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
+SELECT v.company_code, v.name, v.version, v.is_active, v.schema, v.ui, v.query, v.core_fields, v.validators, v.numbering, v.ai_hints
+FROM (
 VALUES
  (NULL,'notification_log', 1, TRUE,
   '{"type":"object","properties":{"company_code":{"type":"string"},"policy_id":{"type":["string","null"]},"rule_key":{"type":["string","null"]},"user_id":{"type":"string"},"related_entity":{"type":["string","null"]},"related_id":{"type":["string","null"]},"sent_at":{"type":"string","format":"date-time"},"sent_day":{"type":"string","format":"date"}},"required":[]}',
@@ -1523,7 +1573,11 @@ VALUES
   NULL::jsonb,
   NULL::jsonb
  )
-ON CONFLICT (company_code, name, version) DO NOTHING;
+) AS v(company_code,name,version,is_active,schema,ui,query,core_fields,validators,numbering,ai_hints)
+WHERE NOT EXISTS (
+  SELECT 1 FROM schemas s
+  WHERE s.company_code IS NULL AND s.name = 'notification_log' AND s.version = 1
+);
 
 -- Seed: CRM schemas（contact/deal/quote/sales_order/activity）
 INSERT INTO schemas(company_code,name, version, is_active, schema, ui, query, core_fields, validators, numbering, ai_hints)
