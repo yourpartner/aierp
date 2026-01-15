@@ -12,6 +12,8 @@ public sealed class EmailSettings
 {
     public string SmtpHost { get; set; } = "";
     public int SmtpPort { get; set; } = 587;
+    public string ImapHost { get; set; } = "";
+    public int ImapPort { get; set; } = 993;
     public string SmtpUser { get; set; } = "";
     public string SmtpPassword { get; set; } = "";
     public bool EnableSsl { get; set; } = true;
