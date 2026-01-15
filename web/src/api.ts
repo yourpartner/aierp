@@ -54,6 +54,22 @@ const defaultApiBase = (() => {
   // 2) Then allow user override from storage
   let stored = (safeGet('api_base_url') || '').trim()
 
+  // 防呆：如果当前页面是 https，但用户把 api_base_url 配成 http，会触发浏览器 Mixed Content/CORS 拦截，
+  // Axios 只会报 "Network Error"，后端也看不到请求。这里自动把常见的 azurewebsites 域名升级到 https。
+  if (typeof window !== 'undefined') {
+    try {
+      const pageProto = window.location.protocol
+      if (pageProto === 'https:' && /^http:\/\//i.test(stored)) {
+        // 仅对 azurewebsites.net 这类明确支持 https 的域名自动升级
+        const m = stored.match(/^http:\/\/([^/]+\.azurewebsites\.net)(\/.*)?$/i)
+        if (m) {
+          stored = `https://${m[1]}${m[2] || ''}`
+          safeSet('api_base_url', stored)
+        }
+      }
+    } catch {}
+  }
+
   // 3) In dev mode (localhost), directly hit backend on port 5179 (no proxy needed)
   if (typeof window !== 'undefined') {
     try {
