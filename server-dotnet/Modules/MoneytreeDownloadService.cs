@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Playwright;
+using OtpNet;
 
 namespace Server.Modules;
 
@@ -139,7 +140,65 @@ public sealed class MoneytreeDownloadService
 
             await page.ClickAsync(loginButtonSelector);
             await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
-            await Task.Delay(2000);
+            
+            // 增加等待时间，让登录完成
+            await Task.Delay(5000);
+            
+            // 诊断：登录后状态
+            _logger.LogInformation("[Moneytree][diag] Post-login URL: {Url}", page.Url);
+            
+            // 检查是否有 OTP 输入框（可能需要二次验证）
+            var otpInputVisible = await page.Locator("input[name='otp'], input[placeholder*='認証'], input[type='tel']").IsVisibleAsync();
+            if (otpInputVisible)
+            {
+                _logger.LogWarning("[Moneytree][diag] OTP input detected - two-factor authentication required");
+                
+                // 如果有 OTP secret，尝试生成并输入
+                if (!string.IsNullOrWhiteSpace(request.OtpSecret))
+                {
+                    _logger.LogInformation("[Moneytree] Generating OTP code...");
+                    var otpCode = GenerateTotp(request.OtpSecret);
+                    _logger.LogInformation("[Moneytree] Generated OTP code (first 2 chars): {OtpPrefix}**", otpCode.Substring(0, 2));
+                    
+                    // 填写 OTP
+                    await page.FillAsync("input[name='otp'], input[placeholder*='認証'], input[type='tel']", otpCode);
+                    await Task.Delay(1000);
+                    
+                    // 提交 OTP（可能有确认按钮）
+                    var otpSubmitButton = page.Locator("button[type='submit'], button:has-text('確認'), button:has-text('認証')");
+                    if (await otpSubmitButton.IsVisibleAsync())
+                    {
+                        await otpSubmitButton.ClickAsync();
+                        await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+                        await Task.Delay(3000);
+                        _logger.LogInformation("[Moneytree][diag] Post-OTP URL: {Url}", page.Url);
+                    }
+                }
+                else
+                {
+                    throw new InvalidOperationException("Moneytree requires OTP but no OtpSecret was provided in credentials.");
+                }
+            }
+            
+            // 检查是否有登录错误提示
+            var errorText = await page.EvaluateAsync<string>(@"() => {
+                const errorEls = document.querySelectorAll('.error, .alert-danger, [class*=""error""], [class*=""Error""]');
+                for (const el of errorEls) {
+                    if (el.innerText && el.innerText.trim()) return el.innerText.trim();
+                }
+                return '';
+            }");
+            if (!string.IsNullOrWhiteSpace(errorText))
+            {
+                _logger.LogError("[Moneytree][diag] Login error message on page: {Error}", errorText);
+            }
+            
+            // 检查 sessionStorage 里有什么
+            var sessionKeys = await page.EvaluateAsync<string>(@"() => Object.keys(sessionStorage).join(', ')");
+            _logger.LogInformation("[Moneytree][diag] sessionStorage keys: {Keys}", sessionKeys);
+            
+            var localKeys = await page.EvaluateAsync<string>(@"() => Object.keys(localStorage).join(', ')");
+            _logger.LogInformation("[Moneytree][diag] localStorage keys: {Keys}", localKeys);
 
             // 获取 token
             var token = await page.EvaluateAsync<string>(@"() => {
@@ -154,6 +213,8 @@ public sealed class MoneytreeDownloadService
             }");
             if (string.IsNullOrWhiteSpace(token))
             {
+                // 最后一次尝试：截图保存诊断
+                await DumpDiagnosticsAsync(page, "no-token", ct);
                 throw new InvalidOperationException("Unable to read Moneytree sessionStorage token.");
             }
             _logger.LogInformation("[Moneytree] 登录成功");
@@ -281,5 +342,14 @@ public sealed class MoneytreeDownloadService
         {
             try { _logger.LogWarning(ex, "[Moneytree][diag] stage={Stage} diagnostics failed", stage); } catch { }
         }
+    }
+
+    private static string GenerateTotp(string secret)
+    {
+        // 移除空格和连字符，转为大写
+        var cleanedSecret = secret.Replace(" ", "").Replace("-", "").ToUpperInvariant();
+        var secretBytes = Base32Encoding.ToBytes(cleanedSecret);
+        var totp = new Totp(secretBytes);
+        return totp.ComputeTotp();
     }
 }
