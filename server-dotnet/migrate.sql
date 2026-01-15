@@ -458,15 +458,58 @@ CREATE TABLE IF NOT EXISTS delivery_notes (
   payload JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  delivery_no TEXT GENERATED ALWAYS AS (payload->>'deliveryNo') STORED,
-  sales_order_no TEXT GENERATED ALWAYS AS (payload->>'salesOrderNo') STORED,
-  customer_code TEXT GENERATED ALWAYS AS (payload->>'customerCode') STORED,
-  delivery_date DATE GENERATED ALWAYS AS (fn_jsonb_date(payload, 'deliveryDate')) STORED,
-  print_status TEXT GENERATED ALWAYS AS (payload->>'printStatus') STORED
+  delivery_no TEXT GENERATED ALWAYS AS (COALESCE(payload->'header'->>'deliveryNo', payload->>'deliveryNo')) STORED,
+  so_no TEXT GENERATED ALWAYS AS (COALESCE(payload->'header'->>'salesOrderNo', payload->>'salesOrderNo')) STORED,
+  customer_code TEXT GENERATED ALWAYS AS (COALESCE(payload->'header'->>'customerCode', payload->>'customerCode')) STORED,
+  delivery_date DATE GENERATED ALWAYS AS (fn_jsonb_to_date(COALESCE(payload->'header', payload), 'deliveryDate')) STORED,
+  print_status TEXT GENERATED ALWAYS AS (COALESCE(payload->'header'->>'printStatus', payload->>'printStatus')) STORED
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_delivery_notes_company_no ON delivery_notes(company_code, delivery_no);
-CREATE INDEX IF NOT EXISTS idx_delivery_notes_company_so ON delivery_notes(company_code, sales_order_no);
+CREATE INDEX IF NOT EXISTS idx_delivery_notes_company_so ON delivery_notes(company_code, so_no);
 CREATE INDEX IF NOT EXISTS idx_delivery_notes_company_print ON delivery_notes(company_code, print_status);
+
+-- 兜底：历史环境若已存在 delivery_notes 表，则补齐/修复关键生成列，避免索引创建失败（42703）
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='delivery_notes') THEN
+    -- 删除旧字段名（如果存在）
+    BEGIN
+      ALTER TABLE delivery_notes DROP COLUMN IF EXISTS sales_order_no;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'delivery_notes drop sales_order_no skipped: %', SQLERRM;
+    END;
+
+    -- 补齐 delivery_no / so_no / customer_code / delivery_date / print_status
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='delivery_notes' AND column_name='delivery_no') THEN
+      ALTER TABLE delivery_notes ADD COLUMN delivery_no TEXT GENERATED ALWAYS AS (
+        COALESCE(payload->'header'->>'deliveryNo', payload->>'deliveryNo')
+      ) STORED;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='delivery_notes' AND column_name='so_no') THEN
+      ALTER TABLE delivery_notes ADD COLUMN so_no TEXT GENERATED ALWAYS AS (
+        COALESCE(payload->'header'->>'salesOrderNo', payload->>'salesOrderNo')
+      ) STORED;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='delivery_notes' AND column_name='customer_code') THEN
+      ALTER TABLE delivery_notes ADD COLUMN customer_code TEXT GENERATED ALWAYS AS (
+        COALESCE(payload->'header'->>'customerCode', payload->>'customerCode')
+      ) STORED;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='delivery_notes' AND column_name='delivery_date') THEN
+      ALTER TABLE delivery_notes ADD COLUMN delivery_date DATE GENERATED ALWAYS AS (
+        fn_jsonb_to_date(COALESCE(payload->'header', payload), 'deliveryDate')
+      ) STORED;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='delivery_notes' AND column_name='print_status') THEN
+      ALTER TABLE delivery_notes ADD COLUMN print_status TEXT GENERATED ALWAYS AS (
+        COALESCE(payload->'header'->>'printStatus', payload->>'printStatus')
+      ) STORED;
+    END IF;
+  END IF;
+END $$;
 
 -- 活动（邮件/电话/会议/任务），含提醒
 CREATE TABLE IF NOT EXISTS activities (
