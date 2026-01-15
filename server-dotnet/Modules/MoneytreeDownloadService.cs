@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text.RegularExpressions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Playwright;
 
@@ -9,10 +11,12 @@ namespace Server.Modules;
 public sealed class MoneytreeDownloadService
 {
     private readonly ILogger<MoneytreeDownloadService> _logger;
+    private readonly IConfiguration _configuration;
     
-    public MoneytreeDownloadService(ILogger<MoneytreeDownloadService> logger)
+    public MoneytreeDownloadService(ILogger<MoneytreeDownloadService> logger, IConfiguration configuration)
     {
         _logger = logger;
+        _configuration = configuration;
     }
     
     private const string LandingUrl = "https://getmoneytree.com/jp/app/moneytree-business-login";
@@ -33,6 +37,11 @@ public sealed class MoneytreeDownloadService
             
         try
         {
+            var navigationTimeoutMs = _configuration.GetValue<int?>("Moneytree:NavigationTimeoutMs") ?? 120_000;
+            var selectorTimeoutMs = _configuration.GetValue<int?>("Moneytree:SelectorTimeoutMs") ?? 90_000;
+            var loginFormTimeoutMs = _configuration.GetValue<int?>("Moneytree:LoginFormTimeoutMs") ?? 30_000;
+            var downloadTimeoutMs = _configuration.GetValue<int?>("Moneytree:DownloadTimeoutMs") ?? 180_000;
+
             using var playwright = await Playwright.CreateAsync();
             await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
@@ -50,17 +59,32 @@ public sealed class MoneytreeDownloadService
 
             var context = await browser.NewContextAsync(new BrowserNewContextOptions
             {
-                AcceptDownloads = true
+                AcceptDownloads = true,
+                // 尽量贴近真实浏览器环境，减少线上环境差异
+                Locale = "ja-JP",
+                TimezoneId = "Asia/Tokyo",
+                UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
             });
 
             var page = await context.NewPageAsync();
+            page.SetDefaultTimeout(selectorTimeoutMs);
+            page.SetDefaultNavigationTimeout(navigationTimeoutMs);
+            page.Console += (_, msg) =>
+            {
+                try
+                {
+                    if (msg.Type is "error" or "warning")
+                        _logger.LogWarning("[Moneytree][console:{Type}] {Text}", msg.Type, msg.Text);
+                }
+                catch { }
+            };
+            page.PageError += (_, err) =>
+            {
+                try { _logger.LogWarning("[Moneytree][pageerror] {Error}", err); } catch { }
+            };
 
             // 导航到登录页面
-            await page.GotoAsync(LandingUrl, new PageGotoOptions
-            {
-                WaitUntil = WaitUntilState.DOMContentLoaded,
-                Timeout = 60000
-            });
+            await page.GotoAsync(LandingUrl, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = navigationTimeoutMs });
 
             // 点击登录入口按钮（带重试机制）
             var loginEntrySelector = "a[custom-id='login-button']";
@@ -68,26 +92,36 @@ public sealed class MoneytreeDownloadService
             
             for (int attempt = 1; attempt <= 3; attempt++)
             {
-                await page.WaitForSelectorAsync(loginEntrySelector, new() { State = WaitForSelectorState.Visible, Timeout = 30000 });
+                try
+                {
+                    await page.WaitForSelectorAsync(loginEntrySelector, new() { State = WaitForSelectorState.Visible, Timeout = selectorTimeoutMs });
+                }
+                catch (TimeoutException)
+                {
+                    await DumpDiagnosticsAsync(page, "login-entry-timeout", ct);
+                    throw;
+                }
+
                 await page.ClickAsync(loginEntrySelector);
                 
                 try
                 {
-                    await page.WaitForSelectorAsync(emailInputSelector, new() { State = WaitForSelectorState.Visible, Timeout = 10000 });
+                    await page.WaitForSelectorAsync(emailInputSelector, new() { State = WaitForSelectorState.Visible, Timeout = loginFormTimeoutMs });
                     break;
                 }
                 catch (TimeoutException)
                 {
                     if (attempt == 3)
                     {
-                        throw new InvalidOperationException("无法进入登录表单页面，请检查 Moneytree 网站是否有变化");
+                        await DumpDiagnosticsAsync(page, "login-form-timeout", ct);
+                        throw new InvalidOperationException("无法进入登录表单页面（Azure 环境超时）。可能原因：网站改版/加载变慢/被风控或验证码拦截。请查看服务器日志里的 [Moneytree][diag] 输出。");
                     }
                     await Task.Delay(2000);
                 }
             }
             
             // 填写登录凭据
-            await page.WaitForSelectorAsync(emailInputSelector, new() { State = WaitForSelectorState.Visible, Timeout = 10000 });
+            await page.WaitForSelectorAsync(emailInputSelector, new() { State = WaitForSelectorState.Visible, Timeout = loginFormTimeoutMs });
             await page.FillAsync("input#guest\\[email\\]", request.Email);
             await page.FillAsync("input#guest\\[password\\]", request.Password);
             await Task.Delay(2000);
@@ -96,7 +130,7 @@ public sealed class MoneytreeDownloadService
             var loginButtonSelector = "button.login-form-button";
             try 
             {
-                await page.WaitForSelectorAsync($"{loginButtonSelector}:not([disabled])", new() { Timeout = 10000 });
+                await page.WaitForSelectorAsync($"{loginButtonSelector}:not([disabled])", new() { Timeout = 20_000 });
             }
             catch (Exception)
             {
@@ -104,7 +138,7 @@ public sealed class MoneytreeDownloadService
             }
 
             await page.ClickAsync(loginButtonSelector);
-            await page.WaitForLoadStateAsync();
+            await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
             await Task.Delay(2000);
 
             // 获取 token
@@ -166,7 +200,7 @@ public sealed class MoneytreeDownloadService
                 await page.ClickAsync(DownloadButtonXPath);
             }, new PageRunAndWaitForDownloadOptions
             {
-                Timeout = 120000
+                Timeout = downloadTimeoutMs
             });
 
             await using var downloadStream = await download.CreateReadStreamAsync();
@@ -186,7 +220,7 @@ public sealed class MoneytreeDownloadService
         catch (PlaywrightException ex)
         {
             _logger.LogError(ex, "[Moneytree] Playwright 执行失败");
-            throw new InvalidOperationException("Moneytree CSV download failed. Please verify credentials or page changes.", ex);
+            throw new InvalidOperationException("Moneytree CSV download failed at playwright. Please check server logs for [Moneytree][diag] details.", ex);
         }
     }
 
@@ -200,5 +234,52 @@ public sealed class MoneytreeDownloadService
         var start = startDate.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
         var end = endDate.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
         return SettingsTemplate.Replace("START_DATE", start).Replace("END_DATE", end);
+    }
+
+    private async Task DumpDiagnosticsAsync(IPage page, string stage, CancellationToken ct)
+    {
+        try
+        {
+            var url = string.Empty;
+            var title = string.Empty;
+            try { url = page.Url; } catch { }
+            try { title = await page.TitleAsync(); } catch { }
+
+            _logger.LogError("[Moneytree][diag] stage={Stage} url={Url} title={Title}", stage, url, title);
+
+            string html = string.Empty;
+            try
+            {
+                html = await page.ContentAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Moneytree][diag] stage={Stage} failed to read page content", stage);
+            }
+
+            if (!string.IsNullOrWhiteSpace(html))
+            {
+                var snippet = html.Length > 4000 ? html.Substring(0, 4000) + "...(truncated)" : html;
+                _logger.LogError("[Moneytree][diag] stage={Stage} html_head={Html}", stage, snippet);
+
+                // 粗略识别“风控/验证码/被拦截”页面
+                if (Regex.IsMatch(html, "(captcha|cloudflare|access denied|アクセス|制限|robot|bot|不正)", RegexOptions.IgnoreCase))
+                {
+                    _logger.LogError("[Moneytree][diag] stage={Stage} hint=可能被风控/验证码拦截（Azure IP/Headless 环境）", stage);
+                }
+            }
+
+            try
+            {
+                var hasLoginEntry = await page.Locator("a[custom-id='login-button']").CountAsync();
+                var hasEmail = await page.Locator("input#guest\\[email\\]").CountAsync();
+                _logger.LogError("[Moneytree][diag] stage={Stage} hasLoginEntry={HasLoginEntry} hasEmailInput={HasEmail}", stage, hasLoginEntry, hasEmail);
+            }
+            catch { }
+        }
+        catch (Exception ex)
+        {
+            try { _logger.LogWarning(ex, "[Moneytree][diag] stage={Stage} diagnostics failed", stage); } catch { }
+        }
     }
 }

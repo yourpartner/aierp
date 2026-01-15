@@ -83,6 +83,7 @@ builder.Services.AddScoped<Server.Modules.PayrollTaskService>();
 builder.Services.AddScoped<Server.Modules.UnifiedTaskService>();
 builder.Services.Configure<Server.Infrastructure.EmailSettings>(builder.Configuration.GetSection("Email"));
 builder.Services.AddSingleton<Server.Infrastructure.EmailService>();
+builder.Services.AddScoped<Server.Services.StaffingEmailService>();
 // 模块系统（按 EditionOptions 启用/禁用模块，并注册服务/菜单/端点）
 // 注意：模块里可能包含 HostedService（如 payroll / moneytree / sales / wecom），不要在这里重复注册同一个 HostedService，避免后台任务跑两份。
 builder.Services.AddErpModules(builder.Configuration);
@@ -309,6 +310,8 @@ app.Lifetime.ApplicationStarted.Register(async () =>
                 var sql = await File.ReadAllTextAsync(sqlPath);
                 await using var cmd = conn.CreateCommand();
                 cmd.CommandText = sql;
+                // Azure 上偶发 DB 读超时会导致 migrate 噪声；迁移脚本本身是幂等且允许更长时间完成
+                cmd.CommandTimeout = 180;
                 await cmd.ExecuteNonQueryAsync();
             }
         }
@@ -1826,6 +1829,33 @@ app.MapGet("/references/invoice/verify/{regNo}", async (string regNo, Server.Mod
     {
         var result = await invoiceRegistry.VerifyAsync(normalized);
         return Results.Json(result.ToResponse());
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(ex.Message);
+    }
+}).RequireAuthorization();
+
+// 根据公司名称和地址搜索インボイス登録番号
+app.MapGet("/references/invoice/search", async (HttpContext ctx, Server.Modules.InvoiceRegistryService invoiceRegistry) =>
+{
+    var name = ctx.Request.Query.TryGetValue("name", out var n) ? n.ToString() : "";
+    var address = ctx.Request.Query.TryGetValue("address", out var addr) ? addr.ToString() : null;
+    var limitStr = ctx.Request.Query.TryGetValue("limit", out var lim) ? lim.ToString() : "10";
+    int.TryParse(limitStr, out var limit);
+    if (limit <= 0 || limit > 50) limit = 10;
+    
+    if (string.IsNullOrWhiteSpace(name))
+        return Results.BadRequest(new { error = "name parameter required" });
+    
+    try
+    {
+        var results = await invoiceRegistry.SearchByNameAsync(name, address, limit);
+        return Results.Json(new
+        {
+            data = results.Select(r => r.ToResponse()).ToList(),
+            total = results.Count
+        });
     }
     catch (Exception ex)
     {
