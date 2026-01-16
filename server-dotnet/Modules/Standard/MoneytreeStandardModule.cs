@@ -378,10 +378,10 @@ public class MoneytreeStandardModule : ModuleBase
                 cmd.CommandText = $@"
 SELECT id, transaction_date, deposit_amount, withdrawal_amount, balance, currency, bank_name,
        description, account_name, account_number, posting_status, posting_error,
-       voucher_no, rule_title, imported_at
+       voucher_no, rule_title, imported_at, row_sequence
 FROM moneytree_transactions
 WHERE {whereClause}
-ORDER BY transaction_date DESC NULLS LAST, created_at DESC
+ORDER BY transaction_date DESC NULLS LAST, row_sequence ASC
 LIMIT ${limitIdx} OFFSET ${offsetIdx}";
 
                 // 1. 先按顺序添加 WHERE 条件参数 ($1, $2, $3...)
@@ -412,7 +412,8 @@ LIMIT ${limitIdx} OFFSET ${offsetIdx}";
                         postingError = reader.IsDBNull(11) ? null : reader.GetString(11),
                         voucherNo = reader.IsDBNull(12) ? null : reader.GetString(12),
                         ruleTitle = reader.IsDBNull(13) ? null : reader.GetString(13),
-                        importedAt = reader.IsDBNull(14) ? null : reader.GetFieldValue<DateTimeOffset>(14).ToString("yyyy-MM-dd HH:mm")
+                        importedAt = reader.IsDBNull(14) ? null : reader.GetFieldValue<DateTimeOffset>(14).ToString("yyyy-MM-dd HH:mm"),
+                        rowSequence = reader.IsDBNull(15) ? (int?)null : reader.GetInt32(15)
                     });
                 }
             }
