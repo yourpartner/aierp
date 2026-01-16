@@ -3507,10 +3507,33 @@ function toSnakeCase(str: string): string {
   return str.replace(/([A-Z])/g, '_$1').toLowerCase()
 }
 
+// 路径到 embed key 的映射（用于动态菜单）
+const pathToEmbedKeyMap: Record<string, string> = {
+  '/staffing/resources': 'staffing.resources',
+  '/staffing/projects': 'staffing.projects',
+  '/staffing/contracts': 'staffing.contracts',
+  '/staffing/timesheets': 'staffing.timesheets',
+  '/staffing/invoices': 'staffing.invoices',
+  '/staffing/analytics': 'staffing.analytics',
+  '/staffing/email/inbox': 'staffing.email.inbox',
+  '/staffing/email/templates': 'staffing.email.templates',
+  '/staffing/email/rules': 'staffing.email.rules',
+  '/staffing/ai/matching': 'staffing.ai.matching',
+  '/staffing/ai/market': 'staffing.ai.market',
+  '/staffing/ai/alerts': 'staffing.ai.alerts',
+}
+
 // 处理动态菜单点击
 function onDynamicMenuSelect(path: string) {
   if (!path) return
   console.debug('[ChatKit] dynamic menu select', path)
+  // 检查是否有对应的 embed key，使用弹窗方式打开
+  const embedKey = pathToEmbedKeyMap[path]
+  if (embedKey && embedMap[embedKey]) {
+    openInModal(embedKey, getTitle(embedKey))
+    return
+  }
+  // 没有注册的页面，使用路由跳转（兜底）
   router.push(path)
 }
 
@@ -3632,6 +3655,19 @@ const embedMap:Record<string, any> = {
   // User & Role Management
   ,'system.users': defineAsyncComponent(() => import('./UsersList.vue'))
   ,'system.roles': defineAsyncComponent(() => import('./RolesList.vue'))
+  // Staffing embeds (人才派遣)
+  ,'staffing.resources': defineAsyncComponent(() => import('./staffing/ResourcePoolList.vue'))
+  ,'staffing.projects': defineAsyncComponent(() => import('./staffing/ProjectsList.vue'))
+  ,'staffing.contracts': defineAsyncComponent(() => import('./staffing/ContractsList.vue'))
+  ,'staffing.timesheets': defineAsyncComponent(() => import('./staffing/TimesheetSummaryList.vue'))
+  ,'staffing.invoices': defineAsyncComponent(() => import('./staffing/InvoicesList.vue'))
+  ,'staffing.analytics': defineAsyncComponent(() => import('./staffing/AnalyticsDashboard.vue'))
+  ,'staffing.email.inbox': defineAsyncComponent(() => import('./staffing/EmailInbox.vue'))
+  ,'staffing.email.templates': defineAsyncComponent(() => import('./staffing/EmailTemplates.vue'))
+  ,'staffing.email.rules': defineAsyncComponent(() => import('./staffing/EmailRules.vue'))
+  ,'staffing.ai.matching': defineAsyncComponent(() => import('./staffing/AiMatching.vue'))
+  ,'staffing.ai.market': defineAsyncComponent(() => import('./staffing/AiMarketAnalysis.vue'))
+  ,'staffing.ai.alerts': defineAsyncComponent(() => import('./staffing/AiAlerts.vue'))
 }
 const titleKeyMap: Record<string, string> = {
   'voucher.new': 'voucherNew',
@@ -3710,7 +3746,20 @@ const titleKeyMap: Record<string, string> = {
   'fa.depreciation': 'faDepreciation',
   // User & Role Management
   'system.users': 'userManagement',
-  'system.roles': 'roleManagement'
+  'system.roles': 'roleManagement',
+  // Staffing (人才派遣)
+  'staffing.resources': 'resourcePool',
+  'staffing.projects': 'staffingProjects',
+  'staffing.contracts': 'staffingContracts',
+  'staffing.timesheets': 'staffingTimesheet',
+  'staffing.invoices': 'staffingInvoices',
+  'staffing.analytics': 'staffingAnalytics',
+  'staffing.email.inbox': 'staffingEmailInbox',
+  'staffing.email.templates': 'staffingEmailTemplates',
+  'staffing.email.rules': 'staffingEmailRules',
+  'staffing.ai.matching': 'staffingAiMatching',
+  'staffing.ai.market': 'staffingAiMarket',
+  'staffing.ai.alerts': 'staffingAiAlerts'
 }
 const Dummy = defineComponent({ name:'EmbedPlaceholder', setup(){ return () => null } })
 
@@ -6446,9 +6495,16 @@ function onChatDragLeave(){
 /* 修复嵌套弹窗内的下拉框显示问题 */
 .el-dialog.embed-dialog .el-dialog__body .el-dialog {
   overflow: visible !important;
+  background: #fff !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15) !important;
+}
+.el-dialog.embed-dialog .el-dialog__body .el-dialog .el-dialog__header {
+  display: none !important;
 }
 .el-dialog.embed-dialog .el-dialog__body .el-dialog .el-dialog__body {
   overflow: visible !important;
+  padding: 20px !important;
 }
 .el-dialog.embed-dialog .el-dialog__body .el-card {
   overflow: visible !important;

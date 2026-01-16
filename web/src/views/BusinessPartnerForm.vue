@@ -14,6 +14,37 @@
       />
       <el-skeleton v-else :rows="6" animated />
     </template>
+    <!-- T番号検索機能（名称・住所から自動検索） -->
+    <div v-if="!props.readonly && form.name" class="invoice-search-section">
+      <div class="invoice-search-row">
+        <el-button type="primary" plain @click="searchInvoiceNumber" :loading="invoiceSearching">
+          <el-icon><Search /></el-icon>
+          T番号を名称から検索
+        </el-button>
+        <span v-if="invoiceSearchResults.length > 1" class="search-hint">
+          {{ invoiceSearchResults.length }}件の候補が見つかりました
+        </span>
+      </div>
+      <div v-if="invoiceSearchResults.length > 0" class="invoice-search-results">
+        <div class="invoice-result-hint">検索結果（クリックで選択）:</div>
+        <div
+          v-for="item in invoiceSearchResults"
+          :key="item.registrationNo"
+          class="invoice-result-item"
+          @click="selectInvoiceNumber(item)"
+        >
+          <div class="invoice-result-main">
+            <span class="invoice-no">{{ item.registrationNo }}</span>
+            <span class="invoice-name">{{ item.name }}</span>
+          </div>
+          <div class="invoice-result-detail">
+            <span v-if="item.address" class="invoice-address">📍 {{ item.address }}</span>
+            <span v-if="item.effectiveFrom" class="invoice-date">{{ item.effectiveFrom }}〜</span>
+            <span v-if="item.matchScore" class="invoice-score">一致度: {{ item.matchScore }}%</span>
+          </div>
+        </div>
+      </div>
+    </div>
     <!-- 嵌入模式下银行选择由父组件处理 -->
     <div class="form-messages">
       <span v-if="msg" class="text-success">{{ msg }}</span>
@@ -70,7 +101,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { OfficeBuilding } from '@element-plus/icons-vue'
+import { OfficeBuilding, Search } from '@element-plus/icons-vue'
 import api from '../api'
 import DynamicForm from '../components/DynamicForm.vue'
 import BankBranchPicker from '../components/BankBranchPicker.vue'
@@ -80,6 +111,7 @@ const props = defineProps<{
   partnerId?: string | null
   mode?: 'create' | 'edit'
   readonly?: boolean
+  embedded?: boolean // 明确指定是否为嵌入模式
 }>()
 const emit = defineEmits<{
   (e: 'saved', id?: string): void
@@ -110,8 +142,10 @@ const msg = ref('')
 const err = ref('')
 const showBank = ref(false)
 const showBranch = ref(false)
+const invoiceSearching = ref(false)
+const invoiceSearchResults = ref<any[]>([])
 
-const isEmbedded = computed(() => Boolean(props.partnerId))
+const isEmbedded = computed(() => props.embedded ?? Boolean(props.partnerId))
 const formMode = computed<'create' | 'edit'>(() => (currentId.value ? 'edit' : (props.mode ?? 'create')))
 const headerTitle = computed(() =>
   formMode.value === 'edit'
@@ -211,6 +245,50 @@ function onPickBranch(row: any) {
   // 显示格式：编号 名称
   form.bankInfo.branchName = `${row.payload.branchCode} ${row.payload.branchName}`
   showBranch.value = false
+}
+
+// T番号検索（名称と住所で検索）
+async function searchInvoiceNumber() {
+  const companyName = form.name?.trim()
+  if (!companyName) {
+    ElMessage.warning('取引先名を入力してください')
+    return
+  }
+  invoiceSearching.value = true
+  invoiceSearchResults.value = []
+  try {
+    // 住所情報も送信して精度向上
+    const params: Record<string, any> = { name: companyName, limit: 10 }
+    const addr = form.address
+    if (addr) {
+      const addrParts = [addr.prefecture, addr.address].filter(Boolean).join('')
+      if (addrParts) {
+        params.address = addrParts
+      }
+    }
+    const res = await api.get('/references/invoice/search', { params })
+    invoiceSearchResults.value = res.data?.data || []
+    if (invoiceSearchResults.value.length === 0) {
+      ElMessage.info('該当するインボイス登録番号が見つかりませんでした')
+    } else if (invoiceSearchResults.value.length === 1) {
+      // 唯一の候補なら自動選択
+      selectInvoiceNumber(invoiceSearchResults.value[0])
+      ElMessage.success('インボイス登録番号を自動設定しました')
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || e?.message || '検索に失敗しました')
+  } finally {
+    invoiceSearching.value = false
+  }
+}
+
+function selectInvoiceNumber(item: any) {
+  form.invoiceRegistrationNumber = item.registrationNo
+  if (item.effectiveFrom) {
+    form.invoiceRegistrationStartDate = item.effectiveFrom
+  }
+  invoiceSearchResults.value = []
+  ElMessage.success(`${item.registrationNo} を選択しました`)
 }
 
 // 支付条件描述生成
@@ -325,5 +403,107 @@ defineExpose({ save, form })
   display: flex;
   gap: 14px;
   font-size: 13px;
+}
+
+/* T番号検索セクション */
+.invoice-search-section {
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #f0f7ff 0%, #f8f9fa 100%);
+  border-radius: 8px;
+  border: 1px solid #e4e7ed;
+}
+
+.invoice-search-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.search-hint {
+  font-size: 13px;
+  color: #67c23a;
+}
+
+.invoice-search-results {
+  margin-top: 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  background: #fff;
+  max-height: 300px;
+  overflow-y: auto;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.invoice-result-hint {
+  padding: 10px 14px;
+  font-size: 12px;
+  color: #909399;
+  background: #fafafa;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.invoice-result-item {
+  padding: 12px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+  transition: all 0.2s;
+}
+
+.invoice-result-item:last-child {
+  border-bottom: none;
+}
+
+.invoice-result-item:hover {
+  background: #ecf5ff;
+}
+
+.invoice-result-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.invoice-result-detail {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  color: #909399;
+  padding-left: 2px;
+}
+
+.invoice-no {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-weight: 600;
+  color: #409eff;
+  background: #ecf5ff;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.invoice-name {
+  flex: 1;
+  color: #303133;
+  font-weight: 500;
+}
+
+.invoice-address {
+  color: #606266;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.invoice-date {
+  color: #909399;
+}
+
+.invoice-score {
+  color: #67c23a;
+  font-weight: 500;
 }
 </style>

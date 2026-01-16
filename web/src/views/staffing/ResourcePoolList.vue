@@ -285,22 +285,42 @@
     </el-dialog>
 
     <!-- 社員選択ダイアログ -->
-    <el-dialog v-model="employeeDialogVisible" title="社員からリソース追加" width="600px">
-      <el-select
-        v-model="selectedEmployeeId"
-        filterable
-        remote
-        :remote-method="searchEmployees"
-        placeholder="社員を検索"
-        style="width: 100%"
-        :loading="empLoading"
-      >
-        <el-option v-for="opt in employeeOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
-      </el-select>
-      <template #footer>
-        <el-button @click="employeeDialogVisible = false">キャンセル</el-button>
-        <el-button type="primary" @click="addFromEmployee" :loading="saving">追加</el-button>
-      </template>
+    <el-dialog 
+      v-model="employeeDialogVisible" 
+      width="520px"
+      destroy-on-close
+      :show-close="false"
+      class="employee-select-dialog"
+    >
+      <div class="employee-dialog-header">
+        <div class="employee-dialog-header__left">
+          <el-icon class="employee-dialog-header__icon"><Connection /></el-icon>
+          <span class="employee-dialog-header__title">社員から追加</span>
+        </div>
+        <div class="employee-dialog-header__right">
+          <el-button size="small" @click="employeeDialogVisible = false">キャンセル</el-button>
+          <el-button size="small" type="primary" @click="addFromEmployee" :loading="saving">追加</el-button>
+        </div>
+      </div>
+      <el-form label-width="60px" label-position="right" class="employee-select-form">
+        <el-form-item label="社員" required>
+          <el-select
+            v-model="selectedEmployeeId"
+            filterable
+            remote
+            :remote-method="searchEmployees"
+            placeholder="社員を選択"
+            style="width: 260px"
+            :loading="empLoading"
+          >
+            <el-option v-for="opt in employeeOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+          </el-select>
+        </el-form-item>
+        <div class="form-hint">
+          <el-icon><InfoFilled /></el-icon>
+          <span>選択後、氏名等が自動入力されます</span>
+        </div>
+      </el-form>
     </el-dialog>
   </div>
 </template>
@@ -308,7 +328,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { User, Plus, Search, Edit, Message, Phone, Connection } from '@element-plus/icons-vue'
+import { User, Plus, Search, Edit, Message, Phone, Connection, InfoFilled } from '@element-plus/icons-vue'
 import api from '../../api'
 
 interface ResourceRow {
@@ -478,17 +498,37 @@ const save = async () => {
   }
 }
 
-const openFromEmployee = () => {
+const openFromEmployee = async () => {
   selectedEmployeeId.value = ''
   employeeOptions.value = []
   employeeDialogVisible.value = true
+  // 打开弹窗时加载默认员工列表
+  await loadDefaultEmployees()
+}
+
+const loadDefaultEmployees = async () => {
+  empLoading.value = true
+  try {
+    const res = await api.get('/hr/employees', { params: { limit: 50 } })
+    employeeOptions.value = (res.data.data || []).map((e: any) => ({
+      label: `${e.employee_code} - ${e.payload?.nameKanji || e.payload?.name || ''}`,
+      value: e.id
+    }))
+  } catch (e) {
+    console.error(e)
+  } finally {
+    empLoading.value = false
+  }
 }
 
 const searchEmployees = async (query: string) => {
-  if (!query) return
   empLoading.value = true
   try {
-    const res = await api.get('/hr/employees', { params: { keyword: query, limit: 20 } })
+    const params: Record<string, any> = { limit: 50 }
+    if (query && query.trim()) {
+      params.keyword = query.trim()
+    }
+    const res = await api.get('/hr/employees', { params })
     employeeOptions.value = (res.data.data || []).map((e: any) => ({
       label: `${e.employee_code} - ${e.payload?.nameKanji || e.payload?.name || ''}`,
       value: e.id
@@ -686,6 +726,86 @@ onMounted(() => {
 
 .el-divider {
   margin: 16px 0;
+}
+
+/* 社员选择弹窗样式 */
+:deep(.el-dialog.employee-select-dialog) {
+  border-radius: 12px !important;
+  overflow: hidden !important;
+  background: #fff !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15) !important;
+  width: 520px !important;
+  max-width: 520px !important;
+}
+:deep(.el-dialog.employee-select-dialog .el-dialog__header) {
+  display: none !important;
+}
+:deep(.el-dialog.employee-select-dialog .el-dialog__body) {
+  padding: 20px !important;
+  overflow: visible !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.employee-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.employee-dialog-header__left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.employee-dialog-header__icon {
+  font-size: 18px;
+  color: var(--el-color-primary);
+}
+
+.employee-dialog-header__title {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.employee-dialog-header__right {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.employee-select-form {
+  padding: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.form-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--el-fill-color-light);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-top: 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.form-hint .el-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--el-color-primary);
 }
 </style>
 

@@ -213,9 +213,15 @@ const loadTemplates = async () => {
 const syncEmails = async () => {
   syncing.value = true
   try {
-    // TODO: 调用同步API
-    ElMessage.info('メール同期機能は実装中です')
+    const res = await api.post('/staffing/email/sync?max=50')
+    if (res.data.success) {
+      ElMessage.success(res.data.message || `${res.data.newEmails}件の新規メールを取得しました`)
+    } else {
+      ElMessage.warning(res.data.message || '同期に失敗しました')
+    }
     await loadEmails()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || 'メール同期に失敗しました')
   } finally {
     syncing.value = false
   }

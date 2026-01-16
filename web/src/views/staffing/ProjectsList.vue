@@ -159,153 +159,176 @@
     <!-- 新規登録・編集ダイアログ -->
     <el-dialog 
       v-model="dialogVisible" 
-      :title="isEdit ? '案件編集' : '新規案件登録'"
-      width="800px"
+      width="860px"
       destroy-on-close
+      class="project-form-dialog"
     >
-      <el-form :model="form" label-width="120px" label-position="right">
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="案件名" required>
-              <el-input v-model="form.projectName" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="職種カテゴリ">
-              <el-input v-model="form.jobCategory" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="顧客" required>
-              <el-select 
-                v-model="form.clientPartnerId" 
-                filterable 
-                remote
-                :remote-method="searchClients"
-                placeholder="顧客を選択"
-                style="width: 100%"
-              >
-                <el-option v-for="opt in clientOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="契約形態" required>
-              <el-select v-model="form.contractType" style="width: 100%">
-                <el-option label="派遣" value="dispatch" />
-                <el-option label="SES（準委任）" value="ses" />
-                <el-option label="請負" value="contract" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-form-item label="業務内容">
-          <el-input v-model="form.jobDescription" type="textarea" :rows="3" />
-        </el-form-item>
-
-        <el-divider>募集条件</el-divider>
-
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="募集人数">
-              <el-input-number v-model="form.headcount" :min="1" :max="100" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="必要経験年数">
-              <el-input-number v-model="form.experienceYearsMin" :min="0" :max="30" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="優先度">
-              <el-select v-model="form.priority" style="width: 100%">
-                <el-option label="緊急" value="urgent" />
-                <el-option label="高" value="high" />
-                <el-option label="通常" value="normal" />
-                <el-option label="低" value="low" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-divider>期間・勤務条件</el-divider>
-
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="開始予定日">
-              <el-date-picker v-model="form.expectedStartDate" type="date" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="終了予定日">
-              <el-date-picker v-model="form.expectedEndDate" type="date" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="勤務地">
-              <el-input v-model="form.workLocation" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="リモート比率">
-              <el-slider v-model="form.remoteWorkRatio" :min="0" :max="100" :step="10" :format-tooltip="(val: number) => `${val}%`" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="勤務曜日">
-              <el-input v-model="form.workDays" placeholder="例: 月～金" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="勤務時間">
-              <el-input v-model="form.workHours" placeholder="例: 9:00～18:00" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-divider>単価条件</el-divider>
-
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="単価下限">
-              <el-input-number v-model="form.billingRateMin" :min="0" :step="10000" controls-position="right" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="単価上限">
-              <el-input-number v-model="form.billingRateMax" :min="0" :step="10000" controls-position="right" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="単価種別">
-              <el-select v-model="form.rateType" style="width: 100%">
-                <el-option label="月額" value="monthly" />
-                <el-option label="日額" value="daily" />
-                <el-option label="時給" value="hourly" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-form-item label="備考">
-          <el-input v-model="form.notes" type="textarea" :rows="3" />
-        </el-form-item>
-      </el-form>
-
-      <template #footer>
-        <el-button @click="dialogVisible = false">キャンセル</el-button>
-        <el-button type="primary" @click="save" :loading="saving">保存</el-button>
+      <template #header>
+        <!-- 空header，使用内部el-card的header -->
       </template>
+      <el-card class="project-form-card">
+        <template #header>
+          <div class="dialog-header">
+            <div class="dialog-header__left">
+              <el-icon class="dialog-header__icon"><Briefcase /></el-icon>
+              <span class="dialog-header__title">{{ isEdit ? '案件編集' : '新規案件登録' }}</span>
+            </div>
+            <div class="dialog-header__right">
+              <el-button @click="dialogVisible = false">キャンセル</el-button>
+              <el-button type="primary" @click="save" :loading="saving">保存</el-button>
+            </div>
+          </div>
+        </template>
+        
+        <el-form :model="form" label-width="100px" label-position="right" class="project-form">
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="案件名" required>
+                <el-input v-model="form.projectName" placeholder="案件名を入力" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="職種カテゴリ">
+                <el-input v-model="form.jobCategory" placeholder="例: Java開発、インフラ構築" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="顧客" required>
+                <el-select 
+                  v-model="form.clientPartnerId" 
+                  filterable 
+                  remote
+                  allow-create
+                  default-first-option
+                  :remote-method="searchClients"
+                  placeholder="顧客を選択または入力"
+                  style="width: 100%"
+                  @change="onClientChange"
+                >
+                  <el-option v-for="opt in clientOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+                </el-select>
+                <div class="form-hint" v-if="!form.clientPartnerId || isManualClientName">
+                  <el-icon><InfoFilled /></el-icon>
+                  <span>未登録の顧客名を直接入力できます</span>
+                </div>
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="契約形態" required>
+                <el-select v-model="form.contractType" style="width: 100%">
+                  <el-option label="派遣" value="dispatch" />
+                  <el-option label="SES（準委任）" value="ses" />
+                  <el-option label="請負" value="contract" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <el-form-item label="業務内容">
+            <el-input v-model="form.jobDescription" type="textarea" :rows="3" placeholder="業務内容の詳細を入力" />
+          </el-form-item>
+
+          <el-divider content-position="left">募集条件</el-divider>
+
+          <el-row :gutter="20">
+            <el-col :span="8">
+              <el-form-item label="募集人数">
+                <el-input-number v-model="form.headcount" :min="1" :max="100" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="必要経験年数">
+                <el-input-number v-model="form.experienceYearsMin" :min="0" :max="30" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="優先度">
+                <el-select v-model="form.priority" style="width: 100%">
+                  <el-option label="緊急" value="urgent" />
+                  <el-option label="高" value="high" />
+                  <el-option label="通常" value="normal" />
+                  <el-option label="低" value="low" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <el-divider content-position="left">期間・勤務条件</el-divider>
+
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="開始予定日">
+                <el-date-picker v-model="form.expectedStartDate" type="date" style="width: 100%" placeholder="選択" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="終了予定日">
+                <el-date-picker v-model="form.expectedEndDate" type="date" style="width: 100%" placeholder="選択" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="勤務地">
+                <el-input v-model="form.workLocation" placeholder="例: 東京都港区" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="リモート比率">
+                <div class="slider-with-value">
+                  <el-slider v-model="form.remoteWorkRatio" :min="0" :max="100" :step="10" />
+                  <span class="slider-value">{{ form.remoteWorkRatio }}%</span>
+                </div>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="勤務曜日">
+                <el-input v-model="form.workDays" placeholder="例: 月～金" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="勤務時間">
+                <el-input v-model="form.workHours" placeholder="例: 9:00～18:00" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <el-divider content-position="left">単価条件</el-divider>
+
+          <el-row :gutter="20">
+            <el-col :span="8">
+              <el-form-item label="単価下限">
+                <el-input-number v-model="form.billingRateMin" :min="0" :step="10000" controls-position="right" style="width: 100%" placeholder="円" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="単価上限">
+                <el-input-number v-model="form.billingRateMax" :min="0" :step="10000" controls-position="right" style="width: 100%" placeholder="円" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="単価種別">
+                <el-select v-model="form.rateType" style="width: 100%">
+                  <el-option label="月額" value="monthly" />
+                  <el-option label="日額" value="daily" />
+                  <el-option label="時給" value="hourly" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <el-form-item label="備考">
+            <el-input v-model="form.notes" type="textarea" :rows="2" placeholder="その他の備考事項" />
+          </el-form-item>
+        </el-form>
+      </el-card>
     </el-dialog>
 
     <!-- マッチングダイアログ -->
@@ -365,9 +388,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Briefcase, Plus, Search } from '@element-plus/icons-vue'
+import { Briefcase, Plus, Search, InfoFilled } from '@element-plus/icons-vue'
 import api from '../../api'
 
 interface ProjectRow {
@@ -427,6 +450,7 @@ const form = reactive({
   jobCategory: '',
   jobDescription: '',
   clientPartnerId: '',
+  clientName: '', // 手工输入的客户名（潜在客户）
   contractType: 'ses',
   headcount: 1,
   experienceYearsMin: null as number | null,
@@ -442,6 +466,26 @@ const form = reactive({
   priority: 'normal',
   notes: ''
 })
+
+// 判断是否为手工输入的客户名（非已有客户ID）
+const isManualClientName = computed(() => {
+  if (!form.clientPartnerId) return false
+  // 如果选择的值不在已有选项中，则为手工输入
+  return !clientOptions.value.some(opt => opt.value === form.clientPartnerId)
+})
+
+// 客户选择变化时的处理
+const onClientChange = (val: string) => {
+  const existingOpt = clientOptions.value.find(opt => opt.value === val)
+  if (existingOpt) {
+    // 选择了已有客户，清空手工输入的客户名
+    form.clientName = ''
+  } else {
+    // 手工输入的客户名
+    form.clientName = val
+    form.clientPartnerId = '' // 清空关联的客户ID
+  }
+}
 
 const load = async () => {
   loading.value = true
@@ -462,19 +506,38 @@ const load = async () => {
 }
 
 const searchClients = async (query: string) => {
-  if (!query) return
   try {
-    const res = await api.get('/businesspartners', { params: { keyword: query, flag_customer: true } })
-    clientOptions.value = (res.data.data || []).map((bp: any) => ({
-      label: `${bp.partner_code} - ${bp.payload?.name || ''}`,
-      value: bp.id
-    }))
+    // 使用正确的搜索 API
+    const where: any[] = [{ field: 'flag_customer', op: 'eq', value: true }]
+    if (query && query.trim()) {
+      where.push({ json: 'name', op: 'contains', value: query.trim() })
+    }
+    const res = await api.post('/objects/businesspartner/search', {
+      page: 1,
+      pageSize: 50,
+      where,
+      orderBy: [{ field: 'name', direction: 'asc' }]
+    })
+    clientOptions.value = (res.data?.data || []).map((bp: any) => {
+      const code = bp.partner_code || bp.payload?.code || ''
+      const name = bp.payload?.name || bp.name || ''
+      return {
+        label: name ? `${name} (${code})` : code,
+        value: bp.id
+      }
+    })
   } catch (e) {
-    console.error(e)
+    console.error('Failed to search clients:', e)
+    clientOptions.value = []
   }
 }
 
-const openNew = () => {
+// 加载默认客户列表（用于弹窗打开时）
+const loadDefaultClients = async () => {
+  await searchClients('')
+}
+
+const openNew = async () => {
   isEdit.value = false
   Object.assign(form, {
     id: '',
@@ -482,6 +545,7 @@ const openNew = () => {
     jobCategory: '',
     jobDescription: '',
     clientPartnerId: '',
+    clientName: '',
     contractType: 'ses',
     headcount: 1,
     experienceYearsMin: null,
@@ -498,6 +562,8 @@ const openNew = () => {
     notes: ''
   })
   dialogVisible.value = true
+  // 加载默认客户列表
+  await loadDefaultClients()
 }
 
 const onEdit = async (row: ProjectRow) => {
@@ -510,7 +576,8 @@ const onEdit = async (row: ProjectRow) => {
       projectName: data.project_name,
       jobCategory: data.job_category,
       jobDescription: data.job_description,
-      clientPartnerId: data.client_partner_id,
+      clientPartnerId: data.client_partner_id || '',
+      clientName: data.client_name || '',
       contractType: data.contract_type,
       headcount: data.headcount,
       experienceYearsMin: data.experience_years_min,
@@ -526,9 +593,15 @@ const onEdit = async (row: ProjectRow) => {
       priority: data.priority || 'normal',
       notes: data.notes
     })
-    // 顧客選択肢に追加
+    // 顧客選択肢に追加（已有客户）
     if (data.client_partner_id && data.clientName) {
-      clientOptions.value = [{ label: `${data.clientCode} - ${data.clientName}`, value: data.client_partner_id }]
+      clientOptions.value = [{ label: `${data.clientCode || ''} - ${data.clientName}`.replace(/^\s*-\s*/, ''), value: data.client_partner_id }]
+    } else if (data.client_name && !data.client_partner_id) {
+      // 手工输入的客户名，设置到 clientPartnerId 以便显示
+      form.clientPartnerId = data.client_name
+      clientOptions.value = []
+    } else {
+      clientOptions.value = []
     }
     dialogVisible.value = true
   } catch (e: any) {
@@ -541,17 +614,24 @@ const save = async () => {
     ElMessage.warning('案件名を入力してください')
     return
   }
-  if (!form.clientPartnerId) {
-    ElMessage.warning('顧客を選択してください')
+  // 检查是否有客户（已有客户或手工输入的客户名）
+  const hasClient = form.clientPartnerId || form.clientName
+  if (!hasClient) {
+    ElMessage.warning('顧客を選択または入力してください')
     return
   }
   saving.value = true
   try {
+    // 判断是选择的已有客户还是手工输入的客户名
+    const selectedClient = clientOptions.value.find(opt => opt.value === form.clientPartnerId)
+    
     const payload = {
       projectName: form.projectName,
       jobCategory: form.jobCategory || null,
       jobDescription: form.jobDescription || null,
-      clientPartnerId: form.clientPartnerId,
+      // 如果是已有客户，使用 clientPartnerId；否则只传 clientName
+      clientPartnerId: selectedClient ? form.clientPartnerId : null,
+      clientName: selectedClient ? null : (form.clientName || form.clientPartnerId), // 手工输入时 clientPartnerId 存的是输入的文本
       contractType: form.contractType,
       headcount: form.headcount,
       experienceYearsMin: form.experienceYearsMin,
@@ -807,8 +887,107 @@ onMounted(() => {
   align-items: center;
 }
 
-.el-divider {
-  margin: 16px 0;
+/* 弹窗表单样式 */
+.project-form-card {
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.dialog-header__left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dialog-header__icon {
+  font-size: 22px;
+  color: var(--el-color-primary);
+}
+
+.dialog-header__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.dialog-header__right {
+  display: flex;
+  gap: 8px;
+}
+
+.project-form {
+  padding: 8px 0;
+}
+
+.project-form .el-form-item {
+  margin-bottom: 18px;
+}
+
+.project-form .el-divider {
+  margin: 20px 0 16px;
+}
+
+.project-form .el-divider__text {
+  font-size: 13px;
+  font-weight: 500;
+  color: #606266;
+}
+
+.form-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
+}
+
+.form-hint .el-icon {
+  font-size: 14px;
+}
+
+.slider-with-value {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.slider-with-value :deep(.el-slider) {
+  flex: 1;
+  min-width: 120px;
+}
+
+.slider-value {
+  min-width: 45px;
+  font-size: 13px;
+  color: #606266;
+  text-align: right;
+  flex-shrink: 0;
 }
 </style>
+
+<style>
+/* 项目表单弹窗全局样式 */
+.project-form-dialog.el-dialog {
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+.project-form-dialog .el-dialog__header {
+  display: none !important;
+}
+
+.project-form-dialog .el-dialog__body {
+  padding: 0 !important;
+}
+</style>
+
 

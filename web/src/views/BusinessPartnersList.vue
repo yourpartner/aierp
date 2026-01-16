@@ -23,7 +23,7 @@
             <el-button @click="onSearch">{{ tableLabels.search }}</el-button>
           </div>
           <div class="page-actions">
-            <el-button type="primary" @click="$router.push('/businesspartner/new')">{{ tableLabels.new }}</el-button>
+            <el-button type="primary" @click="openNewPartner">{{ tableLabels.new }}</el-button>
           </div>
         </div>
       </template>
@@ -88,8 +88,9 @@
       <BusinessPartnerForm
         ref="partnerFormRef"
         :partner-id="detailDialog.id || undefined"
-        mode="edit"
-            :readonly="detailDialog.readonly"
+        :mode="detailDialog.id ? 'edit' : 'create'"
+        :readonly="detailDialog.readonly"
+        :embedded="true"
         @saved="onPartnerSaved"
         @cancel="onPartnerEditCancel"
         @action="handleFormAction"
@@ -187,7 +188,7 @@ const showBank = ref(false)
 const showBranch = ref(false)
 const currentBankCode = ref('')
 
-const detailDialogTitle = computed(() => '取引先詳細')
+const detailDialogTitle = computed(() => detailDialog.id ? '取引先詳細' : '取引先登録')
 
 async function load() {
   loading.value = true
@@ -269,6 +270,14 @@ function openPartnerDetail(row: any) {
   detailDialog.id = id
   const parsed = parsePayload(row?.payload) || {}
   detailDialog.partnerCode = (row?.partner_code ?? parsed?.partnerCode ?? parsed?.code ?? '').toString().trim()
+}
+
+// 新規登録弹窗
+function openNewPartner() {
+  detailDialog.visible = true
+  detailDialog.readonly = false
+  detailDialog.id = null
+  detailDialog.partnerCode = ''
 }
 
 async function switchToEditMode() {
