@@ -1069,6 +1069,38 @@ CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_voucher ON moneytree_trans
 CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_status ON moneytree_transactions(company_code, posting_status, transaction_date DESC);
 CREATE INDEX IF NOT EXISTS idx_moneytree_transactions_run ON moneytree_transactions(company_code, posting_run_id, transaction_date DESC);
 
+-- 为历史数据设置 row_sequence（如果为0或NULL）
+-- 策略：按账户号、交易日期分组，根据余额降序来推断原始顺序（余额高的交易在前）
+DO $$
+DECLARE
+    updated_count INTEGER;
+BEGIN
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'moneytree_transactions') THEN
+        -- 检查是否有需要修复的记录
+        IF EXISTS (SELECT 1 FROM moneytree_transactions WHERE row_sequence IS NULL OR row_sequence = 0 LIMIT 1) THEN
+            WITH sequenced AS (
+                SELECT 
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY company_code, account_number, transaction_date 
+                        ORDER BY COALESCE(balance, 0) DESC, imported_at ASC
+                    ) as seq
+                FROM moneytree_transactions
+                WHERE row_sequence IS NULL OR row_sequence = 0
+            )
+            UPDATE moneytree_transactions t
+            SET row_sequence = s.seq
+            FROM sequenced s
+            WHERE t.id = s.id;
+            
+            GET DIAGNOSTICS updated_count = ROW_COUNT;
+            RAISE NOTICE 'moneytree_transactions: updated row_sequence for % records', updated_count;
+        END IF;
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'moneytree_transactions row_sequence update skipped: %', SQLERRM;
+END $$;
+
 -- ---------------------------------------
 -- 薪资计算期限管理
 -- ---------------------------------------
