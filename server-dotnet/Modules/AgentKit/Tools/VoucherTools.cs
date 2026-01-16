@@ -11,7 +11,8 @@ using Server.Modules.AgentKit;
 namespace Server.Modules.AgentKit.Tools;
 
 /// <summary>
-/// 鏍规嵁鍑瘉鍙锋煡璇㈠嚟璇佸伐鍏?/// </summary>
+/// 根据凭证号查询凭证工具
+/// </summary>
 public sealed class GetVoucherByNumberTool : AgentToolBase
 {
     private readonly NpgsqlDataSource _ds;
@@ -28,10 +29,10 @@ public sealed class GetVoucherByNumberTool : AgentToolBase
         var voucherNo = GetString(args, "voucher_no") ?? GetString(args, "voucherNo");
         if (string.IsNullOrWhiteSpace(voucherNo))
         {
-            return ErrorResult(Localize(context.Language, "voucher_no 銇屽繀瑕併仹銇?, "voucher_no 蹇呭～"));
+            return ErrorResult(Localize(context.Language, "voucher_no が必要です", "voucher_no 必填"));
         }
 
-        Logger.LogInformation("[GetVoucherByNumberTool] 鏌ヨ鍑瘉: {VoucherNo}", voucherNo);
+        Logger.LogInformation("[GetVoucherByNumberTool] 查询凭证: {VoucherNo}", voucherNo);
 
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
@@ -45,7 +46,7 @@ public sealed class GetVoucherByNumberTool : AgentToolBase
             return SuccessResult(new { found = false, voucherNo });
         }
 
-        var msg = new AgentResultMessage("assistant", $"宸叉壘鍒板嚟璇?{voucherNo}", "info", new
+        var msg = new AgentResultMessage("assistant", $"已找到凭证 {voucherNo}", "info", new
         {
             label = voucherNo,
             action = "openEmbed",
@@ -67,12 +68,5 @@ public sealed class GetVoucherByNumberTool : AgentToolBase
 }
 
 
-
-using System.Text.Json;
-using System.Text.Json.Nodes;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
-using Npgsql;
 
 

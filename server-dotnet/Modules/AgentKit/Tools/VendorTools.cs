@@ -12,7 +12,8 @@ using Server.Modules.AgentKit;
 namespace Server.Modules.AgentKit.Tools;
 
 /// <summary>
-/// 鎼滅储渚涘簲鍟嗗彂绁?璇锋眰涔﹀伐鍏?/// </summary>
+/// 搜索供应商发票/请求书工具
+/// </summary>
 public sealed class SearchVendorReceiptsTool : AgentToolBase
 {
     private readonly NpgsqlDataSource _ds;
@@ -32,7 +33,7 @@ public sealed class SearchVendorReceiptsTool : AgentToolBase
         var status = GetString(args, "status");
         var limit = GetInt(args, "limit") ?? 20;
 
-        Logger.LogInformation("[SearchVendorReceiptsTool] 鎼滅储渚涘簲鍟嗗彂绁? VendorCode={VendorCode}, DateFrom={DateFrom}, DateTo={DateTo}",
+        Logger.LogInformation("[SearchVendorReceiptsTool] 搜索供应商发票: VendorCode={VendorCode}, DateFrom={DateFrom}, DateTo={DateTo}",
             vendorCode, dateFrom, dateTo);
 
         await using var conn = await _ds.OpenConnectionAsync(ct);
@@ -97,7 +98,7 @@ public sealed class SearchVendorReceiptsTool : AgentToolBase
 }
 
 /// <summary>
-/// 鑾峰彇璐圭敤绉戠洰閫夐」宸ュ叿
+/// 获取费用科目选项工具
 /// </summary>
 public sealed class GetExpenseAccountOptionsTool : AgentToolBase
 {
@@ -117,13 +118,14 @@ public sealed class GetExpenseAccountOptionsTool : AgentToolBase
         var category = GetString(args, "category");
         var vendorCode = GetString(args, "vendor_code") ?? GetString(args, "vendorCode");
 
-        Logger.LogInformation("[GetExpenseAccountOptionsTool] 鑾峰彇璐圭敤绉戠洰閫夐」: Category={Category}, VendorCode={VendorCode}",
+        Logger.LogInformation("[GetExpenseAccountOptionsTool] 获取费用科目选项: Category={Category}, VendorCode={VendorCode}",
             category, vendorCode);
 
-        // 浠庝細璁¤鍒欐湇鍔¤幏鍙栨帹鑽愮鐩?        var rules = await _ruleService.GetRulesAsync(context.CompanyCode, ct);
+        // 从会计规则服务获取推荐科目
+        var rules = await _ruleService.GetRulesAsync(context.CompanyCode, ct);
         var recommendations = new List<object>();
 
-        // 鏌ヨ甯哥敤璐圭敤绉戠洰
+        // 查询常用费用科目
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = @"SELECT account_code, payload::text FROM accounts 
@@ -167,13 +169,5 @@ public sealed class GetExpenseAccountOptionsTool : AgentToolBase
 }
 
 
-
-using System.Globalization;
-using System.Text.Json;
-using System.Text.Json.Nodes;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
-using Npgsql;
 
 

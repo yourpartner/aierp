@@ -10,7 +10,8 @@ using Server.Modules.AgentKit;
 namespace Server.Modules.AgentKit.Tools;
 
 /// <summary>
-/// 绉戠洰鏌ヨ宸ュ叿 - 鏍规嵁绉戠洰浠ｇ爜鎴栧悕绉版煡鎵句細璁＄鐩?/// </summary>
+/// 科目查询工具 - 根据科目代码或名称查找会计科目
+/// </summary>
 public sealed class LookupAccountTool : AgentToolBase
 {
     private readonly NpgsqlDataSource _ds;
@@ -27,14 +28,15 @@ public sealed class LookupAccountTool : AgentToolBase
         var query = GetString(args, "query");
         if (string.IsNullOrWhiteSpace(query))
         {
-            return ErrorResult(Localize(context.Language, "query 銇屽繀瑕併仹銇?, "query 蹇呭～"));
+            return ErrorResult(Localize(context.Language, "query が必要です", "query 必填"));
         }
 
-        Logger.LogInformation("[LookupAccountTool] 鏌ヨ绉戠洰: {Query}, CompanyCode={CompanyCode}", query, context.CompanyCode);
+        Logger.LogInformation("[LookupAccountTool] 查询科目: {Query}, CompanyCode={CompanyCode}", query, context.CompanyCode);
 
         var result = await LookupAccountAsync(context.CompanyCode, query, ct);
 
-        // 娉ㄥ唽鏌ヨ缁撴灉鍒颁笂涓嬫枃锛堢敤浜庣鐩櫧鍚嶅崟楠岃瘉锛?        if (result.Found && !string.IsNullOrWhiteSpace(result.AccountCode))
+        // 注册查询结果到上下文（用于科目白名单验证）
+        if (result.Found && !string.IsNullOrWhiteSpace(result.AccountCode))
         {
             context.RegisterLookupAccountResult(result.AccountCode);
         }
@@ -52,18 +54,20 @@ public sealed class LookupAccountTool : AgentToolBase
 
         await using var conn = await _ds.OpenConnectionAsync(ct);
 
-        // 绮剧‘鍖归厤绉戠洰浠ｇ爜
+        // 精确匹配科目代码
         var exact = await QueryAccountAsync(conn, companyCode, 
             "SELECT account_code, payload::text FROM accounts WHERE company_code=$1 AND account_code=$2 LIMIT 1",
             trimmed, ct);
         if (exact is not null) return BuildResult(trimmed, exact.Value.code, exact.Value.payload);
 
-        // 鎸夊悕绉板尮閰?        var byName = await QueryAccountAsync(conn, companyCode,
+        // 按名称匹配
+        var byName = await QueryAccountAsync(conn, companyCode,
             "SELECT account_code, payload::text FROM accounts WHERE company_code=$1 AND LOWER(payload->>'name') = LOWER($2) LIMIT 1",
             trimmed, ct);
         if (byName is not null) return BuildResult(trimmed, byName.Value.code, byName.Value.payload);
 
-        // 鎸夊埆鍚嶅尮閰?        var byAlias = await QueryAccountAsync(conn, companyCode,
+        // 按别名匹配
+        var byAlias = await QueryAccountAsync(conn, companyCode,
             @"SELECT account_code, payload::text FROM accounts 
               WHERE company_code=$1 AND EXISTS (
                   SELECT 1 FROM jsonb_array_elements_text(COALESCE(payload->'aliases','[]'::jsonb)) AS alias
@@ -72,7 +76,7 @@ public sealed class LookupAccountTool : AgentToolBase
             trimmed, ct);
         if (byAlias is not null) return BuildResult(trimmed, byAlias.Value.code, byAlias.Value.payload);
 
-        // 妯＄硦鍖归厤
+        // 模糊匹配
         var fuzzy = await QueryAccountAsync(conn, companyCode,
             @"SELECT account_code, payload::text FROM accounts 
               WHERE company_code=$1 AND (
@@ -148,11 +152,5 @@ public sealed class LookupAccountTool : AgentToolBase
 }
 
 
-
-using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
-using Npgsql;
 
 

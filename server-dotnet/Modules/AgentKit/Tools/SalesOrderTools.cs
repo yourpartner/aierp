@@ -10,7 +10,10 @@ using Server.Modules.AgentKit;
 namespace Server.Modules.AgentKit.Tools;
 
 /// <summary>
-/// 鍒涘缓閿€鍞鍗曞伐鍏?/// 娉ㄦ剰锛氬畬鏁寸殑涓氬姟閫昏緫淇濈暀鍦?AgentKitService 涓?/// 姝ゅ鎻愪緵宸ュ叿鎺ュ彛灏佽鍜屽弬鏁伴獙璇?/// </summary>
+/// 创建销售订单工具
+/// 注意：完整的业务逻辑保留在 AgentKitService 中
+/// 此处提供工具接口封装和参数验证
+/// </summary>
 public sealed class CreateSalesOrderTool : AgentToolBase
 {
     private readonly NpgsqlDataSource _ds;
@@ -24,12 +27,12 @@ public sealed class CreateSalesOrderTool : AgentToolBase
 
     public override Task<ToolExecutionResult> ExecuteAsync(JsonElement args, AgentExecutionContext context, CancellationToken ct)
     {
-        // 鍩烘湰鍙傛暟楠岃瘉
-        Logger.LogInformation("[CreateSalesOrderTool] 楠岃瘉閿€鍞鍗曞弬鏁?);
+        // 基本参数验证
+        Logger.LogInformation("[CreateSalesOrderTool] 验证销售订单参数");
 
         var root = JsonNode.Parse(args.GetRawText())?.AsObject() ?? new JsonObject();
 
-        // 楠岃瘉蹇呭～瀛楁
+        // 验证必填字段
         var customerCode = ReadJsonString(root, "customerCode");
         if (string.IsNullOrWhiteSpace(customerCode))
         {
@@ -39,15 +42,15 @@ public sealed class CreateSalesOrderTool : AgentToolBase
 
         if (string.IsNullOrWhiteSpace(customerCode))
         {
-            return Task.FromResult(ErrorResult(Localize(context.Language, "椤у銈炽兗銉夈亴蹇呴爤銇с仚", "customerCode 蹇呴』鎸囧畾")));
+            return Task.FromResult(ErrorResult(Localize(context.Language, "顧客コードが必須です", "customerCode 必须指定")));
         }
 
         if (!root.TryGetPropertyValue("lines", out var linesNode) || linesNode is not JsonArray lineArray || lineArray.Count == 0)
         {
-            return Task.FromResult(ErrorResult(Localize(context.Language, "鍝佺洰鏄庣窗銇屼笉瓒炽仐銇︺亜銇俱仚", "缂哄皯鍝佺洰鏄庣粏")));
+            return Task.FromResult(ErrorResult(Localize(context.Language, "品目明細が不足しています", "缺少品目明细")));
         }
 
-        // 楠岃瘉姣忚鏄庣粏
+        // 验证每行明细
         var lineNo = 1;
         foreach (var item in lineArray)
         {
@@ -57,26 +60,28 @@ public sealed class CreateSalesOrderTool : AgentToolBase
             if (string.IsNullOrWhiteSpace(materialCode))
             {
                 return Task.FromResult(ErrorResult(Localize(context.Language, 
-                    $"鏄庣窗 {lineNo} 銇搧鐩偝銉笺儔銇屻亗銈娿伨銇涖倱", 
-                    $"鏄庣粏 {lineNo} 缂哄皯 materialCode")));
+                    $"明細 {lineNo} に品目コードがありません", 
+                    $"明细 {lineNo} 缺少 materialCode")));
             }
 
             var qty = ReadJsonDecimal(lineObj, "quantity");
             if (qty <= 0m)
             {
                 return Task.FromResult(ErrorResult(Localize(context.Language,
-                    $"鏄庣窗 {lineNo} 銇暟閲忋亴涓嶆銇с仚",
-                    $"鏄庣粏 {lineNo} 鐨勬暟閲忓繀椤诲ぇ浜?")));
+                    $"明細 {lineNo} の数量が不正です",
+                    $"明细 {lineNo} 的数量必须大于0")));
             }
 
             lineNo++;
         }
 
-        // 杩斿洖楠岃瘉閫氳繃鐨勫搷搴?        // 娉ㄦ剰锛氬疄闄呭垱寤洪€昏緫鍦?AgentKitService.CreateSalesOrderAsync 涓?        // 杩欎釜宸ュ叿鐩墠浠呯敤浜庡弬鏁伴獙璇侊紝涓嶄細琚伐鍏锋敞鍐岃〃浣跨敤
+        // 返回验证通过的响应
+        // 注意：实际创建逻辑在 AgentKitService.CreateSalesOrderAsync 中
+        // 这个工具目前仅用于参数验证，不会被工具注册表使用
         return Task.FromResult(SuccessResult(new
         {
             status = "validated",
-            message = Localize(context.Language, "鍙楁敞銉戙儵銉°兗銈裤伄妞滆銇屽畬浜嗐仐銇俱仐銇?, "閿€鍞鍗曞弬鏁伴獙璇侀€氳繃"),
+            message = Localize(context.Language, "受注パラメータの検証が完了しました", "销售订单参数验证通过"),
             customerCode,
             lineCount = lineArray.Count
         }));
@@ -107,11 +112,5 @@ public sealed class CreateSalesOrderTool : AgentToolBase
 }
 
 
-
-using System.Text.Json.Nodes;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
-using Npgsql;
 
 

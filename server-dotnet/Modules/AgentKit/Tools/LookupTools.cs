@@ -12,7 +12,8 @@ using Server.Modules.AgentKit;
 namespace Server.Modules.AgentKit.Tools;
 
 /// <summary>
-/// 浼氳鏈熼棿妫€鏌ュ伐鍏?/// </summary>
+/// 会计期间检查工具
+/// </summary>
 public sealed class CheckAccountingPeriodTool : AgentToolBase
 {
     private readonly NpgsqlDataSource _ds;
@@ -29,10 +30,10 @@ public sealed class CheckAccountingPeriodTool : AgentToolBase
         var postingDate = GetString(args, "posting_date") ?? GetString(args, "postingDate");
         if (string.IsNullOrWhiteSpace(postingDate))
         {
-            return ErrorResult(Localize(context.Language, "posting_date 銇屽繀瑕併仹銇?, "posting_date 蹇呭～"));
+            return ErrorResult(Localize(context.Language, "posting_date が必要です", "posting_date 必填"));
         }
 
-        Logger.LogInformation("[CheckAccountingPeriodTool] 妫€鏌ヤ細璁℃湡闂? {PostingDate}, CompanyCode={CompanyCode}", postingDate, context.CompanyCode);
+        Logger.LogInformation("[CheckAccountingPeriodTool] 检查会计期间: {PostingDate}, CompanyCode={CompanyCode}", postingDate, context.CompanyCode);
 
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
@@ -43,16 +44,17 @@ public sealed class CheckAccountingPeriodTool : AgentToolBase
         var scalar = await cmd.ExecuteScalarAsync(ct);
         if (scalar is null)
         {
-            return SuccessResult(new { exists = false, isOpen = true, message = "鏈壘鍒板搴旀湡闂达紝瑙嗕负寮€鏀? });
+            return SuccessResult(new { exists = false, isOpen = true, message = "未找到对应期间，视为开放" });
         }
         
         var isOpen = Convert.ToBoolean(scalar, CultureInfo.InvariantCulture);
-        return SuccessResult(new { exists = true, isOpen, message = isOpen ? "浼氳鏈熼棿寮€鏀? : "浼氳鏈熼棿宸插叧闂? });
+        return SuccessResult(new { exists = true, isOpen, message = isOpen ? "会计期间开放" : "会计期间已关闭" });
     }
 }
 
 /// <summary>
-/// 鍙戠エ鐧昏鍙烽獙璇佸伐鍏?/// </summary>
+/// 发票登记号验证工具
+/// </summary>
 public sealed class VerifyInvoiceRegistrationTool : AgentToolBase
 {
     private readonly InvoiceRegistryService _invoiceRegistry;
@@ -69,24 +71,24 @@ public sealed class VerifyInvoiceRegistrationTool : AgentToolBase
         var regNo = GetString(args, "registration_no") ?? GetString(args, "registrationNo") ?? GetString(args, "reg_no");
         if (string.IsNullOrWhiteSpace(regNo))
         {
-            return ErrorResult(Localize(context.Language, "registration_no 銇屽繀瑕併仹銇?, "registration_no 蹇呭～"));
+            return ErrorResult(Localize(context.Language, "registration_no が必要です", "registration_no 必填"));
         }
 
-        Logger.LogInformation("[VerifyInvoiceRegistrationTool] 楠岃瘉鍙戠エ鐧昏鍙? {RegNo}", regNo);
+        Logger.LogInformation("[VerifyInvoiceRegistrationTool] 验证发票登记号: {RegNo}", regNo);
 
         var normalized = InvoiceRegistryService.Normalize(regNo);
         if (!InvoiceRegistryService.IsFormatValid(normalized))
         {
-            return SuccessResult(new { valid = false, normalized, reason = "鏍煎紡涓嶆纭? });
+            return SuccessResult(new { valid = false, normalized, reason = "格式不正确" });
         }
 
         var isValid = await _invoiceRegistry.VerifyAsync(normalized, ct);
-        return SuccessResult(new { valid = isValid, normalized, reason = isValid ? "鐧昏鍙锋湁鏁? : "鐧昏鍙锋棤鏁堟垨鏈櫥璁? });
+        return SuccessResult(new { valid = isValid, normalized, reason = isValid ? "登记号有效" : "登记号无效或未登记" });
     }
 }
 
 /// <summary>
-/// 瀹㈡埛鏌ヨ宸ュ叿
+/// 客户查询工具
 /// </summary>
 public sealed class LookupCustomerTool : AgentToolBase
 {
@@ -104,15 +106,16 @@ public sealed class LookupCustomerTool : AgentToolBase
         var query = GetString(args, "query");
         if (string.IsNullOrWhiteSpace(query))
         {
-            return ErrorResult(Localize(context.Language, "query 銇屽繀瑕併仹銇?, "query 蹇呭～"));
+            return ErrorResult(Localize(context.Language, "query が必要です", "query 必填"));
         }
 
-        Logger.LogInformation("[LookupCustomerTool] 鏌ヨ瀹㈡埛: {Query}, CompanyCode={CompanyCode}", query, context.CompanyCode);
+        Logger.LogInformation("[LookupCustomerTool] 查询客户: {Query}, CompanyCode={CompanyCode}", query, context.CompanyCode);
 
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
         
-        // 鍏堢簿纭尮閰嶄唬鐮?        cmd.CommandText = "SELECT customer_code, payload::text FROM customers WHERE company_code=$1 AND customer_code=$2 LIMIT 1";
+        // 先精确匹配代码
+        cmd.CommandText = "SELECT customer_code, payload::text FROM customers WHERE company_code=$1 AND customer_code=$2 LIMIT 1";
         cmd.Parameters.AddWithValue(context.CompanyCode);
         cmd.Parameters.AddWithValue(query.Trim());
         
@@ -126,7 +129,7 @@ public sealed class LookupCustomerTool : AgentToolBase
         
         await reader.CloseAsync();
         
-        // 妯＄硦鍖归厤鍚嶇О
+        // 模糊匹配名称
         cmd.Parameters.Clear();
         cmd.CommandText = @"SELECT customer_code, payload::text FROM customers 
                             WHERE company_code=$1 AND (
@@ -155,7 +158,7 @@ public sealed class LookupCustomerTool : AgentToolBase
 }
 
 /// <summary>
-/// 鐗╂枡/鍝佺洰鏌ヨ宸ュ叿
+/// 物料/品目查询工具
 /// </summary>
 public sealed class LookupMaterialTool : AgentToolBase
 {
@@ -173,15 +176,16 @@ public sealed class LookupMaterialTool : AgentToolBase
         var query = GetString(args, "query");
         if (string.IsNullOrWhiteSpace(query))
         {
-            return ErrorResult(Localize(context.Language, "query 銇屽繀瑕併仹銇?, "query 蹇呭～"));
+            return ErrorResult(Localize(context.Language, "query が必要です", "query 必填"));
         }
 
-        Logger.LogInformation("[LookupMaterialTool] 鏌ヨ鐗╂枡: {Query}, CompanyCode={CompanyCode}", query, context.CompanyCode);
+        Logger.LogInformation("[LookupMaterialTool] 查询物料: {Query}, CompanyCode={CompanyCode}", query, context.CompanyCode);
 
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
         
-        // 鍏堢簿纭尮閰嶄唬鐮?        cmd.CommandText = "SELECT material_code, payload::text FROM materials WHERE company_code=$1 AND material_code=$2 LIMIT 1";
+        // 先精确匹配代码
+        cmd.CommandText = "SELECT material_code, payload::text FROM materials WHERE company_code=$1 AND material_code=$2 LIMIT 1";
         cmd.Parameters.AddWithValue(context.CompanyCode);
         cmd.Parameters.AddWithValue(query.Trim());
         
@@ -195,7 +199,7 @@ public sealed class LookupMaterialTool : AgentToolBase
         
         await reader.CloseAsync();
         
-        // 妯＄硦鍖归厤鍚嶇О
+        // 模糊匹配名称
         cmd.Parameters.Clear();
         cmd.CommandText = @"SELECT material_code, payload::text FROM materials 
                             WHERE company_code=$1 AND (
@@ -224,7 +228,8 @@ public sealed class LookupMaterialTool : AgentToolBase
 }
 
 /// <summary>
-/// 渚涘簲鍟嗘煡璇㈠伐鍏?/// </summary>
+/// 供应商查询工具
+/// </summary>
 public sealed class LookupVendorTool : AgentToolBase
 {
     private readonly NpgsqlDataSource _ds;
@@ -241,15 +246,16 @@ public sealed class LookupVendorTool : AgentToolBase
         var query = GetString(args, "query");
         if (string.IsNullOrWhiteSpace(query))
         {
-            return ErrorResult(Localize(context.Language, "query 銇屽繀瑕併仹銇?, "query 蹇呭～"));
+            return ErrorResult(Localize(context.Language, "query が必要です", "query 必填"));
         }
 
-        Logger.LogInformation("[LookupVendorTool] 鏌ヨ渚涘簲鍟? {Query}, CompanyCode={CompanyCode}", query, context.CompanyCode);
+        Logger.LogInformation("[LookupVendorTool] 查询供应商: {Query}, CompanyCode={CompanyCode}", query, context.CompanyCode);
 
         await using var conn = await _ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
         
-        // 鍏堢簿纭尮閰嶄唬鐮?        cmd.CommandText = "SELECT vendor_code, payload::text FROM vendors WHERE company_code=$1 AND vendor_code=$2 LIMIT 1";
+        // 先精确匹配代码
+        cmd.CommandText = "SELECT vendor_code, payload::text FROM vendors WHERE company_code=$1 AND vendor_code=$2 LIMIT 1";
         cmd.Parameters.AddWithValue(context.CompanyCode);
         cmd.Parameters.AddWithValue(query.Trim());
         
@@ -263,7 +269,7 @@ public sealed class LookupVendorTool : AgentToolBase
         
         await reader.CloseAsync();
         
-        // 妯＄硦鍖归厤鍚嶇О
+        // 模糊匹配名称
         cmd.Parameters.Clear();
         cmd.CommandText = @"SELECT vendor_code, payload::text FROM vendors 
                             WHERE company_code=$1 AND (
@@ -292,13 +298,5 @@ public sealed class LookupVendorTool : AgentToolBase
 }
 
 
-
-using System.Globalization;
-using System.Text.Json;
-using System.Text.Json.Nodes;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
-using Npgsql;
 
 

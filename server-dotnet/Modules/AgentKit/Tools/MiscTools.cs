@@ -8,7 +8,7 @@ using Server.Modules.AgentKit;
 namespace Server.Modules.AgentKit.Tools;
 
 /// <summary>
-/// 绋庨璁＄畻宸ュ叿
+/// 税额计算工具
 /// </summary>
 public sealed class CalculateTaxTool : AgentToolBase
 {
@@ -24,24 +24,25 @@ public sealed class CalculateTaxTool : AgentToolBase
 
         if (!amount.HasValue || amount.Value <= 0)
         {
-            return Task.FromResult(ErrorResult(Localize(context.Language, "amount 銇屽繀瑕併仹銇?, "amount 蹇呭～")));
+            return Task.FromResult(ErrorResult(Localize(context.Language, "amount が必要です", "amount 必填")));
         }
 
-        Logger.LogInformation("[CalculateTaxTool] 璁＄畻绋庨: Amount={Amount}, TaxRate={TaxRate}, IncludeTax={IncludeTax}", 
+        Logger.LogInformation("[CalculateTaxTool] 计算税额: Amount={Amount}, TaxRate={TaxRate}, IncludeTax={IncludeTax}", 
             amount, taxRate, includeTax);
 
         decimal taxAmount, netAmount, grossAmount;
 
         if (includeTax)
         {
-            // 鍚◣閲戦 -> 璁＄畻绋庨鍜屼笉鍚◣閲戦
+            // 含税金额 -> 计算税额和不含税金额
             grossAmount = amount.Value;
             taxAmount = Math.Round(grossAmount * taxRate / (100 + taxRate), 0, MidpointRounding.AwayFromZero);
             netAmount = grossAmount - taxAmount;
         }
         else
         {
-            // 涓嶅惈绋庨噾棰?-> 璁＄畻绋庨鍜屽惈绋庨噾棰?            netAmount = amount.Value;
+            // 不含税金额 -> 计算税额和含税金额
+            netAmount = amount.Value;
             taxAmount = Math.Round(netAmount * taxRate / 100, 0, MidpointRounding.AwayFromZero);
             grossAmount = netAmount + taxAmount;
         }
@@ -58,7 +59,7 @@ public sealed class CalculateTaxTool : AgentToolBase
 }
 
 /// <summary>
-/// 璐у竵杞崲宸ュ叿锛堢畝鍗曠増鏈級
+/// 货币转换工具（简单版本）
 /// </summary>
 public sealed class ConvertCurrencyTool : AgentToolBase
 {
@@ -75,12 +76,13 @@ public sealed class ConvertCurrencyTool : AgentToolBase
 
         if (!amount.HasValue)
         {
-            return Task.FromResult(ErrorResult(Localize(context.Language, "amount 銇屽繀瑕併仹銇?, "amount 蹇呭～")));
+            return Task.FromResult(ErrorResult(Localize(context.Language, "amount が必要です", "amount 必填")));
         }
 
-        Logger.LogInformation("[ConvertCurrencyTool] 璐у竵杞崲: {Amount} {From} -> {To}", amount, fromCurrency, toCurrency);
+        Logger.LogInformation("[ConvertCurrencyTool] 货币转换: {Amount} {From} -> {To}", amount, fromCurrency, toCurrency);
 
-        // 濡傛灉鎻愪緵浜嗘眹鐜囷紝浣跨敤鎻愪緵鐨勬眹鐜?        if (rate.HasValue && rate.Value > 0)
+        // 如果提供了汇率，使用提供的汇率
+        if (rate.HasValue && rate.Value > 0)
         {
             var converted = Math.Round(amount.Value * rate.Value, 2, MidpointRounding.AwayFromZero);
             return Task.FromResult(SuccessResult(new
@@ -93,7 +95,8 @@ public sealed class ConvertCurrencyTool : AgentToolBase
             }));
         }
 
-        // 濡傛灉鐩稿悓璐у竵锛岀洿鎺ヨ繑鍥?        if (string.Equals(fromCurrency, toCurrency, StringComparison.OrdinalIgnoreCase))
+        // 如果相同货币，直接返回
+        if (string.Equals(fromCurrency, toCurrency, StringComparison.OrdinalIgnoreCase))
         {
             return Task.FromResult(SuccessResult(new
             {
@@ -105,14 +108,16 @@ public sealed class ConvertCurrencyTool : AgentToolBase
             }));
         }
 
-        // 鍚﹀垯鎻愮ず闇€瑕佹眹鐜?        return Task.FromResult(ErrorResult(Localize(context.Language,
-            "鐣般仾銈嬮€氳波闁撱伄澶夋彌銇伅 rate 銇寚瀹氥亴蹇呰銇с仚",
-            "涓嶅悓璐у竵涔嬮棿鐨勮浆鎹㈤渶瑕佹寚瀹?rate")));
+        // 否则提示需要汇率
+        return Task.FromResult(ErrorResult(Localize(context.Language,
+            "異なる通貨間の変換には rate の指定が必要です",
+            "不同货币之间的转换需要指定 rate")));
     }
 }
 
 /// <summary>
-/// 鏃ユ湡鏍煎紡鍖栧伐鍏?/// </summary>
+/// 日期格式化工具
+/// </summary>
 public sealed class FormatDateTool : AgentToolBase
 {
     public FormatDateTool(ILogger<FormatDateTool> logger) : base(logger) { }
@@ -126,15 +131,15 @@ public sealed class FormatDateTool : AgentToolBase
 
         if (string.IsNullOrWhiteSpace(dateStr))
         {
-            return Task.FromResult(ErrorResult(Localize(context.Language, "date 銇屽繀瑕併仹銇?, "date 蹇呭～")));
+            return Task.FromResult(ErrorResult(Localize(context.Language, "date が必要です", "date 必填")));
         }
 
         if (!DateTime.TryParse(dateStr, out var date))
         {
-            return Task.FromResult(ErrorResult(Localize(context.Language, "鏃ヤ粯褰㈠紡銇岀劇鍔广仹銇?, "鏃ユ湡鏍煎紡鏃犳晥")));
+            return Task.FromResult(ErrorResult(Localize(context.Language, "日付形式が無効です", "日期格式无效")));
         }
 
-        Logger.LogInformation("[FormatDateTool] 鏍煎紡鍖栨棩鏈? {Date} -> {Format}", dateStr, format);
+        Logger.LogInformation("[FormatDateTool] 格式化日期: {Date} -> {Format}", dateStr, format);
 
         try
         {
@@ -151,15 +156,11 @@ public sealed class FormatDateTool : AgentToolBase
         }
         catch (FormatException)
         {
-            return Task.FromResult(ErrorResult(Localize(context.Language, "銉曘偐銉笺優銉冦儓銇岀劇鍔广仹銇?, "鏍煎紡瀛楃涓叉棤鏁?)));
+            return Task.FromResult(ErrorResult(Localize(context.Language, "フォーマットが無効です", "格式字符串无效")));
         }
     }
 }
 
 
-
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 
 

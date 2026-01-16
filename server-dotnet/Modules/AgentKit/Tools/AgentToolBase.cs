@@ -6,7 +6,7 @@ using Server.Modules.AgentKit;
 namespace Server.Modules.AgentKit.Tools;
 
 /// <summary>
-/// Agent 宸ュ叿鍩虹被 - 鎻愪緵鍏变韩鍔熻兘
+/// Agent 工具基类 - 提供共享功能
 /// </summary>
 public abstract class AgentToolBase : IAgentTool
 {
@@ -31,12 +31,14 @@ public abstract class AgentToolBase : IAgentTool
         System.Threading.CancellationToken ct);
 
     /// <summary>
-    /// 鏈湴鍖栬緟鍔╂柟娉?    /// </summary>
+    /// 本地化辅助方法
+    /// </summary>
     protected static string Localize(string language, string ja, string zh) =>
         string.Equals(language, "zh", StringComparison.OrdinalIgnoreCase) ? zh : ja;
 
     /// <summary>
-    /// 浠?JSON 鍙傛暟鑾峰彇瀛楃涓?    /// </summary>
+    /// 从 JSON 参数获取字符串
+    /// </summary>
     protected static string? GetString(JsonElement args, string propertyName)
     {
         return args.TryGetProperty(propertyName, out var el) && el.ValueKind == JsonValueKind.String
@@ -45,7 +47,7 @@ public abstract class AgentToolBase : IAgentTool
     }
 
     /// <summary>
-    /// 浠?JSON 鍙傛暟鑾峰彇鏁存暟
+    /// 从 JSON 参数获取整数
     /// </summary>
     protected static int? GetInt(JsonElement args, string propertyName)
     {
@@ -60,7 +62,7 @@ public abstract class AgentToolBase : IAgentTool
     }
 
     /// <summary>
-    /// 浠?JSON 鍙傛暟鑾峰彇灏忔暟
+    /// 从 JSON 参数获取小数
     /// </summary>
     protected static decimal? GetDecimal(JsonElement args, string propertyName)
     {
@@ -75,7 +77,8 @@ public abstract class AgentToolBase : IAgentTool
     }
 
     /// <summary>
-    /// 浠?JSON 鍙傛暟鑾峰彇甯冨皵鍊?    /// </summary>
+    /// 从 JSON 参数获取布尔值
+    /// </summary>
     protected static bool? GetBool(JsonElement args, string propertyName)
     {
         if (!args.TryGetProperty(propertyName, out var el)) return null;
@@ -90,7 +93,7 @@ public abstract class AgentToolBase : IAgentTool
     }
 
     /// <summary>
-    /// 鍒涘缓閿欒缁撴灉
+    /// 创建错误结果
     /// </summary>
     protected static ToolExecutionResult ErrorResult(string errorMessage)
     {
@@ -100,7 +103,7 @@ public abstract class AgentToolBase : IAgentTool
     }
 
     /// <summary>
-    /// 鍒涘缓鎴愬姛缁撴灉
+    /// 创建成功结果
     /// </summary>
     protected static ToolExecutionResult SuccessResult(object data, AgentResultMessage[]? messages = null)
     {
@@ -109,7 +112,5 @@ public abstract class AgentToolBase : IAgentTool
 }
 
 
-
-using Microsoft.Extensions.Logging;
 
 

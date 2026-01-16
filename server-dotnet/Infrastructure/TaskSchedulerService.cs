@@ -6,29 +6,37 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using Server.Modules;
+using static Server.Modules.MoneytreeImportService;
 
 namespace Server.Infrastructure;
 
 /// <summary>
 /// Background worker that interprets natural-language task specs and executes scheduled jobs
-/// (currently payroll batch execution). Tasks are stored in <c>scheduler_tasks</c>.
+/// (payroll batch, timesheet compliance, moneytree sync). Tasks are stored in <c>scheduler_tasks</c>.
 /// </summary>
 public sealed class TaskSchedulerService : BackgroundService
 {
     private readonly NpgsqlDataSource _ds;
     private readonly LawDatasetService _law;
     private readonly EmailService? _email;
+    private readonly MoneytreeImportService? _moneytreeImport;
     private readonly ILogger<TaskSchedulerService>? _logger;
     private readonly string _workerId;
 
     private static readonly TimeSpan IdleDelay = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan ShortDelay = TimeSpan.FromSeconds(8);
 
-    public TaskSchedulerService(NpgsqlDataSource ds, LawDatasetService law, EmailService? email = null, ILogger<TaskSchedulerService>? logger = null)
+    public TaskSchedulerService(
+        NpgsqlDataSource ds,
+        LawDatasetService law,
+        EmailService? email = null,
+        MoneytreeImportService? moneytreeImport = null,
+        ILogger<TaskSchedulerService>? logger = null)
     {
         _ds = ds;
         _law = law;
         _email = email;
+        _moneytreeImport = moneytreeImport;
         _logger = logger;
         _workerId = $"tasksched-{Environment.MachineName}-{Guid.NewGuid():N}";
     }
@@ -181,7 +189,9 @@ RETURNING t.id, t.company_code, t.payload, t.next_run_at, t.last_run_at;";
                     ? await ExecutePayrollBatchAsync(task, plan, schedule, startedAt, ct)
                     : string.Equals(action, "timesheet.compliance_check", StringComparison.OrdinalIgnoreCase)
                         ? await ExecuteTimesheetComplianceAsync(task, plan, schedule, startedAt, ct)
-                        : TaskExecutionOutcome.Failure("未支持的任务类型", plan);
+                        : string.Equals(action, "moneytree.sync", StringComparison.OrdinalIgnoreCase)
+                            ? await ExecuteMoneytreeSyncAsync(task, plan, schedule, startedAt, ct)
+                            : TaskExecutionOutcome.Failure("未支持的任务类型", plan);
 
             if (schedule is not null)
             {
@@ -543,6 +553,287 @@ WHERE u.company_code=$1";
             }
             return string.Join("\n", lines);
         }
+    }
+
+    /// <summary>
+    /// Executes Moneytree bank sync: downloads CSV from Moneytree and imports to database.
+    /// Supports dynamic date range and retry logic.
+    /// </summary>
+    private async Task<TaskExecutionOutcome> ExecuteMoneytreeSyncAsync(SchedulerTaskRecord task, JsonObject plan, JsonObject? schedule, DateTimeOffset startedAt, CancellationToken ct)
+    {
+        if (_moneytreeImport is null)
+        {
+            return TaskExecutionOutcome.Failure("Moneytree 导入服务未配置", plan);
+        }
+
+        // Read retry state from payload
+        var payload = task.Payload;
+        int currentAttempt = 1;
+        if (payload.TryGetPropertyValue("_retryState", out var retryNode) && retryNode is JsonObject retryState)
+        {
+            if (retryState.TryGetPropertyValue("attempt", out var attemptNode) && attemptNode is JsonValue av && av.TryGetValue<int>(out var a))
+                currentAttempt = a;
+        }
+
+        var (maxAttempts, retryInterval) = SchedulerPlanHelper.GetRetrySettings(schedule);
+        _logger?.LogInformation("[TaskScheduler] Moneytree sync starting: company={Company}, attempt={Attempt}/{Max}",
+            task.CompanyCode, currentAttempt, maxAttempts);
+
+        // Calculate date range
+        DateTimeOffset startDate;
+        DateTimeOffset endDate = DateTimeOffset.UtcNow.Date;
+        
+        var dateRangeKind = "dynamic";
+        if (plan.TryGetPropertyValue("dateRange", out var drNode) && drNode is JsonObject dateRange)
+        {
+            if (dateRange.TryGetPropertyValue("kind", out var kindNode) && kindNode is JsonValue kv && kv.TryGetValue<string>(out var kind))
+                dateRangeKind = kind;
+        }
+
+        if (dateRangeKind == "dynamic")
+        {
+            // Get last successful sync date from database
+            var lastSuccessDate = await GetLastSuccessfulSyncDateAsync(task.CompanyCode, ct);
+            startDate = lastSuccessDate ?? endDate.AddMonths(-3); // Default 3 months if no previous sync
+            _logger?.LogInformation("[TaskScheduler] Moneytree sync date range: {Start} to {End} (last success: {Last})",
+                startDate.ToString("yyyy-MM-dd"), endDate.ToString("yyyy-MM-dd"), lastSuccessDate?.ToString("yyyy-MM-dd") ?? "none");
+        }
+        else
+        {
+            // Fixed date range (fallback)
+            startDate = endDate.AddMonths(-1);
+        }
+
+        try
+        {
+            var importResult = await _moneytreeImport.ImportAsync(
+                task.CompanyCode,
+                new MoneytreeImportService.MoneytreeImportRequest(
+                    null, // OTP secret from config
+                    startDate,
+                    endDate,
+                    MoneytreeImportService.ImportMode.Normal),
+                "scheduler",
+                ct);
+
+            var finishedAt = DateTimeOffset.UtcNow;
+            var summary = new JsonObject
+            {
+                ["dateRange"] = new JsonObject
+                {
+                    ["start"] = startDate.ToString("yyyy-MM-dd"),
+                    ["end"] = endDate.ToString("yyyy-MM-dd")
+                },
+                ["batchId"] = importResult.BatchId.ToString(),
+                ["totalRows"] = importResult.TotalRows,
+                ["insertedRows"] = importResult.InsertedRows,
+                ["skippedRows"] = importResult.SkippedRows,
+                ["linkedRows"] = importResult.LinkedRows,
+                ["attempt"] = currentAttempt,
+                ["startedAt"] = startedAt.ToString("O"),
+                ["finishedAt"] = finishedAt.ToString("O"),
+                ["durationMs"] = (finishedAt - startedAt).TotalMilliseconds
+            };
+
+            var result = new JsonObject { ["summary"] = summary };
+            
+            // Record success date for next dynamic range calculation
+            await RecordSyncSuccessAsync(task.CompanyCode, endDate, ct);
+            
+            // Clear retry state on success
+            payload.Remove("_retryState");
+
+            var nextRun = SchedulerPlanHelper.ComputeNextOccurrence(schedule, DateTimeOffset.UtcNow);
+            if (nextRun.HasValue)
+            {
+                result["nextRunPreview"] = nextRun.Value.ToString("O");
+            }
+
+            _logger?.LogInformation("[TaskScheduler] Moneytree sync success: company={Company}, inserted={Inserted}, skipped={Skipped}",
+                task.CompanyCode, importResult.InsertedRows, importResult.SkippedRows);
+
+            return new TaskExecutionOutcome("pending", result, nextRun, false);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "[TaskScheduler] Moneytree sync failed: company={Company}, attempt={Attempt}/{Max}",
+                task.CompanyCode, currentAttempt, maxAttempts);
+
+            var errorResult = new JsonObject
+            {
+                ["error"] = ex.Message,
+                ["attempt"] = currentAttempt,
+                ["maxAttempts"] = maxAttempts,
+                ["dateRange"] = new JsonObject
+                {
+                    ["start"] = startDate.ToString("yyyy-MM-dd"),
+                    ["end"] = endDate.ToString("yyyy-MM-dd")
+                }
+            };
+
+            if (currentAttempt < maxAttempts)
+            {
+                // Schedule retry
+                var retryTime = DateTimeOffset.UtcNow.AddMinutes(retryInterval);
+                errorResult["nextRetryAt"] = retryTime.ToString("O");
+                errorResult["status"] = "retrying";
+
+                // Save retry state
+                payload["_retryState"] = new JsonObject
+                {
+                    ["attempt"] = currentAttempt + 1,
+                    ["lastError"] = ex.Message,
+                    ["lastAttemptAt"] = DateTimeOffset.UtcNow.ToString("O")
+                };
+
+                _logger?.LogInformation("[TaskScheduler] Moneytree sync will retry in {Minutes} minutes (attempt {Next}/{Max})",
+                    retryInterval, currentAttempt + 1, maxAttempts);
+
+                return new TaskExecutionOutcome("pending", errorResult, retryTime, true);
+            }
+            else
+            {
+                // Max retries reached - send alert
+                errorResult["status"] = "max_retries_reached";
+                await SendSyncFailureAlertAsync(task.CompanyCode, currentAttempt, ex.Message, ct);
+                
+                // Clear retry state and schedule next regular run
+                payload.Remove("_retryState");
+                var nextRun = SchedulerPlanHelper.ComputeNextOccurrence(schedule, DateTimeOffset.UtcNow);
+                
+                _logger?.LogError("[TaskScheduler] Moneytree sync failed after {Max} attempts, alert sent", maxAttempts);
+
+                return new TaskExecutionOutcome("failed", errorResult, nextRun, true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Get the last successful sync date for a company.
+    /// </summary>
+    private async Task<DateTimeOffset?> GetLastSuccessfulSyncDateAsync(string companyCode, CancellationToken ct)
+    {
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT MAX(transaction_date)
+            FROM moneytree_transactions
+            WHERE company_code = $1 AND transaction_date IS NOT NULL";
+        cmd.Parameters.AddWithValue(companyCode);
+        var result = await cmd.ExecuteScalarAsync(ct);
+        if (result is DateTime dt)
+        {
+            return new DateTimeOffset(dt, TimeSpan.Zero);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Record successful sync for future date range calculation.
+    /// </summary>
+    private async Task RecordSyncSuccessAsync(string companyCode, DateTimeOffset syncDate, CancellationToken ct)
+    {
+        try
+        {
+            await using var conn = await _ds.OpenConnectionAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                INSERT INTO system_settings (company_code, key, value, updated_at)
+                VALUES ($1, 'moneytree.last_sync_date', $2, now())
+                ON CONFLICT (company_code, key) DO UPDATE SET value = $2, updated_at = now()";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(syncDate.ToString("yyyy-MM-dd"));
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "[TaskScheduler] Failed to record sync success date");
+        }
+    }
+
+    /// <summary>
+    /// Send alert when sync fails after max retries.
+    /// </summary>
+    private async Task SendSyncFailureAlertAsync(string companyCode, int attempts, string errorMessage, CancellationToken ct)
+    {
+        try
+        {
+            // 1. Record alert in database
+            await using var conn = await _ds.OpenConnectionAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                INSERT INTO system_alerts (company_code, alert_type, severity, title, message, metadata, created_at)
+                VALUES ($1, 'moneytree_sync_failure', 'critical', $2, $3, $4::jsonb, now())";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue($"银行明细同步失败 ({companyCode})");
+            cmd.Parameters.AddWithValue($"Moneytree 银行明细自动同步在重试 {attempts} 次后仍然失败。\n\n错误信息: {errorMessage}");
+            cmd.Parameters.AddWithValue(JsonSerializer.Serialize(new { companyCode, attempts, error = errorMessage }));
+            await cmd.ExecuteNonQueryAsync(ct);
+
+            // 2. Send email to admins
+            if (_email is not null)
+            {
+                var adminEmails = await GetAdminEmailsAsync(companyCode, ct);
+                if (adminEmails.Count > 0)
+                {
+                    var subject = $"[警报] {companyCode} 银行明细同步失败";
+                    var body = $"""
+                        会社コード: {companyCode}
+                        警報タイプ: 銀行明細同期失敗
+                        重要度: 重大
+                        
+                        Moneytree銀行明細の自動同期が{attempts}回のリトライ後も失敗しました。
+                        
+                        エラー内容:
+                        {errorMessage}
+                        
+                        対応が必要な場合は、システム管理者にお問い合わせください。
+                        
+                        ---
+                        このメールは自動送信されています。
+                        """;
+                    foreach (var email in adminEmails)
+                    {
+                        try { await _email.SendAsync(email, subject, body, false, ct); }
+                        catch (Exception emailEx)
+                        {
+                            _logger?.LogWarning(emailEx, "[TaskScheduler] Failed to send alert email to {Email}", email);
+                        }
+                    }
+                }
+            }
+
+            _logger?.LogInformation("[TaskScheduler] Sync failure alert recorded and notified for {Company}", companyCode);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "[TaskScheduler] Failed to send sync failure alert for {Company}", companyCode);
+        }
+    }
+
+    /// <summary>
+    /// Get admin emails for a company.
+    /// </summary>
+    private async Task<List<string>> GetAdminEmailsAsync(string companyCode, CancellationToken ct)
+    {
+        var list = new List<string>();
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT DISTINCT COALESCE(e.payload->>'contact.email','') AS email
+            FROM users u
+            JOIN user_roles ur ON ur.user_id=u.id
+            JOIN roles r ON r.id=ur.role_id AND LOWER(r.role_code)=LOWER('ADMIN')
+            LEFT JOIN employees e ON e.company_code=u.company_code AND e.payload->>'code'=u.employee_code
+            WHERE u.company_code=$1";
+        cmd.Parameters.AddWithValue(companyCode);
+        await using var rd = await cmd.ExecuteReaderAsync(ct);
+        while (await rd.ReadAsync(ct))
+        {
+            var email = rd.IsDBNull(0) ? "" : rd.GetString(0);
+            if (!string.IsNullOrWhiteSpace(email)) list.Add(email);
+        }
+        return list.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     private static decimal SumAmounts(IReadOnlyList<object> sheet)

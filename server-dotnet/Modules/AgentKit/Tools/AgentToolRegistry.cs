@@ -9,7 +9,8 @@ using Server.Modules.AgentKit;
 namespace Server.Modules.AgentKit.Tools;
 
 /// <summary>
-/// Agent 宸ュ叿娉ㄥ唽琛?- 绠＄悊鍜屽垎鍙戝伐鍏锋墽琛?/// </summary>
+/// Agent 工具注册表 - 管理和分发工具执行
+/// </summary>
 public sealed class AgentToolRegistry
 {
     private readonly Dictionary<string, IAgentTool> _tools = new(StringComparer.OrdinalIgnoreCase);
@@ -21,7 +22,7 @@ public sealed class AgentToolRegistry
     }
 
     /// <summary>
-    /// 娉ㄥ唽宸ュ叿
+    /// 注册工具
     /// </summary>
     public void Register(IAgentTool tool)
     {
@@ -29,11 +30,11 @@ public sealed class AgentToolRegistry
         if (string.IsNullOrWhiteSpace(tool.Name)) throw new ArgumentException("Tool name cannot be empty", nameof(tool));
         
         _tools[tool.Name] = tool;
-        _logger.LogDebug("[AgentToolRegistry] 娉ㄥ唽宸ュ叿: {ToolName}", tool.Name);
+        _logger.LogDebug("[AgentToolRegistry] 注册工具: {ToolName}", tool.Name);
     }
 
     /// <summary>
-    /// 鎵归噺娉ㄥ唽宸ュ叿
+    /// 批量注册工具
     /// </summary>
     public void RegisterAll(IEnumerable<IAgentTool> tools)
     {
@@ -44,21 +45,22 @@ public sealed class AgentToolRegistry
     }
 
     /// <summary>
-    /// 妫€鏌ュ伐鍏锋槸鍚﹀凡娉ㄥ唽
+    /// 检查工具是否已注册
     /// </summary>
     public bool Contains(string name) => _tools.ContainsKey(name);
 
     /// <summary>
-    /// 宸叉敞鍐岀殑宸ュ叿鏁伴噺
+    /// 已注册的工具数量
     /// </summary>
     public int Count => _tools.Count;
 
     /// <summary>
-    /// 鑾峰彇鎵€鏈夊凡娉ㄥ唽鐨勫伐鍏峰悕绉?    /// </summary>
+    /// 获取所有已注册的工具名称
+    /// </summary>
     public IReadOnlyCollection<string> GetRegisteredToolNames() => _tools.Keys;
 
     /// <summary>
-    /// 鎵ц宸ュ叿
+    /// 执行工具
     /// </summary>
     public async Task<ToolExecutionResult> ExecuteAsync(
         string name, 
@@ -69,8 +71,8 @@ public sealed class AgentToolRegistry
         if (!_tools.TryGetValue(name, out var tool))
         {
             var errorMsg = Localize(context.Language, 
-                $"鏈煡銇儎銉笺儷: {name}", 
-                $"鏈煡宸ュ叿: {name}");
+                $"未知のツール: {name}", 
+                $"未知工具: {name}");
             _logger.LogWarning("[AgentToolRegistry] {Error}", errorMsg);
             return new ToolExecutionResult(
                 JsonSerializer.Serialize(new { error = errorMsg }), 
@@ -79,15 +81,15 @@ public sealed class AgentToolRegistry
 
         try
         {
-            _logger.LogInformation("[AgentToolRegistry] 鎵ц宸ュ叿: {ToolName}", name);
+            _logger.LogInformation("[AgentToolRegistry] 执行工具: {ToolName}", name);
             return await tool.ExecuteAsync(args, context, ct);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[AgentToolRegistry] 宸ュ叿鎵ц澶辫触: {ToolName}", name);
+            _logger.LogError(ex, "[AgentToolRegistry] 工具执行失败: {ToolName}", name);
             var errorMsg = Localize(context.Language,
-                $"銉勩兗銉疅琛屻偍銉┿兗: {ex.Message}",
-                $"宸ュ叿鎵ц閿欒: {ex.Message}");
+                $"ツール実行エラー: {ex.Message}",
+                $"工具执行错误: {ex.Message}");
             return new ToolExecutionResult(
                 JsonSerializer.Serialize(new { error = errorMsg }), 
                 Array.Empty<AgentResultMessage>());
@@ -99,10 +101,5 @@ public sealed class AgentToolRegistry
 }
 
 
-
-using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 
 

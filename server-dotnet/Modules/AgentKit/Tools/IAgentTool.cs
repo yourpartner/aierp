@@ -6,23 +6,21 @@ using Server.Modules.AgentKit;
 namespace Server.Modules.AgentKit.Tools;
 
 /// <summary>
-/// Agent 宸ュ叿鎺ュ彛
+/// Agent 工具接口
 /// </summary>
 public interface IAgentTool
 {
     /// <summary>
-    /// 宸ュ叿鍚嶇О锛堢敤浜庤矾鐢憋級
+    /// 工具名称（用于路由）
     /// </summary>
     string Name { get; }
 
     /// <summary>
-    /// 鎵ц宸ュ叿
+    /// 执行工具
     /// </summary>
     Task<ToolExecutionResult> ExecuteAsync(JsonElement args, AgentExecutionContext context, CancellationToken ct);
 }
 
 
-
-using System.Threading.Tasks;
 
 

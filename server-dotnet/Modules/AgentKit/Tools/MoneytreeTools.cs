@@ -10,7 +10,7 @@ using Server.Modules.AgentKit;
 namespace Server.Modules.AgentKit.Tools;
 
 /// <summary>
-/// Moneytree 瑙勫垯娉ㄥ唽宸ュ叿
+/// Moneytree 规则注册工具
 /// </summary>
 public sealed class RegisterMoneytreeRuleTool : AgentToolBase
 {
@@ -28,10 +28,10 @@ public sealed class RegisterMoneytreeRuleTool : AgentToolBase
         var title = GetString(args, "title");
         if (string.IsNullOrWhiteSpace(title))
         {
-            return ErrorResult(Localize(context.Language, "title 銇屽繀瑕併仹銇?, "title 蹇呭～"));
+            return ErrorResult(Localize(context.Language, "title が必要です", "title 必填"));
         }
 
-        Logger.LogInformation("[RegisterMoneytreeRuleTool] 娉ㄥ唽 Moneytree 瑙勫垯: {Title}", title);
+        Logger.LogInformation("[RegisterMoneytreeRuleTool] 注册 Moneytree 规则: {Title}", title);
 
         try
         {
@@ -44,13 +44,13 @@ public sealed class RegisterMoneytreeRuleTool : AgentToolBase
                 ruleId,
                 title,
                 message = Localize(context.Language,
-                    $"銉兗銉€寋title}銆嶃倰鐧婚尣銇椼伨銇椼仧",
-                    $"瑙勫垯銆寋title}銆嶅凡娉ㄥ唽")
+                    $"ルール「{title}」を登録しました",
+                    $"规则「{title}」已注册")
             });
         }
         catch (Exception ex)
         {
-            Logger.LogError(ex, "[RegisterMoneytreeRuleTool] 瑙勫垯娉ㄥ唽澶辫触");
+            Logger.LogError(ex, "[RegisterMoneytreeRuleTool] 规则注册失败");
             return ErrorResult(ex.Message);
         }
     }
@@ -87,7 +87,7 @@ public sealed class RegisterMoneytreeRuleTool : AgentToolBase
 }
 
 /// <summary>
-/// 鎵归噺娉ㄥ唽 Moneytree 瑙勫垯宸ュ叿
+/// 批量注册 Moneytree 规则工具
 /// </summary>
 public sealed class BulkRegisterMoneytreeRuleTool : AgentToolBase
 {
@@ -104,10 +104,10 @@ public sealed class BulkRegisterMoneytreeRuleTool : AgentToolBase
     {
         if (!args.TryGetProperty("rules", out var rulesEl) || rulesEl.ValueKind != JsonValueKind.Array)
         {
-            return ErrorResult(Localize(context.Language, "rules 閰嶅垪銇屽繀瑕併仹銇?, "rules 鏁扮粍蹇呭～"));
+            return ErrorResult(Localize(context.Language, "rules 配列が必要です", "rules 数组必填"));
         }
 
-        Logger.LogInformation("[BulkRegisterMoneytreeRuleTool] 鎵归噺娉ㄥ唽 Moneytree 瑙勫垯");
+        Logger.LogInformation("[BulkRegisterMoneytreeRuleTool] 批量注册 Moneytree 规则");
 
         var results = new List<object>();
         var successCount = 0;
@@ -146,8 +146,8 @@ public sealed class BulkRegisterMoneytreeRuleTool : AgentToolBase
             failCount,
             results,
             message = Localize(context.Language,
-                $"{successCount} 浠躲伄銉兗銉倰鐧婚尣銇椼伨銇椼仧锛坽failCount} 浠跺け鏁楋級",
-                $"宸叉敞鍐?{successCount} 鏉¤鍒欙紙{failCount} 鏉″け璐ワ級")
+                $"{successCount} 件のルールを登録しました（{failCount} 件失敗）",
+                $"已注册 {successCount} 条规则（{failCount} 条失败）")
         });
     }
 
@@ -183,11 +183,5 @@ public sealed class BulkRegisterMoneytreeRuleTool : AgentToolBase
 }
 
 
-
-using System.Text.Json;
-using System.Text.Json.Nodes;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 
 

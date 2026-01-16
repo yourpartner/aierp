@@ -20,6 +20,80 @@ public static class SchedulerPlanHelper
         JsonObject? plan = null;
         JsonObject? schedule = null;
 
+        // Moneytree bank sync
+        // Example NL:
+        // - "每天12点和0点自动同步银行明细"
+        // - "毎日12時と0時に銀行明細を連携"
+        // - "每天午间12点和深夜0点自动连携Moneytree银行数据，失败重试3次"
+        if (plan is null && (
+            lowered.Contains("moneytree") || lowered.Contains("银行明细") || lowered.Contains("银行连携") ||
+            lowered.Contains("銀行明細") || lowered.Contains("銀行連携") || lowered.Contains("bank sync") ||
+            lowered.Contains("银行同步") || lowered.Contains("銀行同期")))
+        {
+            plan = new JsonObject
+            {
+                ["action"] = "moneytree.sync"
+            };
+
+            // Date range: default dynamic (last_success to today)
+            plan["dateRange"] = new JsonObject
+            {
+                ["kind"] = "dynamic",
+                ["start"] = "last_success",
+                ["end"] = "today"
+            };
+
+            // Parse multiple times for daily schedule
+            var times = ParseMultipleTimes(text);
+            if (times.Count == 0)
+            {
+                // Default: 12:00 and 00:00 JST
+                times.Add(new TimeSpan(12, 0, 0));
+                times.Add(new TimeSpan(0, 0, 0));
+            }
+
+            schedule = new JsonObject
+            {
+                ["kind"] = times.Count > 1 ? "daily_multi" : "daily",
+                ["timezone"] = "Asia/Tokyo"
+            };
+
+            if (times.Count > 1)
+            {
+                var timesArray = new JsonArray();
+                foreach (var t in times.OrderBy(x => x))
+                {
+                    timesArray.Add(t.ToString(@"hh\:mm"));
+                }
+                schedule["times"] = timesArray;
+            }
+            else
+            {
+                schedule["time"] = times[0].ToString(@"hh\:mm");
+            }
+
+            // Retry settings
+            int maxRetry = 3;
+            int retryInterval = 10;
+            var retryMatch = Regex.Match(text, @"(?:重试|リトライ|retry)\s*(\d+)\s*(?:次|回|times)?", RegexOptions.IgnoreCase);
+            if (retryMatch.Success && int.TryParse(retryMatch.Groups[1].Value, out var retryCount) && retryCount > 0)
+            {
+                maxRetry = Math.Min(retryCount, 10);
+            }
+            var intervalMatch = Regex.Match(text, @"(?:间隔|間隔|interval)\s*(\d+)\s*(?:分钟|分|分鐘|min)", RegexOptions.IgnoreCase);
+            if (intervalMatch.Success && int.TryParse(intervalMatch.Groups[1].Value, out var interval) && interval > 0)
+            {
+                retryInterval = Math.Clamp(interval, 1, 60);
+            }
+            schedule["retry"] = new JsonObject
+            {
+                ["maxAttempts"] = maxRetry,
+                ["intervalMinutes"] = retryInterval
+            };
+
+            notes.Add($"识别为银行明细同步任务，每日 {string.Join("、", times.Select(t => t.ToString(@"hh\:mm")))} (日本时间) 执行，失败最多重试 {maxRetry} 次");
+        }
+
         // Timesheet compliance check (Japan common management lines)
         // Example NL:
         // - "毎日9時に勤怠をチェック。月残業45時間超は警告、80超は重大、100超は危険。通知はADMIN。"
@@ -181,7 +255,7 @@ public static class SchedulerPlanHelper
 
     private static TimeSpan? ParseTime(string text)
     {
-        var match = Regex.Match(text, "(?:(上午|下午|晚上|早上|傍晚|pm|AM|PM|am)\\s*)?(\\d{1,2})(?:[:：](\\d{1,2}))?\\s*(点|時|:|：)?", RegexOptions.IgnoreCase);
+        var match = Regex.Match(text, "(?:(上午|下午|晚上|早上|傍晚|午间|深夜|pm|AM|PM|am)\\s*)?(\\d{1,2})(?:[:：](\\d{1,2}))?\\s*(点|時|:|：)?", RegexOptions.IgnoreCase);
         if (!match.Success) return null;
         int hour = int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
         int minute = 0;
@@ -198,9 +272,69 @@ public static class SchedulerPlanHelper
         {
             if (hour == 12) hour = 0;
         }
+        else if (prefix is "午间")
+        {
+            if (hour < 12) hour = 12; // 午间默认12点
+        }
+        else if (prefix is "深夜")
+        {
+            if (hour > 6) hour = 0; // 深夜默认0点
+        }
         hour = Math.Clamp(hour, 0, 23);
         minute = Math.Clamp(minute, 0, 59);
         return new TimeSpan(hour, minute, 0);
+    }
+
+    /// <summary>
+    /// Parse multiple times from text like "12点和0点" or "12時と0時"
+    /// </summary>
+    private static List<TimeSpan> ParseMultipleTimes(string text)
+    {
+        var times = new List<TimeSpan>();
+        // Match patterns like "12点和0点", "12時と0時", "12:00, 00:00"
+        var pattern = @"(?:(上午|下午|晚上|早上|午间|深夜|pm|AM|PM|am)\s*)?(\d{1,2})(?:[:：](\d{1,2}))?\s*(?:点|時|时)?";
+        var matches = Regex.Matches(text, pattern, RegexOptions.IgnoreCase);
+        
+        foreach (Match match in matches)
+        {
+            if (!match.Success) continue;
+            if (!int.TryParse(match.Groups[2].Value, out var hour)) continue;
+            
+            int minute = 0;
+            if (match.Groups[3].Success)
+            {
+                _ = int.TryParse(match.Groups[3].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute);
+            }
+            
+            var prefix = match.Groups[1].Value.ToLowerInvariant();
+            if (prefix is "下午" or "晚上" or "pm")
+            {
+                if (hour < 12) hour += 12;
+            }
+            else if (prefix is "上午" or "早上" or "am")
+            {
+                if (hour == 12) hour = 0;
+            }
+            else if (prefix is "午间")
+            {
+                if (hour < 12) hour = 12;
+            }
+            else if (prefix is "深夜")
+            {
+                if (hour > 6) hour = 0;
+            }
+            
+            hour = Math.Clamp(hour, 0, 23);
+            minute = Math.Clamp(minute, 0, 59);
+            var ts = new TimeSpan(hour, minute, 0);
+            
+            if (!times.Contains(ts))
+            {
+                times.Add(ts);
+            }
+        }
+        
+        return times;
     }
 
     public static DateTimeOffset? ComputeNextOccurrence(JsonObject? schedule, DateTimeOffset fromUtc)
@@ -223,6 +357,30 @@ public static class SchedulerPlanHelper
         DateTimeOffset targetLocal;
         switch (kind)
         {
+            case "daily_multi":
+                // Multiple times per day
+                var times = GetTimesOfDay(schedule);
+                if (times.Count == 0) times.Add(new TimeSpan(12, 0, 0));
+                
+                // Find next occurrence: check today's remaining times first, then tomorrow's first time
+                DateTimeOffset? nextMulti = null;
+                foreach (var t in times.OrderBy(x => x))
+                {
+                    var candidate = new DateTimeOffset(referenceLocal.Date.Add(t), referenceLocal.Offset);
+                    if (candidate > referenceLocal)
+                    {
+                        nextMulti = candidate;
+                        break;
+                    }
+                }
+                if (!nextMulti.HasValue)
+                {
+                    // All today's times passed, use tomorrow's first time
+                    var firstTime = times.OrderBy(x => x).First();
+                    nextMulti = new DateTimeOffset(referenceLocal.Date.AddDays(1).Add(firstTime), referenceLocal.Offset);
+                }
+                return TimeZoneInfo.ConvertTime(nextMulti.Value, TimeZoneInfo.Utc);
+                
             case "daily":
                 targetLocal = new DateTimeOffset(referenceLocal.Date.Add(time), referenceLocal.Offset);
                 if (targetLocal <= referenceLocal) targetLocal = targetLocal.AddDays(1);
@@ -279,6 +437,75 @@ public static class SchedulerPlanHelper
                 return ts;
         }
         return null;
+    }
+
+    private static List<TimeSpan> GetTimesOfDay(JsonObject schedule)
+    {
+        var result = new List<TimeSpan>();
+        if (schedule.TryGetPropertyValue("times", out var timesNode) && timesNode is JsonArray timesArray)
+        {
+            foreach (var item in timesArray)
+            {
+                if (item is JsonValue val && val.TryGetValue<string>(out var timeStr))
+                {
+                    if (TimeSpan.TryParseExact(timeStr, "hh\\:mm", CultureInfo.InvariantCulture, out var ts))
+                        result.Add(ts);
+                    else if (TimeSpan.TryParse(timeStr, CultureInfo.InvariantCulture, out ts))
+                        result.Add(ts);
+                }
+            }
+        }
+        else
+        {
+            var single = GetTimeOfDay(schedule);
+            if (single.HasValue) result.Add(single.Value);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Compute next retry time based on retry settings in schedule.
+    /// </summary>
+    public static DateTimeOffset? ComputeRetryTime(JsonObject? schedule, int currentAttempt, DateTimeOffset fromUtc)
+    {
+        if (schedule is null) return null;
+        
+        int maxAttempts = 3;
+        int intervalMinutes = 10;
+        
+        if (schedule.TryGetPropertyValue("retry", out var retryNode) && retryNode is JsonObject retry)
+        {
+            if (retry.TryGetPropertyValue("maxAttempts", out var maxNode) && maxNode is JsonValue maxVal && maxVal.TryGetValue<int>(out var maxInt))
+                maxAttempts = maxInt;
+            if (retry.TryGetPropertyValue("intervalMinutes", out var intNode) && intNode is JsonValue intVal && intVal.TryGetValue<int>(out var intInt))
+                intervalMinutes = intInt;
+        }
+        
+        if (currentAttempt >= maxAttempts)
+        {
+            return null; // Max retries reached
+        }
+        
+        return fromUtc.AddMinutes(intervalMinutes);
+    }
+
+    /// <summary>
+    /// Get retry settings from schedule.
+    /// </summary>
+    public static (int MaxAttempts, int IntervalMinutes) GetRetrySettings(JsonObject? schedule)
+    {
+        int maxAttempts = 3;
+        int intervalMinutes = 10;
+        
+        if (schedule?.TryGetPropertyValue("retry", out var retryNode) == true && retryNode is JsonObject retry)
+        {
+            if (retry.TryGetPropertyValue("maxAttempts", out var maxNode) && maxNode is JsonValue maxVal && maxVal.TryGetValue<int>(out var maxInt))
+                maxAttempts = maxInt;
+            if (retry.TryGetPropertyValue("intervalMinutes", out var intNode) && intNode is JsonValue intVal && intVal.TryGetValue<int>(out var intInt))
+                intervalMinutes = intInt;
+        }
+        
+        return (maxAttempts, intervalMinutes);
     }
 
     private static DateTimeOffset BuildMonthly(DateTimeOffset source, int day, TimeSpan time)
