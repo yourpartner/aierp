@@ -988,6 +988,26 @@ BEGIN
             RAISE NOTICE 'moneytree_transactions duplicate check skipped: %', SQLERRM;
         END;
 
+        -- 如果存在重复，先进行去重以保证唯一约束可创建
+        BEGIN
+            WITH ranked AS (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY company_code, hash
+                           ORDER BY (voucher_id IS NOT NULL) DESC,
+                                    updated_at DESC NULLS LAST,
+                                    imported_at DESC NULLS LAST,
+                                    id
+                       ) AS rn
+                FROM moneytree_transactions
+            )
+            DELETE FROM moneytree_transactions
+            WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+            RAISE NOTICE 'moneytree_transactions duplicate rows removed to enable unique constraint';
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'moneytree_transactions dedupe skipped: %', SQLERRM;
+        END;
+
         IF NOT EXISTS (
             SELECT 1 FROM pg_constraint 
             WHERE conname = 'uq_moneytree_transactions_company_hash' 
