@@ -4,7 +4,6 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
-using Server.Modules.AgentKit;
 
 namespace Server.Modules.AgentKit.Tools;
 
@@ -62,10 +61,10 @@ public sealed class AgentToolRegistry
     /// <summary>
     /// 执行工具
     /// </summary>
-    public async Task<ToolExecutionResult> ExecuteAsync(
+    public async Task<AgentKitService.ToolExecutionResult> ExecuteAsync(
         string name, 
         JsonElement args, 
-        AgentExecutionContext context, 
+        AgentKitService.AgentExecutionContext context, 
         CancellationToken ct)
     {
         if (!_tools.TryGetValue(name, out var tool))
@@ -74,9 +73,9 @@ public sealed class AgentToolRegistry
                 $"未知のツール: {name}", 
                 $"未知工具: {name}");
             _logger.LogWarning("[AgentToolRegistry] {Error}", errorMsg);
-            return new ToolExecutionResult(
+            return new AgentKitService.ToolExecutionResult(
                 JsonSerializer.Serialize(new { error = errorMsg }), 
-                Array.Empty<AgentResultMessage>());
+                Array.Empty<AgentKitService.AgentResultMessage>());
         }
 
         try
@@ -90,9 +89,9 @@ public sealed class AgentToolRegistry
             var errorMsg = Localize(context.Language,
                 $"ツール実行エラー: {ex.Message}",
                 $"工具执行错误: {ex.Message}");
-            return new ToolExecutionResult(
+            return new AgentKitService.ToolExecutionResult(
                 JsonSerializer.Serialize(new { error = errorMsg }), 
-                Array.Empty<AgentResultMessage>());
+                Array.Empty<AgentKitService.AgentResultMessage>());
         }
     }
 

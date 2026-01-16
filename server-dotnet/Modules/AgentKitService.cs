@@ -16,6 +16,8 @@ using Microsoft.Extensions.Logging;
 using Npgsql;
 using NpgsqlTypes;
 using Server.Infrastructure;
+using Server.Modules.AgentKit;
+using Server.Modules.AgentKit.Tools;
 
 namespace Server.Modules;
 
@@ -31,6 +33,7 @@ public sealed class AgentKitService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _configuration;
     private readonly ILogger<AgentKitService> _logger;
+    private readonly AgentToolRegistry _toolRegistry;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -64,7 +67,15 @@ public sealed class AgentKitService
         AgentAccountingRuleService ruleService,
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
-        ILogger<AgentKitService> logger)
+        ILogger<AgentKitService> logger,
+        AgentToolRegistry toolRegistry,
+        // 注入各个工具（只注入在 BuildToolDefinitions() 中暴露给 LLM 的工具）
+        CheckAccountingPeriodTool checkAccountingPeriodTool,
+        VerifyInvoiceRegistrationTool verifyInvoiceRegistrationTool,
+        LookupCustomerTool lookupCustomerTool,
+        LookupMaterialTool lookupMaterialTool,
+        LookupAccountTool lookupAccountTool,
+        GetVoucherByNumberTool getVoucherByNumberTool)
     {
         _ds = ds;
         _finance = finance;
@@ -76,6 +87,15 @@ public sealed class AgentKitService
         _httpClientFactory = httpClientFactory;
         _configuration = configuration;
         _logger = logger;
+        _toolRegistry = toolRegistry;
+        
+        // 注册工具到 Registry
+        _toolRegistry.Register(checkAccountingPeriodTool);
+        _toolRegistry.Register(verifyInvoiceRegistrationTool);
+        _toolRegistry.Register(lookupCustomerTool);
+        _toolRegistry.Register(lookupMaterialTool);
+        _toolRegistry.Register(lookupAccountTool);
+        _toolRegistry.Register(getVoucherByNumberTool);
     }
 
     internal async Task<AgentRunResult> ProcessUserMessageAsync(AgentMessageRequest request, CancellationToken ct)
@@ -3056,6 +3076,14 @@ public sealed class AgentKitService
 
     private async Task<ToolExecutionResult> ExecuteToolAsync(string name, JsonElement args, AgentExecutionContext context, CancellationToken ct)
     {
+        // 优先使用注册表中的工具
+        if (_toolRegistry.Contains(name))
+        {
+            _logger.LogInformation("[AgentKit] 使用注册表执行工具: {ToolName}", name);
+            return await _toolRegistry.ExecuteAsync(name, args, context, ct);
+        }
+
+        // 回退到内置工具实现
         try
         {
             switch (name)
@@ -5496,12 +5524,12 @@ public sealed class AgentKitService
 
     private sealed record AgentExecutionResult(IReadOnlyList<AgentResultMessage> Messages);
 
-    private sealed record ToolExecutionResult(string ContentForModel, IReadOnlyList<AgentResultMessage> Messages)
+    public sealed record ToolExecutionResult(string ContentForModel, IReadOnlyList<AgentResultMessage> Messages, bool ShouldBreakLoop = false)
     {
-        public static ToolExecutionResult FromModel(object model, IReadOnlyList<AgentResultMessage>? messages = null)
+        public static ToolExecutionResult FromModel(object model, IReadOnlyList<AgentResultMessage>? messages = null, bool shouldBreakLoop = false)
         {
             var json = JsonSerializer.Serialize(model, JsonOptions);
-            return new ToolExecutionResult(json, messages ?? Array.Empty<AgentResultMessage>());
+            return new ToolExecutionResult(json, messages ?? Array.Empty<AgentResultMessage>(), shouldBreakLoop);
         }
     }
 
@@ -5530,7 +5558,7 @@ public sealed class AgentKitService
 
     internal sealed record AgentFileRequest(Guid? SessionId, string CompanyCode, Auth.UserCtx UserCtx, string FileId, string FileName, string ContentType, long Size, string ApiKey, string Language, Func<string, UploadedFileRecord?>? FileResolver, string? ScenarioKey, string BlobName, string? UserMessage = null, JsonObject? ParsedData = null, string? AnswerTo = null);
 
-    private sealed class AgentExecutionContext
+    public sealed class AgentExecutionContext
     {
         private readonly Func<string, UploadedFileRecord?> _fileResolver;
         private readonly Dictionary<string, JsonObject> _parsedDocuments = new(StringComparer.OrdinalIgnoreCase);
@@ -5728,6 +5756,15 @@ public sealed class AgentKitService
         public void SetTaskId(Guid? taskId)
         {
             _taskId = taskId;
+        }
+
+        /// <summary>
+        /// 注册科目查询结果（用于科目白名单验证）
+        /// </summary>
+        public void RegisterLookupAccountResult(string? accountCode)
+        {
+            // 此方法用于工具回调，当前版本不实现白名单逻辑
+            // 保留接口以兼容工具调用
         }
     }
 

@@ -1,4 +1,5 @@
 using Server.Infrastructure.Modules;
+using Server.Modules.AgentKit.Tools;
 
 namespace Server.Modules.Core;
 
@@ -27,6 +28,19 @@ public class AiCoreModule : ModuleBase
     
     public override void RegisterServices(IServiceCollection services, IConfiguration configuration)
     {
+        // 注册 AgentToolRegistry（Scoped，因为需要在每个请求中注册工具）
+        services.AddScoped<AgentToolRegistry>();
+        
+        // 注册各个 Agent 工具（Scoped，因为依赖数据库连接等）
+        // 注意：只注册在 BuildToolDefinitions() 中暴露给 LLM 的工具
+        services.AddScoped<CheckAccountingPeriodTool>();
+        services.AddScoped<VerifyInvoiceRegistrationTool>();
+        services.AddScoped<LookupCustomerTool>();
+        services.AddScoped<LookupMaterialTool>();
+        services.AddScoped<LookupAccountTool>();
+        services.AddScoped<GetVoucherByNumberTool>();
+        
+        // 注册核心服务
         services.AddScoped<AgentKitService>();
         services.AddScoped<AgentScenarioService>();
         services.AddScoped<AgentAccountingRuleService>();

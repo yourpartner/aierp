@@ -7,7 +7,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Npgsql;
-using Server.Modules.AgentKit;
 
 namespace Server.Modules.AgentKit.Tools;
 
@@ -25,7 +24,7 @@ public sealed class CheckAccountingPeriodTool : AgentToolBase
 
     public override string Name => "check_accounting_period";
 
-    public override async Task<ToolExecutionResult> ExecuteAsync(JsonElement args, AgentExecutionContext context, CancellationToken ct)
+    public override async Task<AgentKitService.ToolExecutionResult> ExecuteAsync(JsonElement args, AgentKitService.AgentExecutionContext context, CancellationToken ct)
     {
         var postingDate = GetString(args, "posting_date") ?? GetString(args, "postingDate");
         if (string.IsNullOrWhiteSpace(postingDate))
@@ -66,7 +65,7 @@ public sealed class VerifyInvoiceRegistrationTool : AgentToolBase
 
     public override string Name => "verify_invoice_registration";
 
-    public override async Task<ToolExecutionResult> ExecuteAsync(JsonElement args, AgentExecutionContext context, CancellationToken ct)
+    public override async Task<AgentKitService.ToolExecutionResult> ExecuteAsync(JsonElement args, AgentKitService.AgentExecutionContext context, CancellationToken ct)
     {
         var regNo = GetString(args, "registration_no") ?? GetString(args, "registrationNo") ?? GetString(args, "reg_no");
         if (string.IsNullOrWhiteSpace(regNo))
@@ -82,8 +81,9 @@ public sealed class VerifyInvoiceRegistrationTool : AgentToolBase
             return SuccessResult(new { valid = false, normalized, reason = "格式不正确" });
         }
 
-        var isValid = await _invoiceRegistry.VerifyAsync(normalized, ct);
-        return SuccessResult(new { valid = isValid, normalized, reason = isValid ? "登记号有效" : "登记号无效或未登记" });
+        var result = await _invoiceRegistry.VerifyAsync(normalized);
+        var isValid = result.Status == InvoiceVerificationStatus.Matched;
+        return SuccessResult(new { valid = isValid, normalized, name = result.Name, reason = isValid ? "登记号有效" : $"登记号无效或未登记 ({InvoiceRegistryService.StatusKey(result.Status)})" });
     }
 }
 
@@ -101,7 +101,7 @@ public sealed class LookupCustomerTool : AgentToolBase
 
     public override string Name => "lookup_customer";
 
-    public override async Task<ToolExecutionResult> ExecuteAsync(JsonElement args, AgentExecutionContext context, CancellationToken ct)
+    public override async Task<AgentKitService.ToolExecutionResult> ExecuteAsync(JsonElement args, AgentKitService.AgentExecutionContext context, CancellationToken ct)
     {
         var query = GetString(args, "query");
         if (string.IsNullOrWhiteSpace(query))
@@ -171,7 +171,7 @@ public sealed class LookupMaterialTool : AgentToolBase
 
     public override string Name => "lookup_material";
 
-    public override async Task<ToolExecutionResult> ExecuteAsync(JsonElement args, AgentExecutionContext context, CancellationToken ct)
+    public override async Task<AgentKitService.ToolExecutionResult> ExecuteAsync(JsonElement args, AgentKitService.AgentExecutionContext context, CancellationToken ct)
     {
         var query = GetString(args, "query");
         if (string.IsNullOrWhiteSpace(query))
@@ -227,75 +227,6 @@ public sealed class LookupMaterialTool : AgentToolBase
     }
 }
 
-/// <summary>
-/// 供应商查询工具
-/// </summary>
-public sealed class LookupVendorTool : AgentToolBase
-{
-    private readonly NpgsqlDataSource _ds;
-
-    public LookupVendorTool(NpgsqlDataSource ds, ILogger<LookupVendorTool> logger) : base(logger)
-    {
-        _ds = ds;
-    }
-
-    public override string Name => "lookup_vendor";
-
-    public override async Task<ToolExecutionResult> ExecuteAsync(JsonElement args, AgentExecutionContext context, CancellationToken ct)
-    {
-        var query = GetString(args, "query");
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return ErrorResult(Localize(context.Language, "query が必要です", "query 必填"));
-        }
-
-        Logger.LogInformation("[LookupVendorTool] 查询供应商: {Query}, CompanyCode={CompanyCode}", query, context.CompanyCode);
-
-        await using var conn = await _ds.OpenConnectionAsync(ct);
-        await using var cmd = conn.CreateCommand();
-        
-        // 先精确匹配代码
-        cmd.CommandText = "SELECT vendor_code, payload::text FROM vendors WHERE company_code=$1 AND vendor_code=$2 LIMIT 1";
-        cmd.Parameters.AddWithValue(context.CompanyCode);
-        cmd.Parameters.AddWithValue(query.Trim());
-        
-        await using var reader = await cmd.ExecuteReaderAsync(ct);
-        if (await reader.ReadAsync(ct))
-        {
-            var code = reader.GetString(0);
-            var payload = reader.GetString(1);
-            return SuccessResult(new { found = true, query, vendorCode = code, payload = JsonSerializer.Deserialize<object>(payload, JsonOptions) });
-        }
-        
-        await reader.CloseAsync();
-        
-        // 模糊匹配名称
-        cmd.Parameters.Clear();
-        cmd.CommandText = @"SELECT vendor_code, payload::text FROM vendors 
-                            WHERE company_code=$1 AND (
-                                payload->>'name' ILIKE $2 
-                                OR payload->>'shortName' ILIKE $2
-                            ) ORDER BY vendor_code LIMIT 5";
-        cmd.Parameters.AddWithValue(context.CompanyCode);
-        cmd.Parameters.AddWithValue($"%{query.Trim()}%");
-        
-        await using var reader2 = await cmd.ExecuteReaderAsync(ct);
-        var results = new List<object>();
-        while (await reader2.ReadAsync(ct))
-        {
-            var code = reader2.GetString(0);
-            var payload = reader2.GetString(1);
-            results.Add(new { vendorCode = code, payload = JsonSerializer.Deserialize<object>(payload, JsonOptions) });
-        }
-        
-        if (results.Count > 0)
-        {
-            return SuccessResult(new { found = true, query, results });
-        }
-        
-        return SuccessResult(new { found = false, query });
-    }
-}
 
 
 

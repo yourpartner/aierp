@@ -799,53 +799,6 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_scheduler_tasks_company_status ON scheduler_tasks(company_code, status);
 CREATE INDEX IF NOT EXISTS idx_scheduler_tasks_next_run ON scheduler_tasks(company_code, next_run_at);
 
--- 为 JP01 创建银行明细自动同步任务（如果不存在）
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM scheduler_tasks 
-    WHERE company_code = 'JP01' 
-      AND payload->>'nlSpec' LIKE '%銀行明細%'
-  ) THEN
-    INSERT INTO scheduler_tasks (company_code, payload, next_run_at)
-    VALUES (
-      'JP01',
-      '{
-        "nlSpec": "毎日12時と0時に銀行明細を自動連携。失敗時は10分後にリトライ、最大3回まで",
-        "plan": {
-          "action": "moneytree.sync",
-          "dateRange": {
-            "kind": "dynamic",
-            "start": "last_success",
-            "end": "today"
-          }
-        },
-        "schedule": {
-          "kind": "daily_multi",
-          "timezone": "Asia/Tokyo",
-          "times": ["12:00", "00:00"],
-          "retry": {
-            "maxAttempts": 3,
-            "intervalMinutes": 10
-          }
-        },
-        "status": "pending"
-      }'::jsonb,
-      -- 下次运行时间设为下一个 12:00 或 00:00 (JST)
-      (
-        SELECT CASE 
-          WHEN (now() AT TIME ZONE 'Asia/Tokyo')::time < '12:00:00' 
-          THEN date_trunc('day', now() AT TIME ZONE 'Asia/Tokyo') + INTERVAL '12 hours'
-          WHEN (now() AT TIME ZONE 'Asia/Tokyo')::time < '24:00:00' 
-          THEN date_trunc('day', now() AT TIME ZONE 'Asia/Tokyo') + INTERVAL '24 hours'
-          ELSE date_trunc('day', now() AT TIME ZONE 'Asia/Tokyo') + INTERVAL '1 day' + INTERVAL '12 hours'
-        END AT TIME ZONE 'Asia/Tokyo'
-      )
-    );
-    RAISE NOTICE '[migrate] Created Moneytree sync scheduled task for JP01';
-  END IF;
-END $$;
-
 -- 工时 Timesheets：员工本人录入（不在表单中显式选择员工），按日期/项目记录
 CREATE TABLE IF NOT EXISTS timesheets (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2666,37 +2619,3 @@ CREATE TABLE IF NOT EXISTS partner_sequences (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY(company_code)
 );
-
--- ---------------------------------------
--- 系统设置表（用于存储各种系统级配置）
--- ---------------------------------------
-CREATE TABLE IF NOT EXISTS system_settings (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_code TEXT NOT NULL,
-  key TEXT NOT NULL,
-  value TEXT,
-  metadata JSONB,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE(company_code, key)
-);
-CREATE INDEX IF NOT EXISTS idx_system_settings_company ON system_settings(company_code);
-
--- ---------------------------------------
--- 系统警报表（用于记录系统级警报）
--- ---------------------------------------
-CREATE TABLE IF NOT EXISTS system_alerts (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_code TEXT NOT NULL,
-  alert_type TEXT NOT NULL,          -- moneytree_sync_failure, payroll_failure, etc.
-  severity TEXT NOT NULL DEFAULT 'warning',  -- info, warning, critical
-  title TEXT NOT NULL,
-  message TEXT,
-  metadata JSONB,
-  acknowledged_at TIMESTAMPTZ,
-  acknowledged_by TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_system_alerts_company ON system_alerts(company_code, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_system_alerts_type ON system_alerts(company_code, alert_type, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_system_alerts_unack ON system_alerts(company_code, acknowledged_at) WHERE acknowledged_at IS NULL;

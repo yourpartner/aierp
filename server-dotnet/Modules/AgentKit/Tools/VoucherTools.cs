@@ -6,7 +6,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Npgsql;
-using Server.Modules.AgentKit;
 
 namespace Server.Modules.AgentKit.Tools;
 
@@ -24,7 +23,7 @@ public sealed class GetVoucherByNumberTool : AgentToolBase
 
     public override string Name => "get_voucher_by_number";
 
-    public override async Task<ToolExecutionResult> ExecuteAsync(JsonElement args, AgentExecutionContext context, CancellationToken ct)
+    public override async Task<AgentKitService.ToolExecutionResult> ExecuteAsync(JsonElement args, AgentKitService.AgentExecutionContext context, CancellationToken ct)
     {
         var voucherNo = GetString(args, "voucher_no") ?? GetString(args, "voucherNo");
         if (string.IsNullOrWhiteSpace(voucherNo))
@@ -46,7 +45,7 @@ public sealed class GetVoucherByNumberTool : AgentToolBase
             return SuccessResult(new { found = false, voucherNo });
         }
 
-        var msg = new AgentResultMessage("assistant", $"已找到凭证 {voucherNo}", "info", new
+        var msg = new AgentKitService.AgentResultMessage("assistant", $"已找到凭证 {voucherNo}", "info", new
         {
             label = voucherNo,
             action = "openEmbed",
@@ -61,9 +60,9 @@ public sealed class GetVoucherByNumberTool : AgentToolBase
             payload = JsonSerializer.Deserialize<object>(payload, JsonOptions)
         };
 
-        return new ToolExecutionResult(
+        return new AgentKitService.ToolExecutionResult(
             JsonSerializer.Serialize(model, JsonOptions),
-            new List<AgentResultMessage> { msg });
+            new List<AgentKitService.AgentResultMessage> { msg });
     }
 }
 

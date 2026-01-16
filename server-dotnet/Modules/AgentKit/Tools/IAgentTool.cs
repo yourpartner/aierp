@@ -1,7 +1,6 @@
 ﻿using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Server.Modules.AgentKit;
 
 namespace Server.Modules.AgentKit.Tools;
 
@@ -18,7 +17,7 @@ public interface IAgentTool
     /// <summary>
     /// 执行工具
     /// </summary>
-    Task<ToolExecutionResult> ExecuteAsync(JsonElement args, AgentExecutionContext context, CancellationToken ct);
+    Task<AgentKitService.ToolExecutionResult> ExecuteAsync(JsonElement args, AgentKitService.AgentExecutionContext context, CancellationToken ct);
 }
 
 

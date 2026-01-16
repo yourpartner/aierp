@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
-using Server.Modules.AgentKit;
 
 namespace Server.Modules.AgentKit.Tools;
 
@@ -25,9 +24,9 @@ public abstract class AgentToolBase : IAgentTool
 
     public abstract string Name { get; }
 
-    public abstract System.Threading.Tasks.Task<ToolExecutionResult> ExecuteAsync(
+    public abstract System.Threading.Tasks.Task<AgentKitService.ToolExecutionResult> ExecuteAsync(
         JsonElement args, 
-        AgentExecutionContext context, 
+        AgentKitService.AgentExecutionContext context, 
         System.Threading.CancellationToken ct);
 
     /// <summary>
@@ -95,19 +94,19 @@ public abstract class AgentToolBase : IAgentTool
     /// <summary>
     /// 创建错误结果
     /// </summary>
-    protected static ToolExecutionResult ErrorResult(string errorMessage)
+    protected static AgentKitService.ToolExecutionResult ErrorResult(string errorMessage)
     {
-        return new ToolExecutionResult(
+        return new AgentKitService.ToolExecutionResult(
             JsonSerializer.Serialize(new { error = errorMessage }, JsonOptions),
-            Array.Empty<AgentResultMessage>());
+            Array.Empty<AgentKitService.AgentResultMessage>());
     }
 
     /// <summary>
     /// 创建成功结果
     /// </summary>
-    protected static ToolExecutionResult SuccessResult(object data, AgentResultMessage[]? messages = null)
+    protected static AgentKitService.ToolExecutionResult SuccessResult(object data, AgentKitService.AgentResultMessage[]? messages = null)
     {
-        return ToolExecutionResult.FromModel(data, messages);
+        return AgentKitService.ToolExecutionResult.FromModel(data, messages);
     }
 }
 
