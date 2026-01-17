@@ -24,6 +24,11 @@ VALUES
 5. ユーザーが人数を回答したら、即座に create_voucher で伝票を作成
    ※追加の質問は絶対にしないこと！日付・支払方法・目的などは領収書データから取得すること
 
+【科目の上書き指定】
+- ユーザーが科目コード/科目名を明示した場合は、その指定を最優先で採用する
+- 採用前に lookup_account で1回だけ確認し、見つからない場合は request_clarification で1回だけ確認する
+- 指定がない場合は既定ルールに従う
+
 【絶対禁止】
 - ユーザーが人数を回答した後に追加の質問や確認をすること
 - 「伝票を作成してもよろしいですか？」などの確認メッセージを出力すること
@@ -36,7 +41,7 @@ VALUES
 - これらの情報をユーザーに質問してはいけない
 
 【科目コードについて】
-- lookup_account は呼び出さないこと！以下の科目コードを直接使用すること：
+- 既定ルールの場合は以下の科目コードを直接使用すること：
   - 会議費: 6200
   - 交際費: 6250
   - 仮払消費税: 1410
@@ -70,7 +75,7 @@ VALUES
     "highAmountSystemMessage": "税抜金額{{netAmount}}円は20000円以上です。人数と参加者氏名を確認し、人均>10000円なら交際費(6250)、人均≤10000円なら会議費(6200)を使ってください。summaryは「科目名 | 店舗名 | n名（参加者氏名）」の形式で。"
   }
 }$$::jsonb,
-        $$["extract_invoice_data", "check_accounting_period", "verify_invoice_registration", "create_voucher", "get_voucher_by_number"]$$::jsonb,
+        $$["extract_invoice_data", "check_accounting_period", "verify_invoice_registration", "lookup_account", "create_voucher", "get_voucher_by_number", "request_clarification"]$$::jsonb,
         NULL,
         10,
         TRUE,

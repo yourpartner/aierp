@@ -60,9 +60,13 @@ extract_invoice_data が返す netAmount/grossAmount/taxAmount をそのまま�
 - header.summary: 「科目名 | 店舗名 | n名（氏名）」
 - 借方費用科目 = netAmount、借方仮払消費税 = taxAmount、貸方現金 = grossAmount
 
+【科目の上書き指定】
+- ユーザーが科目コード/科目名を明示した場合は、その指定を最優先で採用する
+- 採用前に lookup_account で1回だけ確認し、見つからない場合は request_clarification で1回だけ確認する
+- 指定がない場合は既定ルールに従う
+
 【禁止事項】
 × 金額/税額/日付の「確認」要求（データが取れていれば即実行）
-× lookup_account の呼び出し
 × 日付・支払方法の質問（issueDate を使用）
 × 人数回答後の追加質問$$,
         $${
@@ -76,7 +80,7 @@ extract_invoice_data が返す netAmount/grossAmount/taxAmount をそのまま�
     "netAmountThreshold": 20000
   }
 }$$::jsonb,
-        $$["extract_invoice_data","check_accounting_period","create_voucher","request_clarification"]$$::jsonb,
+        $$["extract_invoice_data","check_accounting_period","lookup_account","create_voucher","request_clarification"]$$::jsonb,
         NULL,
         10,
         TRUE,
@@ -105,6 +109,8 @@ VALUES
 
 【重要】ユーザーメッセージに JSON 形式の解析結果が既に含まれている場合：
 → extract_invoice_data を呼び出さず、その JSON データを直接使用すること！
+JSON が含まれていない場合は extract_invoice_data で構造化データを取得すること。
+JSON が含まれていない場合は extract_invoice_data で構造化データを取得すること。
 
 【科目コード表】
 | コード | 名称 |
@@ -123,10 +129,13 @@ VALUES
 - 貸方: 111(現金)
 - header.summary: 「交通費 | 交通手段 | 区間」
 
+【科目の上書き指定】
+- ユーザーが科目コード/科目名を明示した場合は、その指定を最優先で採用する
+- 採用前に lookup_account で1回だけ確認し、見つからない場合は request_clarification で1回だけ確認する
+- 指定がない場合は既定ルールに従う
+
 【禁止事項】
-× extract_invoice_data の呼び出し（データは既に提供済み）
-× lookup_account の呼び出し
-× 確認質問（即座に処理）$$,
+× 不要な確認質問（データが揃っていれば即座に処理）$$,
         $${
   "matcher": {
     "appliesTo": "file",
@@ -135,7 +144,7 @@ VALUES
     "contentContains": ["交通", "タクシー", "電車", "バス", "新幹線", "飛行機", "駐車", "高速", "taxi", "train", "transport"]
   }
 }$$::jsonb,
-        $$["create_voucher"]$$::jsonb,
+        $$["extract_invoice_data","lookup_account","create_voucher","request_clarification"]$$::jsonb,
         NULL,
         20,
         TRUE,
@@ -176,9 +185,14 @@ VALUES
 | 111 | 現金 |
 
 【処理フロー】
-1. ユーザーメッセージの JSON から内容を確認
+1. ユーザーメッセージの JSON または extract_invoice_data の結果から内容を確認
 2. 内容に基づき適切な科目を選択
 3. create_voucher で伝票作成
+
+【科目の上書き指定】
+- ユーザーが科目コード/科目名を明示した場合は、その指定を最優先で採用する
+- 採用前に lookup_account で1回だけ確認し、見つからない場合は request_clarification で1回だけ確認する
+- 指定がない場合は既定ルールに従う
 
 【科目選択基準】
 - 事務用品・備品 → 852(消耗品費)
@@ -196,9 +210,127 @@ VALUES
     "mimeTypes": ["image/jpeg", "image/png", "image/jpg", "image/webp", "application/pdf"]
   }
 }$$::jsonb,
-        $$["create_voucher", "request_clarification"]$$::jsonb,
+        $$["extract_invoice_data","lookup_account","create_voucher","request_clarification"]$$::jsonb,
         NULL,
         90,
+        TRUE,
+        now()
+    )
+ON CONFLICT (company_code, scenario_key)
+DO UPDATE SET
+    title = EXCLUDED.title,
+    description = EXCLUDED.description,
+    instructions = EXCLUDED.instructions,
+    metadata = EXCLUDED.metadata,
+    tool_hints = EXCLUDED.tool_hints,
+    priority = EXCLUDED.priority,
+    updated_at = now();
+
+-- 3.1 宿泊费发票场景
+INSERT INTO agent_scenarios
+    (company_code, scenario_key, title, description, instructions, metadata, tool_hints, context, priority, is_active, updated_at)
+VALUES
+    (
+        'JP01',
+        'voucher.lodging.receipt',
+        '宿泊費インボイス自動仕訳',
+        '宿泊・ホテル関連のインボイスをアップロードすると自動で会計伝票を起票します',
+        $$【角色】経理アシスタント - 宿泊費インボイス処理
+
+【入力データの扱い】
+- ユーザーメッセージに JSON（issueDate/totalAmount/taxAmount 等）が含まれていればそれを使用。
+- 含まれていない場合は、必ず extract_invoice_data を呼び出して構造化データを取得すること。
+
+【科目の上書き指定】
+- ユーザーが科目コード/科目名を明示した場合は、その指定を最優先で採用する
+- 採用前に lookup_account で1回だけ確認し、見つからない場合は request_clarification で1回だけ確認する
+- 指定がない場合は lookup_account で「宿泊費」「旅費交通費」を順に検索し、見つかった科目を使用する
+- どちらも見つからない場合は request_clarification で科目指定を求める
+
+【処理フロー】
+1) extract_invoice_data で netAmount/grossAmount/taxAmount/issueDate を取得
+2) issueDate が空または不可信 → request_clarification で「支払日（postingDate, YYYY-MM-DD形式）」を1回だけ質問
+3) check_accounting_period を実行
+4) create_voucher で即座に伝票作成
+
+【伝票設定】
+- posting_date: issueDate を使用
+- header.summary: 「宿泊費 | 施設名 | 期間/泊数」
+- 借方: 宿泊費科目 = netAmount、仮払消費税 = taxAmount
+- 貸方: 現金または支払方法（指定がなければ現金）
+
+【禁止事項】
+× 不要な確認質問（データが揃っていれば即座に処理）$$,
+        $${
+  "matcher": {
+    "appliesTo": "file",
+    "always": false,
+    "mimeTypes": ["image/jpeg", "image/png", "image/jpg", "image/webp", "application/pdf"],
+    "contentContains": ["宿泊", "ホテル", "旅館", "hotel", "lodging", "accommodation", "宿泊費"]
+  }
+}$$::jsonb,
+        $$["extract_invoice_data","lookup_account","check_accounting_period","create_voucher","request_clarification"]$$::jsonb,
+        NULL,
+        30,
+        TRUE,
+        now()
+    )
+ON CONFLICT (company_code, scenario_key)
+DO UPDATE SET
+    title = EXCLUDED.title,
+    description = EXCLUDED.description,
+    instructions = EXCLUDED.instructions,
+    metadata = EXCLUDED.metadata,
+    tool_hints = EXCLUDED.tool_hints,
+    priority = EXCLUDED.priority,
+    updated_at = now();
+
+-- 3.2 水电气发票场景
+INSERT INTO agent_scenarios
+    (company_code, scenario_key, title, description, instructions, metadata, tool_hints, context, priority, is_active, updated_at)
+VALUES
+    (
+        'JP01',
+        'voucher.utilities.receipt',
+        '水道光熱費インボイス自動仕訳',
+        '水道・電気・ガス等のインボイスをアップロードすると自動で会計伝票を起票します',
+        $$【角色】経理アシスタント - 水道光熱費インボイス処理
+
+【入力データの扱い】
+- ユーザーメッセージに JSON（issueDate/totalAmount/taxAmount 等）が含まれていればそれを使用。
+- 含まれていない場合は、必ず extract_invoice_data を呼び出して構造化データを取得すること。
+
+【科目の上書き指定】
+- ユーザーが科目コード/科目名を明示した場合は、その指定を最優先で採用する
+- 採用前に lookup_account で1回だけ確認し、見つからない場合は request_clarification で1回だけ確認する
+- 指定がない場合は lookup_account で「水道光熱費」「電気代」「ガス代」を順に検索し、見つかった科目を使用する
+- 見つからない場合は request_clarification で科目指定を求める
+
+【処理フロー】
+1) extract_invoice_data で netAmount/grossAmount/taxAmount/issueDate を取得
+2) issueDate が空または不可信 → request_clarification で「支払日（postingDate, YYYY-MM-DD形式）」を1回だけ質問
+3) check_accounting_period を実行
+4) create_voucher で即座に伝票作成
+
+【伝票設定】
+- posting_date: issueDate を使用
+- header.summary: 「水道光熱費 | 供給者名 | 対象期間」
+- 借方: 水道光熱費科目 = netAmount、仮払消費税 = taxAmount
+- 貸方: 現金または支払方法（指定がなければ現金）
+
+【禁止事項】
+× 不要な確認質問（データが揃っていれば即座に処理）$$,
+        $${
+  "matcher": {
+    "appliesTo": "file",
+    "always": false,
+    "mimeTypes": ["image/jpeg", "image/png", "image/jpg", "image/webp", "application/pdf"],
+    "contentContains": ["水道", "電気", "ガス", "水道光熱", "utility", "utilities", "電力", "ガス代"]
+  }
+}$$::jsonb,
+        $$["extract_invoice_data","lookup_account","check_accounting_period","create_voucher","request_clarification"]$$::jsonb,
+        NULL,
+        40,
         TRUE,
         now()
     )

@@ -69,13 +69,26 @@ public sealed class AgentKitService
         IConfiguration configuration,
         ILogger<AgentKitService> logger,
         AgentToolRegistry toolRegistry,
-        // 注入各个工具（只注入在 BuildToolDefinitions() 中暴露给 LLM 的工具）
+        // 注入各个工具（与 BuildToolDefinitions() 保持一致）
         CheckAccountingPeriodTool checkAccountingPeriodTool,
         VerifyInvoiceRegistrationTool verifyInvoiceRegistrationTool,
         LookupCustomerTool lookupCustomerTool,
         LookupMaterialTool lookupMaterialTool,
         LookupAccountTool lookupAccountTool,
-        GetVoucherByNumberTool getVoucherByNumberTool)
+        LookupVendorTool lookupVendorTool,
+        SearchVendorReceiptsTool searchVendorReceiptsTool,
+        GetExpenseAccountOptionsTool getExpenseAccountOptionsTool,
+        CreateVendorInvoiceTool createVendorInvoiceTool,
+        GetVoucherByNumberTool getVoucherByNumberTool,
+        ExtractBookingSettlementDataTool extractBookingSettlementDataTool,
+        FindMoneytreeDepositForSettlementTool findMoneytreeDepositForSettlementTool,
+        PreflightCheckTool preflightCheckTool,
+        CalculatePayrollTool calculatePayrollTool,
+        SavePayrollTool savePayrollTool,
+        GetPayrollHistoryTool getPayrollHistoryTool,
+        GetMyPayrollTool getMyPayrollTool,
+        GetPayrollComparisonTool getPayrollComparisonTool,
+        GetDepartmentSummaryTool getDepartmentSummaryTool)
     {
         _ds = ds;
         _finance = finance;
@@ -95,7 +108,20 @@ public sealed class AgentKitService
         _toolRegistry.Register(lookupCustomerTool);
         _toolRegistry.Register(lookupMaterialTool);
         _toolRegistry.Register(lookupAccountTool);
+        _toolRegistry.Register(lookupVendorTool);
+        _toolRegistry.Register(searchVendorReceiptsTool);
+        _toolRegistry.Register(getExpenseAccountOptionsTool);
+        _toolRegistry.Register(createVendorInvoiceTool);
         _toolRegistry.Register(getVoucherByNumberTool);
+        _toolRegistry.Register(extractBookingSettlementDataTool);
+        _toolRegistry.Register(findMoneytreeDepositForSettlementTool);
+        _toolRegistry.Register(preflightCheckTool);
+        _toolRegistry.Register(calculatePayrollTool);
+        _toolRegistry.Register(savePayrollTool);
+        _toolRegistry.Register(getPayrollHistoryTool);
+        _toolRegistry.Register(getMyPayrollTool);
+        _toolRegistry.Register(getPayrollComparisonTool);
+        _toolRegistry.Register(getDepartmentSummaryTool);
     }
 
     internal async Task<AgentRunResult> ProcessUserMessageAsync(AgentMessageRequest request, CancellationToken ct)
@@ -2277,6 +2303,7 @@ public sealed class AgentKitService
             appliesTo = appliesStr switch
             {
                 "message" => ScenarioTarget.MessageOnly,
+                "text" => ScenarioTarget.MessageOnly,
                 "file" => ScenarioTarget.FileOnly,
                 _ => ScenarioTarget.Both
             };
@@ -5198,6 +5225,258 @@ public sealed class AgentKitService
                             limit = new { type = "integer", description = "返回的最大条数，默认 10" }
                         },
                         required = new[] { "query" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "lookup_vendor",
+                    description = "根据供应商名称或编码查询供应商主数据。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            query = new { type = "string", description = "供应商名称或编码" }
+                        },
+                        required = new[] { "query" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "search_vendor_receipts",
+                    description = "搜索供应商请求书或入库匹配记录。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            vendor_code = new { type = "string" },
+                            date_from = new { type = "string", description = "YYYY-MM-DD" },
+                            date_to = new { type = "string", description = "YYYY-MM-DD" },
+                            status = new { type = "string" },
+                            limit = new { type = "integer" }
+                        }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "get_expense_account_options",
+                    description = "获取简易记账时的费用科目选项。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            category = new { type = "string" },
+                            vendor_code = new { type = "string" }
+                        }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "create_vendor_invoice",
+                    description = "创建供应商请求书（请款单）。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            vendor_id = new { type = "string", description = "供应商ID或编码" },
+                            invoice_date = new { type = "string", description = "YYYY-MM-DD" },
+                            due_date = new { type = "string", description = "YYYY-MM-DD" },
+                            total_amount = new { type = "number" },
+                            tax_amount = new { type = "number" },
+                            summary = new { type = "string" },
+                            lines = new { type = "array" }
+                        },
+                        required = new[] { "vendor_id" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "extract_booking_settlement_data",
+                    description = "解析 Booking.com 结算单，提取金额与日期信息。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            file_id = new { type = "string", description = "上传时返回的 fileId" }
+                        },
+                        required = new[] { "file_id" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "find_moneytree_deposit_for_settlement",
+                    description = "根据支付日期和净额查找对应的银行入金记录。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            payment_date = new { type = "string", description = "YYYY-MM-DD" },
+                            net_amount = new { type = "number" },
+                            days_tolerance = new { type = "integer" },
+                            amount_tolerance = new { type = "number" },
+                            keywords = new { type = "array", items = new { type = "string" } }
+                        },
+                        required = new[] { "payment_date", "net_amount" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "preflight_check",
+                    description = "工资计算前置检查。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            month = new { type = "string", description = "YYYY-MM" },
+                            employee_ids = new { type = "array", items = new { type = "string" } },
+                            config = new { type = "object" }
+                        },
+                        required = new[] { "month" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "calculate_payroll",
+                    description = "工资计算预览（不保存）。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            month = new { type = "string", description = "YYYY-MM" },
+                            employee_ids = new { type = "array", items = new { type = "string" } },
+                            policy_id = new { type = "string" },
+                            debug = new { type = "boolean" }
+                        },
+                        required = new[] { "month" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "save_payroll",
+                    description = "保存工资计算结果。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            month = new { type = "string", description = "YYYY-MM" },
+                            overwrite = new { type = "boolean" },
+                            entries = new { type = "array" }
+                        },
+                        required = new[] { "month", "entries" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "get_payroll_history",
+                    description = "查询工资历史（按月）。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            month = new { type = "string", description = "YYYY-MM" },
+                            limit = new { type = "integer" }
+                        }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "get_my_payroll",
+                    description = "查询当前用户的工资明细。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            year_month = new { type = "string", description = "YYYY-MM" }
+                        }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "get_payroll_comparison",
+                    description = "工资对比（按月汇总）。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            months = new { type = "array", items = new { type = "string" } }
+                        }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "get_department_summary",
+                    description = "部门工资汇总。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            month = new { type = "string", description = "YYYY-MM" }
+                        },
+                        required = new[] { "month" }
                     }
                 }
             },

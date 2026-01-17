@@ -140,6 +140,31 @@
               >
                 {{ buttonsText.edit || '編集' }}
               </el-button>
+              <el-popconfirm
+                v-if="detail && !getDeleteDisabledReason(detail)"
+                :title="`伝票を削除しますか？`"
+                confirm-button-text="削除"
+                cancel-button-text="キャンセル"
+                @confirm="confirmDeleteInDetail"
+              >
+                <template #reference>
+                  <el-button
+                    type="danger"
+                    size="small"
+                  >
+                    {{ buttonsText.delete || '削除' }}
+                  </el-button>
+                </template>
+              </el-popconfirm>
+              <el-tooltip
+                v-else-if="detail && getDeleteDisabledReason(detail)"
+                :content="getDeleteDisabledReason(detail)"
+                placement="top"
+              >
+                <el-button type="danger" size="small" disabled>
+                  {{ buttonsText.delete || '削除' }}
+                </el-button>
+              </el-tooltip>
           </template>
         </template>
       </template>
@@ -199,6 +224,31 @@
                   >
                     {{ buttonsText.edit || '編集' }}
                   </el-button>
+                  <el-popconfirm
+                    v-if="detail && !getDeleteDisabledReason(detail)"
+                    :title="`伝票を削除しますか？`"
+                    confirm-button-text="削除"
+                    cancel-button-text="キャンセル"
+                    @confirm="confirmDeleteInDetail"
+                  >
+                    <template #reference>
+                      <el-button
+                        type="danger"
+                        size="small"
+                      >
+                        {{ buttonsText.delete || '削除' }}
+                      </el-button>
+                    </template>
+                  </el-popconfirm>
+                  <el-tooltip
+                    v-else-if="detail && getDeleteDisabledReason(detail)"
+                    :content="getDeleteDisabledReason(detail)"
+                    placement="top"
+                  >
+                    <el-button type="danger" size="small" disabled>
+                      {{ buttonsText.delete || '削除' }}
+                    </el-button>
+                  </el-tooltip>
               </template>
             </template>
           </template>
@@ -700,6 +750,28 @@ async function confirmDelete(row: any) {
       }
     }
   }
+}
+
+async function confirmDeleteInDetail() {
+  if (!detail.value) return
+  const row = detail.value
+  
+  // 如果是清账凭证，需要冲销而非删除
+  if (needsReversal(row)) {
+    const voucherNo = row?.voucher_no || row?.payload?.header?.voucherNo || ''
+    try {
+      await confirmReverse(row, voucherNo)
+    } catch {
+      // 用户取消
+    }
+    return
+  }
+  
+  // 直接删除（popconfirm已经确认过了）
+  await deleteVoucher(row)
+  // 删除成功后返回列表
+  show.value = false
+  detail.value = null
 }
 
 async function confirmReverse(row: any, voucherNo: string) {

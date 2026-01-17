@@ -1834,6 +1834,27 @@ LIMIT 1";
         return null;
     }
 
+    // 银行摘要中常见的前缀词，需要移除后再匹配员工姓名
+    private static readonly string[] DescriptionPrefixes = { "振込", "振替", "ﾌﾘｺﾐ", "ﾌﾘｶｴ", "給与", "賞与", "ｷｭｳﾖ", "ｼｮｳﾖ" };
+
+    /// <summary>
+    /// 清理银行摘要中的前缀词，提取可能的员工姓名部分
+    /// 例如：「振込 ヤマナカ ヨシマサ」→「ヤマナカ ヨシマサ」
+    /// </summary>
+    private static string CleanDescriptionForEmployeeMatch(string description)
+    {
+        if (string.IsNullOrWhiteSpace(description)) return string.Empty;
+        var result = description.Trim();
+        foreach (var prefix in DescriptionPrefixes)
+        {
+            if (result.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                result = result.Substring(prefix.Length).TrimStart();
+            }
+        }
+        return result;
+    }
+
     private async Task<CounterpartyResult?> ResolveEmployeeAsync(
         string companyCode,
         MoneytreeCounterparty config,
@@ -1845,6 +1866,8 @@ LIMIT 1";
         var rawKeywords = config.NameKeywords ?? Array.Empty<string>();
         var keywords = rawKeywords
             .Select(k => ApplyTemplateSimple(k, row))
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Select(k => CleanDescriptionForEmployeeMatch(k)) // 清理摘要前缀
             .Where(k => !string.IsNullOrWhiteSpace(k))
             .ToArray();
         if (string.IsNullOrWhiteSpace(code) && keywords.Length == 0)

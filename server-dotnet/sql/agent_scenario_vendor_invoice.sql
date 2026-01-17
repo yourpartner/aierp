@@ -32,9 +32,10 @@ VALUES
 
 【STEP 3】簡易記帳（vendorId なし）
 
-1. get_expense_account_options を呼び出す
-2. 返された commonExpenseAccounts と accountSelectionGuide を参照
-3. 請求書の内容から借方科目を判断：
+1. ユーザーが科目コード/科目名を明示した場合はその指定を最優先で採用し、lookup_account で1回だけ確認する。指定がない場合は以下のルールで科目を判断する。
+2. get_expense_account_options を呼び出す
+3. 返された commonExpenseAccounts と accountSelectionGuide を参照
+4. 請求書の内容から借方科目を判断：
 
 ★★★ 科目判断ルール ★★★
 請求書の内容（partnerName, items, 摘要）から以下のキーワードで判断：
@@ -54,7 +55,7 @@ VALUES
 
 → commonExpenseAccounts から該当する usageType の科目コードを選択
 
-4. 即座に create_voucher を呼び出す：
+5. 即座に create_voucher を呼び出す：
 
 create_voucher パラメータ:
 {

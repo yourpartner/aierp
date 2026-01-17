@@ -480,20 +480,41 @@ function inferToolHints(action: string): string[] {
   const hints: string[] = []
   const actionLower = action.toLowerCase()
   
-  if (actionLower.includes('凭证') || actionLower.includes('voucher')) {
-    hints.push('voucher.create', 'voucher.preview')
+  if (actionLower.includes('凭证') || actionLower.includes('仕訳') || actionLower.includes('voucher')) {
+    hints.push('create_voucher')
   }
-  if (actionLower.includes('识别') || actionLower.includes('提取')) {
+  if (actionLower.includes('识别') || actionLower.includes('提取') || actionLower.includes('解析')) {
     hints.push('extract_invoice_data')
   }
-  if (actionLower.includes('订单') || actionLower.includes('order')) {
-    hints.push('sales_order.create')
+  if (actionLower.includes('订单') || actionLower.includes('受注') || actionLower.includes('order')) {
+    hints.push('create_sales_order')
   }
-  if (actionLower.includes('查询') || actionLower.includes('搜索')) {
-    hints.push('search')
+  if (actionLower.includes('客户') || actionLower.includes('得意先')) {
+    hints.push('lookup_customer')
+  }
+  if (actionLower.includes('物料') || actionLower.includes('品目')) {
+    hints.push('lookup_material')
+  }
+  if (actionLower.includes('科目') || actionLower.includes('勘定科目')) {
+    hints.push('lookup_account')
+  }
+  if (actionLower.includes('发票登记') || actionLower.includes('インボイス')) {
+    hints.push('verify_invoice_registration')
+  }
+  if (actionLower.includes('会计期间') || actionLower.includes('会計期間')) {
+    hints.push('check_accounting_period')
+  }
+  if (actionLower.includes('凭证号') || actionLower.includes('伝票番号')) {
+    hints.push('get_voucher_by_number')
+  }
+  if (actionLower.includes('取引先') || actionLower.includes('业务伙伴') || actionLower.includes('business partner')) {
+    hints.push('create_business_partner')
+  }
+  if (actionLower.includes('网址') || actionLower.includes('url') || actionLower.includes('website') || actionLower.includes('网站')) {
+    hints.push('fetch_webpage')
   }
   
-  return hints
+  return [...new Set(hints)]
 }
 
 async function toggleActive(item: AgentScenario) {

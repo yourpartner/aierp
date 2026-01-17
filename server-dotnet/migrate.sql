@@ -2619,3 +2619,20 @@ CREATE TABLE IF NOT EXISTS partner_sequences (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY(company_code)
 );
+
+-- ============================================================
+-- 振込出金-従業員給与規則（摘要から従業員名を特定）
+-- ============================================================
+INSERT INTO moneytree_posting_rules (company_code, title, description, priority, matcher, action, is_active, created_by, updated_by)
+SELECT 'azure', '振込出金-従業員給与', '振込による従業員への給与支払。摘要から従業員名を特定。', 24,
+  '{"descriptionRegex":"^振込\\s", "transactionType":"withdrawal"}'::jsonb,
+  '{"debitAccount":"2130","creditAccount":"{bankAccount}","summaryTemplate":"給与支払 {description}","postingDate":"transactionDate","voucherType":"OT","counterparty":{"type":["employee"],"nameContains":["{description}"],"assignLine":"debit","activeOnly":true}}'::jsonb,
+  TRUE, 'system', 'system'
+WHERE NOT EXISTS (SELECT 1 FROM moneytree_posting_rules WHERE company_code='azure' AND title='振込出金-従業員給与');
+
+INSERT INTO moneytree_posting_rules (company_code, title, description, priority, matcher, action, is_active, created_by, updated_by)
+SELECT 'JP01', '振込出金-従業員給与', '振込による従業員への給与支払。摘要から従業員名を特定。', 24,
+  '{"descriptionRegex":"^振込\\s", "transactionType":"withdrawal"}'::jsonb,
+  '{"debitAccount":"2130","creditAccount":"{bankAccount}","summaryTemplate":"給与支払 {description}","postingDate":"transactionDate","voucherType":"OT","counterparty":{"type":["employee"],"nameContains":["{description}"],"assignLine":"debit","activeOnly":true}}'::jsonb,
+  TRUE, 'system', 'system'
+WHERE NOT EXISTS (SELECT 1 FROM moneytree_posting_rules WHERE company_code='JP01' AND title='振込出金-従業員給与');

@@ -32,13 +32,26 @@ public class AiCoreModule : ModuleBase
         services.AddScoped<AgentToolRegistry>();
         
         // 注册各个 Agent 工具（Scoped，因为依赖数据库连接等）
-        // 注意：只注册在 BuildToolDefinitions() 中暴露给 LLM 的工具
+        // 注意：需与 BuildToolDefinitions() 保持一致
         services.AddScoped<CheckAccountingPeriodTool>();
         services.AddScoped<VerifyInvoiceRegistrationTool>();
         services.AddScoped<LookupCustomerTool>();
         services.AddScoped<LookupMaterialTool>();
         services.AddScoped<LookupAccountTool>();
+        services.AddScoped<LookupVendorTool>();
+        services.AddScoped<SearchVendorReceiptsTool>();
+        services.AddScoped<GetExpenseAccountOptionsTool>();
+        services.AddScoped<CreateVendorInvoiceTool>();
         services.AddScoped<GetVoucherByNumberTool>();
+        services.AddScoped<ExtractBookingSettlementDataTool>();
+        services.AddScoped<FindMoneytreeDepositForSettlementTool>();
+        services.AddScoped<PreflightCheckTool>();
+        services.AddScoped<CalculatePayrollTool>();
+        services.AddScoped<SavePayrollTool>();
+        services.AddScoped<GetPayrollHistoryTool>();
+        services.AddScoped<GetMyPayrollTool>();
+        services.AddScoped<GetPayrollComparisonTool>();
+        services.AddScoped<GetDepartmentSummaryTool>();
         
         // 注册核心服务
         services.AddScoped<AgentKitService>();
