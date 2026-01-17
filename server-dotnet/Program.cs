@@ -5209,6 +5209,29 @@ app.MapDelete("/objects/{entity}/{id}", async (HttpRequest req, string entity, G
         cmdOi.Parameters.AddWithValue(cc.ToString());
         cmdOi.Parameters.AddWithValue(id);
         await cmdOi.ExecuteNonQueryAsync();
+        
+        // Reset moneytree_transactions that reference this voucher back to 'pending' status
+        await using var connMt = await ds.OpenConnectionAsync();
+        await using var cmdMt = connMt.CreateCommand();
+        cmdMt.CommandText = @"
+            UPDATE moneytree_transactions 
+            SET posting_status = 'pending',
+                posting_error = NULL,
+                voucher_id = NULL,
+                voucher_no = NULL,
+                rule_id = NULL,
+                rule_title = NULL,
+                cleared_open_item_id = NULL,
+                posting_run_id = NULL,
+                updated_at = now()
+            WHERE company_code = $1 AND voucher_id = $2";
+        cmdMt.Parameters.AddWithValue(cc.ToString());
+        cmdMt.Parameters.AddWithValue(id);
+        var resetCount = await cmdMt.ExecuteNonQueryAsync();
+        if (resetCount > 0)
+        {
+            Console.WriteLine($"[voucher-delete] Reset {resetCount} moneytree transaction(s) to pending status");
+        }
     }
     
     var n = await Crud.DeleteById(ds, table, id, cc.ToString()!);
