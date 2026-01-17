@@ -358,6 +358,8 @@
           ref="voucherDetailRef"
           class="voucher-detail-embed"
           :allow-edit="true"
+          @deleted="onVoucherDeleted"
+          @reversed="onVoucherReversed"
         />
       </div>
     </el-dialog>
@@ -589,6 +591,20 @@ function openVoucherDetail(row: MoneytreeTransactionItem) {
       detailOnly: !isTaskMode.value
     })
   })
+}
+
+// 凭证删除后关闭弹窗并刷新银行明细列表
+function onVoucherDeleted(_voucherId: string) {
+  voucherDialogVisible.value = false
+  // 刷新列表以更新银行明细状态
+  loadData()
+}
+
+// 凭证冲销后关闭弹窗并刷新银行明细列表
+function onVoucherReversed(_voucherId: string, _reversalVoucherId: string) {
+  voucherDialogVisible.value = false
+  // 刷新列表以更新银行明细状态
+  loadData()
 }
 
 // ChatKit modal payload hook

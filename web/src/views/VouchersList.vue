@@ -272,6 +272,11 @@ const props = withDefaults(defineProps<{
   initialVoucherId?: string // 初始化时直接显示此凭证的详情（UUID）
   initialVoucherNo?: string // 初始化时直接显示此凭证的详情（凭证编号）
 }>(), { allowEdit: true })
+
+const emit = defineEmits<{
+  (e: 'deleted', voucherId: string): void
+  (e: 'reversed', voucherId: string, reversalVoucherId: string): void
+}>()
 const defaultVoucherListText = { title:'', date:'', type:'', number:'', summary:'', actions:'', view:'', customer:'得意先', vendor:'', department:'', employee:'', createdAt:'', createdBy:'', updatedAt:'', updatedBy:'', paymentDate:'', note:'', invoiceRegistrationNo:'' }
 const defaultButtonsText = { refresh:'', search:'', reset:'', close:'', edit:'', save:'', cancel:'', delete:'' }
 
@@ -789,9 +794,10 @@ async function confirmReverse(row: any, voucherNo: string) {
 
 async function reverseVoucher(row: any) {
   if (!row?.id) return
+  const voucherId = row.id
   try {
     const today = new Date().toISOString().split('T')[0]
-    const res = await api.post(`/operations/voucher/${row.id}/reverse`, {
+    const res = await api.post(`/operations/voucher/${voucherId}/reverse`, {
       postingDate: today,
       reason: '誤記訂正'
     })
@@ -802,10 +808,13 @@ async function reverseVoucher(row: any) {
     await load()
     
     // 詳細ダイアログを閉じる
-    if (detail.value?.id === row.id) {
+    if (detail.value?.id === voucherId) {
       show.value = false
       detail.value = null
     }
+    
+    // 通知父组件凭证已被冲销
+    emit('reversed', voucherId, data.reversalVoucherId || data.reversalVoucherNo)
   } catch (e: any) {
     const msg = e?.response?.data?.error || e?.message || '反対仕訳の作成に失敗しました'
     ElMessage.error(msg)
@@ -814,20 +823,23 @@ async function reverseVoucher(row: any) {
 
 async function deleteVoucher(row: any) {
   if (!row?.id) return
+  const voucherId = row.id
   try {
-    await api.delete(`/objects/voucher/${row.id}`)
+    await api.delete(`/objects/voucher/${voucherId}`)
     ElMessage.success('伝票を削除しました')
     // リストから削除
-    const idx = rows.value.findIndex((r: any) => r?.id === row.id)
+    const idx = rows.value.findIndex((r: any) => r?.id === voucherId)
     if (idx >= 0) {
       rows.value.splice(idx, 1)
       total.value = Math.max(0, total.value - 1)
     }
     // 詳細ダイアログを閉じる
-    if (detail.value?.id === row.id) {
+    if (detail.value?.id === voucherId) {
       show.value = false
       detail.value = null
     }
+    // 通知父组件凭证已删除
+    emit('deleted', voucherId)
   } catch (e: any) {
     const msg = e?.response?.data?.error || e?.message || '削除に失敗しました'
     ElMessage.error(msg)
