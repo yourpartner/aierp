@@ -64,31 +64,8 @@ public sealed class ObjectsCrudModule : ModuleBase
         }).RequireAuthorization();
 
         // Generic DELETE (soft delete is handled by table triggers/logic if needed; here we hard delete by id).
-        app.MapDelete("/objects/{entity}/{id:guid}", async (HttpRequest req, string entity, Guid id, NpgsqlDataSource ds) =>
-        {
-            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
-                return Results.BadRequest(new { error = "Missing x-company-code" });
-
-            // Avoid ambiguity for special entities; they have dedicated endpoints.
-            if (string.Equals(entity, "voucher", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(entity, "account", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(entity, "businesspartner", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(entity, "employee", StringComparison.OrdinalIgnoreCase))
-            {
-                return Results.BadRequest(new { error = "Use dedicated endpoint for this entity" });
-            }
-
-            var schemaDoc = await SchemasService.GetActiveSchema(ds, entity, cc.ToString());
-            if (schemaDoc is not null)
-            {
-                var user = Auth.GetUserCtx(req);
-                if (!Auth.IsActionAllowed(schemaDoc, "delete", user)) return Results.StatusCode(403);
-            }
-
-            var table = Crud.TableFor(entity);
-            var n = await Crud.DeleteById(ds, table, id, cc.ToString());
-            return n > 0 ? Results.Ok(new { ok = true, deleted = n }) : Results.NotFound(new { error = "not found" });
-        }).RequireAuthorization();
+        // NOTE: Special entities (voucher, account, businesspartner, employee) are handled by dedicated endpoints in Program.cs.
+        // This generic endpoint is kept for other entities only - do NOT add duplicate DELETE for special entities here.
     }
 }
 
