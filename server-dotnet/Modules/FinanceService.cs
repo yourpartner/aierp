@@ -1015,16 +1015,61 @@ public class FinanceService
     /// <summary>
     /// Validates that the accounting period containing <paramref name="postingDate"/> is open for creation.
     /// 期间存在于数据库 = 打开，期间不存在 = 关闭。
+    /// 如果记账日期是当月且期间不存在，自动创建并打开该期间。
     /// </summary>
     public async Task EnsureVoucherCreateAllowed(string companyCode, DateTime postingDate)
     {
         var state = await GetPeriodStateAsync(companyCode, postingDate.Date);
-        // 期间不存在 = 关闭，不允许记账
+        
+        // 期间不存在
         if (!state.Exists)
-            throw new Exception($"対象の会計期間（{postingDate:yyyy-MM}）は開いていません。会計期間を開いてから再試行してください。");
+        {
+            // 判断是否是当月：记账日期所在月份与今天的月份相同
+            var today = DateTime.Today;
+            var isCurrentMonth = postingDate.Year == today.Year && postingDate.Month == today.Month;
+            
+            if (isCurrentMonth)
+            {
+                // 当月期间不存在时，自动创建并打开
+                await AutoCreateAccountingPeriodAsync(companyCode, postingDate);
+            }
+            else
+            {
+                // 非当月期间不存在，报错
+                throw new Exception($"対象の会計期間（{postingDate:yyyy-MM}）は開いていません。会計期間を開いてから再試行してください。");
+            }
+        }
         // 期间存在但标记为关闭（备用逻辑）
-        if (!state.IsOpen)
+        else if (!state.IsOpen)
+        {
             throw new Exception($"対象の会計期間（{postingDate:yyyy-MM}）は閉鎖されています。");
+        }
+    }
+    
+    /// <summary>
+    /// 自动创建并打开指定月份的会计期间
+    /// </summary>
+    private async Task AutoCreateAccountingPeriodAsync(string companyCode, DateTime postingDate)
+    {
+        var periodStart = new DateTime(postingDate.Year, postingDate.Month, 1);
+        var periodEnd = periodStart.AddMonths(1).AddDays(-1);
+        
+        var payload = new JsonObject
+        {
+            ["periodStart"] = periodStart.ToString("yyyy-MM-dd"),
+            ["periodEnd"] = periodEnd.ToString("yyyy-MM-dd"),
+            ["isOpen"] = true
+        };
+        
+        await using var conn = await _ds.OpenConnectionAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            INSERT INTO accounting_periods (company_code, payload)
+            VALUES ($1, $2::jsonb)
+            ON CONFLICT DO NOTHING";
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue(payload.ToJsonString());
+        await cmd.ExecuteNonQueryAsync();
     }
 
     /// <summary>
