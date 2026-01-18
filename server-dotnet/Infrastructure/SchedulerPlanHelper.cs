@@ -123,7 +123,60 @@ public static class SchedulerPlanHelper
             }
         }
 
-        if (lowered.Contains("工资") || lowered.Contains("薪资") || lowered.Contains("payroll"))
+        // Moneytree bank sync
+        // Example NL:
+        // - "每天8点和18点同步银行明细"
+        // - "毎日9時に銀行明細を同期"
+        // - "一日两次同步moneytree"
+        if (plan is null && (lowered.Contains("moneytree") || lowered.Contains("银行明细") || lowered.Contains("銀行明細") || lowered.Contains("銀行") || lowered.Contains("银行"))
+            && (lowered.Contains("同步") || lowered.Contains("同期") || lowered.Contains("sync") || lowered.Contains("連携") || lowered.Contains("连携")))
+        {
+            plan = new JsonObject
+            {
+                ["action"] = "moneytree.sync"
+            };
+
+            // 同步天数，默认7天
+            int daysBack = 7;
+            var daysMatch = Regex.Match(text, "(\\d{1,3})\\s*(?:天|日|days?)", RegexOptions.IgnoreCase);
+            if (daysMatch.Success && int.TryParse(daysMatch.Groups[1].Value, out var d) && d > 0 && d <= 90)
+            {
+                daysBack = d;
+            }
+            plan["daysBack"] = daysBack;
+
+            // 解析执行时间
+            var times = ParseMultipleTimes(text);
+            if (times.Count == 0)
+            {
+                // 默认每天8点和18点执行（日本时间）
+                times.Add(new TimeSpan(8, 0, 0));
+                times.Add(new TimeSpan(18, 0, 0));
+            }
+
+            schedule = new JsonObject
+            {
+                ["kind"] = "daily",
+                ["timezone"] = "Asia/Tokyo"
+            };
+
+            // 如果有多个时间，使用 times 数组
+            if (times.Count > 1)
+            {
+                var timesArray = new JsonArray();
+                foreach (var t in times.OrderBy(t => t))
+                {
+                    timesArray.Add(t.ToString("hh\\:mm"));
+                }
+                schedule["times"] = timesArray;
+            }
+            else
+            {
+                schedule["time"] = times[0].ToString("hh\\:mm");
+            }
+        }
+
+        if (plan is null && (lowered.Contains("工资") || lowered.Contains("薪资") || lowered.Contains("payroll")))
         {
             plan = new JsonObject
             {
@@ -203,6 +256,44 @@ public static class SchedulerPlanHelper
         return new TimeSpan(hour, minute, 0);
     }
 
+    private static List<TimeSpan> ParseMultipleTimes(string text)
+    {
+        var times = new List<TimeSpan>();
+        // Pattern: 8点和18点, 8時と18時, 8:00 and 18:00, etc.
+        var pattern = @"(?:(上午|下午|晚上|早上|傍晚|pm|AM|PM|am)\s*)?(\d{1,2})(?:[:：](\d{1,2}))?\s*(点|時|時|:)?";
+        foreach (Match match in Regex.Matches(text, pattern, RegexOptions.IgnoreCase))
+        {
+            if (!match.Success) continue;
+            if (!int.TryParse(match.Groups[2].Value, out var hour)) continue;
+            if (hour > 23) continue;
+            
+            int minute = 0;
+            if (match.Groups[3].Success)
+            {
+                _ = int.TryParse(match.Groups[3].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute);
+            }
+            
+            var prefix = match.Groups[1].Value.ToLowerInvariant();
+            if (prefix is "下午" or "晚上" or "pm")
+            {
+                if (hour < 12) hour += 12;
+            }
+            else if (prefix is "上午" or "早上" or "am")
+            {
+                if (hour == 12) hour = 0;
+            }
+            
+            hour = Math.Clamp(hour, 0, 23);
+            minute = Math.Clamp(minute, 0, 59);
+            var ts = new TimeSpan(hour, minute, 0);
+            if (!times.Contains(ts))
+            {
+                times.Add(ts);
+            }
+        }
+        return times;
+    }
+
     public static DateTimeOffset? ComputeNextOccurrence(JsonObject? schedule, DateTimeOffset fromUtc)
     {
         if (schedule is null) return null;
@@ -224,8 +315,33 @@ public static class SchedulerPlanHelper
         switch (kind)
         {
             case "daily":
-                targetLocal = new DateTimeOffset(referenceLocal.Date.Add(time), referenceLocal.Offset);
-                if (targetLocal <= referenceLocal) targetLocal = targetLocal.AddDays(1);
+                // 支持多个时间点
+                var times = GetTimesOfDay(schedule);
+                if (times.Count > 0)
+                {
+                    DateTimeOffset? nextTarget = null;
+                    foreach (var t in times.OrderBy(x => x))
+                    {
+                        var candidate = new DateTimeOffset(referenceLocal.Date.Add(t), referenceLocal.Offset);
+                        if (candidate > referenceLocal)
+                        {
+                            nextTarget = candidate;
+                            break;
+                        }
+                    }
+                    // 如果今天所有时间点都过了，取明天的第一个时间点
+                    if (!nextTarget.HasValue)
+                    {
+                        var firstTime = times.OrderBy(x => x).First();
+                        nextTarget = new DateTimeOffset(referenceLocal.Date.AddDays(1).Add(firstTime), referenceLocal.Offset);
+                    }
+                    targetLocal = nextTarget.Value;
+                }
+                else
+                {
+                    targetLocal = new DateTimeOffset(referenceLocal.Date.Add(time), referenceLocal.Offset);
+                    if (targetLocal <= referenceLocal) targetLocal = targetLocal.AddDays(1);
+                }
                 break;
             case "weekly":
                 var dayOfWeek = DayOfWeek.Monday;
@@ -279,6 +395,38 @@ public static class SchedulerPlanHelper
                 return ts;
         }
         return null;
+    }
+
+    private static List<TimeSpan> GetTimesOfDay(JsonObject schedule)
+    {
+        var result = new List<TimeSpan>();
+        
+        // 检查 times 数组
+        if (schedule.TryGetPropertyValue("times", out var timesNode) && timesNode is JsonArray timesArray)
+        {
+            foreach (var node in timesArray)
+            {
+                if (node is JsonValue val && val.TryGetValue<string>(out var str))
+                {
+                    if (TimeSpan.TryParseExact(str, "hh\\:mm", CultureInfo.InvariantCulture, out var ts))
+                        result.Add(ts);
+                    else if (TimeSpan.TryParse(str, CultureInfo.InvariantCulture, out ts))
+                        result.Add(ts);
+                }
+            }
+        }
+        
+        // 如果没有 times 数组，检查单个 time
+        if (result.Count == 0)
+        {
+            var singleTime = GetTimeOfDay(schedule);
+            if (singleTime.HasValue)
+            {
+                result.Add(singleTime.Value);
+            }
+        }
+        
+        return result;
     }
 
     private static DateTimeOffset BuildMonthly(DateTimeOffset source, int day, TimeSpan time)

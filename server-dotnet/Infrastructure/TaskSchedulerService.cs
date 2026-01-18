@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -11,23 +12,25 @@ namespace Server.Infrastructure;
 
 /// <summary>
 /// Background worker that interprets natural-language task specs and executes scheduled jobs
-/// (currently payroll batch execution). Tasks are stored in <c>scheduler_tasks</c>.
+/// (payroll batch, timesheet compliance, moneytree sync). Tasks are stored in <c>scheduler_tasks</c>.
 /// </summary>
 public sealed class TaskSchedulerService : BackgroundService
 {
     private readonly NpgsqlDataSource _ds;
     private readonly LawDatasetService _law;
     private readonly EmailService? _email;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<TaskSchedulerService>? _logger;
     private readonly string _workerId;
 
     private static readonly TimeSpan IdleDelay = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan ShortDelay = TimeSpan.FromSeconds(8);
 
-    public TaskSchedulerService(NpgsqlDataSource ds, LawDatasetService law, EmailService? email = null, ILogger<TaskSchedulerService>? logger = null)
+    public TaskSchedulerService(NpgsqlDataSource ds, LawDatasetService law, IServiceScopeFactory scopeFactory, EmailService? email = null, ILogger<TaskSchedulerService>? logger = null)
     {
         _ds = ds;
         _law = law;
+        _scopeFactory = scopeFactory;
         _email = email;
         _logger = logger;
         _workerId = $"tasksched-{Environment.MachineName}-{Guid.NewGuid():N}";
@@ -181,7 +184,9 @@ RETURNING t.id, t.company_code, t.payload, t.next_run_at, t.last_run_at;";
                     ? await ExecutePayrollBatchAsync(task, plan, schedule, startedAt, ct)
                     : string.Equals(action, "timesheet.compliance_check", StringComparison.OrdinalIgnoreCase)
                         ? await ExecuteTimesheetComplianceAsync(task, plan, schedule, startedAt, ct)
-                        : TaskExecutionOutcome.Failure("未支持的任务类型", plan);
+                        : string.Equals(action, "moneytree.sync", StringComparison.OrdinalIgnoreCase)
+                            ? await ExecuteMoneytreeSyncAsync(task, plan, schedule, startedAt, ct)
+                            : TaskExecutionOutcome.Failure("未支持的任务类型", plan);
 
             if (schedule is not null)
             {
@@ -542,6 +547,87 @@ WHERE u.company_code=$1";
                 lines.Add($"- [{sev}] {code} {name} overtime={ot}h");
             }
             return string.Join("\n", lines);
+        }
+    }
+
+    /// <summary>
+    /// Handles the moneytree.sync action: downloads bank transactions from Moneytree and imports them.
+    /// </summary>
+    private async Task<TaskExecutionOutcome> ExecuteMoneytreeSyncAsync(SchedulerTaskRecord task, JsonObject plan, JsonObject? schedule, DateTimeOffset startedAt, CancellationToken ct)
+    {
+        // 获取同步天数配置，默认同步最近7天
+        var daysBack = 7;
+        if (plan.TryGetPropertyValue("daysBack", out var daysNode) && daysNode is JsonValue daysVal)
+        {
+            if (daysVal.TryGetValue<int>(out var d)) daysBack = d;
+            else if (daysVal.TryGetValue<string>(out var ds) && int.TryParse(ds, out var dp)) daysBack = dp;
+        }
+
+        var endDate = DateTimeOffset.UtcNow;
+        var startDate = endDate.AddDays(-daysBack);
+
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var importService = scope.ServiceProvider.GetRequiredService<MoneytreeImportService>();
+
+            var importResult = await importService.ImportAsync(
+                task.CompanyCode,
+                new MoneytreeImportService.MoneytreeImportRequest(null, startDate, endDate),
+                "scheduler",
+                ct);
+
+            var finishedAt = DateTimeOffset.UtcNow;
+            var summary = new JsonObject
+            {
+                ["startDate"] = startDate.ToString("yyyy-MM-dd"),
+                ["endDate"] = endDate.ToString("yyyy-MM-dd"),
+                ["batchId"] = importResult.BatchId.ToString(),
+                ["totalRows"] = importResult.TotalRows,
+                ["insertedRows"] = importResult.InsertedRows,
+                ["skippedRows"] = importResult.SkippedRows,
+                ["linkedRows"] = importResult.LinkedRows,
+                ["startedAt"] = startedAt.ToString("O"),
+                ["finishedAt"] = finishedAt.ToString("O"),
+                ["durationMs"] = (finishedAt - startedAt).TotalMilliseconds
+            };
+
+            var result = new JsonObject
+            {
+                ["summary"] = summary
+            };
+
+            var nextRun = SchedulerPlanHelper.ComputeNextOccurrence(schedule, DateTimeOffset.UtcNow);
+            if (nextRun.HasValue)
+            {
+                result["nextRunPreview"] = nextRun.Value.ToString("O");
+            }
+
+            _logger?.LogInformation("[TaskScheduler] Moneytree sync completed for {Company}: inserted={Inserted}, skipped={Skipped}",
+                task.CompanyCode, importResult.InsertedRows, importResult.SkippedRows);
+
+            return new TaskExecutionOutcome("pending", result, nextRun, false);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "[TaskScheduler] Moneytree sync failed for {Company}", task.CompanyCode);
+
+            var finishedAt = DateTimeOffset.UtcNow;
+            var result = new JsonObject
+            {
+                ["error"] = ex.Message,
+                ["summary"] = new JsonObject
+                {
+                    ["startDate"] = startDate.ToString("yyyy-MM-dd"),
+                    ["endDate"] = endDate.ToString("yyyy-MM-dd"),
+                    ["startedAt"] = startedAt.ToString("O"),
+                    ["finishedAt"] = finishedAt.ToString("O"),
+                    ["durationMs"] = (finishedAt - startedAt).TotalMilliseconds
+                }
+            };
+
+            var nextRun = SchedulerPlanHelper.ComputeNextOccurrence(schedule, DateTimeOffset.UtcNow);
+            return new TaskExecutionOutcome("failed", result, nextRun, true);
         }
     }
 
