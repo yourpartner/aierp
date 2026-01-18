@@ -563,8 +563,15 @@ WHERE u.company_code=$1";
             else if (daysVal.TryGetValue<string>(out var ds) && int.TryParse(ds, out var dp)) daysBack = dp;
         }
 
-        var endDate = DateTimeOffset.UtcNow;
-        var startDate = endDate.AddDays(-daysBack);
+        var tz = ResolveJstTimeZone();
+        var nowLocal = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, tz);
+        var endLocalDate = nowLocal.Date;
+        var lastSuccessEnd = ReadLastSuccessEnd(task.Payload);
+        var startLocalDate = lastSuccessEnd ?? endLocalDate.AddDays(-daysBack);
+        if (startLocalDate > endLocalDate) startLocalDate = endLocalDate;
+
+        var startDate = BuildLocalDateTimeOffset(startLocalDate, tz, isEndOfDay: false);
+        var endDate = BuildLocalDateTimeOffset(endLocalDate, tz, isEndOfDay: true);
 
         try
         {
@@ -594,7 +601,14 @@ WHERE u.company_code=$1";
 
             var result = new JsonObject
             {
-                ["summary"] = summary
+                ["summary"] = summary,
+                ["lastSuccessEnd"] = endLocalDate.ToString("yyyy-MM-dd"),
+                ["retry"] = new JsonObject
+                {
+                    ["attempts"] = 0,
+                    ["maxAttempts"] = ReadRetryMaxAttempts(schedule),
+                    ["intervalMinutes"] = ReadRetryIntervalMinutes(schedule)
+                }
             };
 
             var nextRun = SchedulerPlanHelper.ComputeNextOccurrence(schedule, DateTimeOffset.UtcNow);
@@ -613,9 +627,28 @@ WHERE u.company_code=$1";
             _logger?.LogError(ex, "[TaskScheduler] Moneytree sync failed for {Company}", task.CompanyCode);
 
             var finishedAt = DateTimeOffset.UtcNow;
+            var maxAttempts = ReadRetryMaxAttempts(schedule);
+            var intervalMinutes = ReadRetryIntervalMinutes(schedule);
+            var attempts = ReadRetryAttempts(task.Payload) + 1;
+
+            DateTimeOffset? retryAt = null;
+            var finalStatus = "failed";
+            if (attempts < maxAttempts)
+            {
+                retryAt = DateTimeOffset.UtcNow.AddMinutes(intervalMinutes);
+                finalStatus = "pending";
+            }
+
             var result = new JsonObject
             {
                 ["error"] = ex.Message,
+                ["retry"] = new JsonObject
+                {
+                    ["attempts"] = attempts,
+                    ["maxAttempts"] = maxAttempts,
+                    ["intervalMinutes"] = intervalMinutes,
+                    ["nextRunAt"] = retryAt?.ToString("O")
+                },
                 ["summary"] = new JsonObject
                 {
                     ["startDate"] = startDate.ToString("yyyy-MM-dd"),
@@ -626,8 +659,103 @@ WHERE u.company_code=$1";
                 }
             };
 
-            var nextRun = SchedulerPlanHelper.ComputeNextOccurrence(schedule, DateTimeOffset.UtcNow);
-            return new TaskExecutionOutcome("failed", result, nextRun, true);
+            if (finalStatus == "failed")
+            {
+                await SendMoneytreeFailureEmailAsync(task.CompanyCode, ex.Message, startDate, endDate, attempts, maxAttempts, ct);
+            }
+
+            var nextRun = finalStatus == "pending"
+                ? retryAt
+                : SchedulerPlanHelper.ComputeNextOccurrence(schedule, DateTimeOffset.UtcNow);
+            return new TaskExecutionOutcome(finalStatus, result, nextRun, finalStatus == "failed");
+        }
+
+        static TimeZoneInfo ResolveJstTimeZone()
+        {
+            foreach (var id in new[] { "Asia/Tokyo", "Tokyo Standard Time" })
+            {
+                try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
+                catch { }
+            }
+            return TimeZoneInfo.Utc;
+        }
+
+        static DateTimeOffset BuildLocalDateTimeOffset(DateTime localDate, TimeZoneInfo tz, bool isEndOfDay)
+        {
+            var time = isEndOfDay ? new TimeSpan(23, 59, 59) : TimeSpan.Zero;
+            var local = new DateTime(localDate.Year, localDate.Month, localDate.Day, time.Hours, time.Minutes, time.Seconds, DateTimeKind.Unspecified);
+            var offset = tz.GetUtcOffset(local);
+            return new DateTimeOffset(local, offset);
+        }
+
+        static DateTime? ReadLastSuccessEnd(JsonObject payload)
+        {
+            if (payload.TryGetPropertyValue("result", out var resultNode) && resultNode is JsonObject resultObj)
+            {
+                if (resultObj.TryGetPropertyValue("lastSuccessEnd", out var node) && node is JsonValue val && val.TryGetValue<string>(out var text))
+                {
+                    if (DateTime.TryParse(text, out var dt)) return dt.Date;
+                }
+            }
+            return null;
+        }
+
+        static int ReadRetryAttempts(JsonObject payload)
+        {
+            if (payload.TryGetPropertyValue("result", out var resultNode) && resultNode is JsonObject resultObj)
+            {
+                if (resultObj.TryGetPropertyValue("retry", out var retryNode) && retryNode is JsonObject retryObj)
+                {
+                    if (retryObj.TryGetPropertyValue("attempts", out var node) && node is JsonValue val && val.TryGetValue<int>(out var i)) return i;
+                }
+            }
+            return 0;
+        }
+
+        static int ReadRetryMaxAttempts(JsonObject? schedule)
+        {
+            if (schedule != null && schedule.TryGetPropertyValue("retry", out var retryNode) && retryNode is JsonObject retryObj)
+            {
+                if (retryObj.TryGetPropertyValue("maxAttempts", out var node) && node is JsonValue val && val.TryGetValue<int>(out var i)) return i;
+            }
+            return 3;
+        }
+
+        static int ReadRetryIntervalMinutes(JsonObject? schedule)
+        {
+            if (schedule != null && schedule.TryGetPropertyValue("retry", out var retryNode) && retryNode is JsonObject retryObj)
+            {
+                if (retryObj.TryGetPropertyValue("intervalMinutes", out var node) && node is JsonValue val && val.TryGetValue<int>(out var i)) return i;
+            }
+            return 10;
+        }
+    }
+
+    private async Task SendMoneytreeFailureEmailAsync(
+        string companyCode,
+        string errorMessage,
+        DateTimeOffset startDate,
+        DateTimeOffset endDate,
+        int attempts,
+        int maxAttempts,
+        CancellationToken ct)
+    {
+        if (_email is null) return;
+        try
+        {
+            var subject = $"[Moneytree Sync Failed] {companyCode} retries exhausted";
+            var body = string.Join("\n", new[]
+            {
+                $"Company: {companyCode}",
+                $"DateRange: {startDate:yyyy-MM-dd} ~ {endDate:yyyy-MM-dd}",
+                $"Attempts: {attempts}/{maxAttempts}",
+                $"Error: {errorMessage}"
+            });
+            await _email.SendAsync("ryuhou@your-partner.co.jp", subject, body, false, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "[TaskScheduler] Failed to send Moneytree failure email for {Company}", companyCode);
         }
     }
 

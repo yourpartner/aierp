@@ -811,7 +811,7 @@ BEGIN
     VALUES (
       'JP01',
       '{
-        "nlSpec": "毎日8時と18時に銀行明細を自動連携。失敗時は10分後にリトライ、最大3回まで",
+        "nlSpec": "毎日12時と0時に銀行明細を自動連携。失敗時は10分後にリトライ、最大3回まで",
         "plan": {
           "action": "moneytree.sync",
           "daysBack": 7
@@ -819,18 +819,22 @@ BEGIN
         "schedule": {
           "kind": "daily",
           "timezone": "Asia/Tokyo",
-          "times": ["08:00", "18:00"]
+          "times": ["12:00", "00:00"],
+          "retry": {
+            "maxAttempts": 3,
+            "intervalMinutes": 10
+          }
         },
         "status": "pending"
       }'::jsonb,
-      -- 下次运行时间设为下一个 08:00 或 18:00 (JST)
+      -- 下次运行时间设为下一个 12:00 或 00:00 (JST)
       (
         SELECT CASE 
-          WHEN (now() AT TIME ZONE 'Asia/Tokyo')::time < '08:00:00' 
-          THEN date_trunc('day', now() AT TIME ZONE 'Asia/Tokyo') + INTERVAL '8 hours'
-          WHEN (now() AT TIME ZONE 'Asia/Tokyo')::time < '18:00:00' 
-          THEN date_trunc('day', now() AT TIME ZONE 'Asia/Tokyo') + INTERVAL '18 hours'
-          ELSE date_trunc('day', now() AT TIME ZONE 'Asia/Tokyo') + INTERVAL '1 day' + INTERVAL '8 hours'
+          WHEN (now() AT TIME ZONE 'Asia/Tokyo')::time < '12:00:00' 
+          THEN date_trunc('day', now() AT TIME ZONE 'Asia/Tokyo') + INTERVAL '12 hours'
+          WHEN (now() AT TIME ZONE 'Asia/Tokyo')::time < '24:00:00' 
+          THEN date_trunc('day', now() AT TIME ZONE 'Asia/Tokyo') + INTERVAL '24 hours'
+          ELSE date_trunc('day', now() AT TIME ZONE 'Asia/Tokyo') + INTERVAL '1 day' + INTERVAL '12 hours'
         END AT TIME ZONE 'Asia/Tokyo'
       )
     );

@@ -125,7 +125,7 @@ public static class SchedulerPlanHelper
 
         // Moneytree bank sync
         // Example NL:
-        // - "每天8点和18点同步银行明细"
+        // - "每天12点和0点同步银行明细"
         // - "毎日9時に銀行明細を同期"
         // - "一日两次同步moneytree"
         if (plan is null && (lowered.Contains("moneytree") || lowered.Contains("银行明细") || lowered.Contains("銀行明細") || lowered.Contains("銀行") || lowered.Contains("银行"))
@@ -149,15 +149,20 @@ public static class SchedulerPlanHelper
             var times = ParseMultipleTimes(text);
             if (times.Count == 0)
             {
-                // 默认每天8点和18点执行（日本时间）
-                times.Add(new TimeSpan(8, 0, 0));
-                times.Add(new TimeSpan(18, 0, 0));
+                // 默认每天12点和0点执行（日本时间）
+                times.Add(new TimeSpan(12, 0, 0));
+                times.Add(new TimeSpan(0, 0, 0));
             }
 
             schedule = new JsonObject
             {
                 ["kind"] = "daily",
-                ["timezone"] = "Asia/Tokyo"
+                ["timezone"] = "Asia/Tokyo",
+                ["retry"] = new JsonObject
+                {
+                    ["maxAttempts"] = 3,
+                    ["intervalMinutes"] = 10
+                }
             };
 
             // 如果有多个时间，使用 times 数组
