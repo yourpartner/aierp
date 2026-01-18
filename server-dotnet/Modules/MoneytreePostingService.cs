@@ -195,15 +195,30 @@ public sealed class MoneytreePostingService
                 pairedFee = await LoadTransactionForUpdateAsync(conn, tx, companyCode, feeId, ct);
             }
 
-            var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
-            await tx.CommitAsync(ct);
-            stats.Apply(outcome, voucherInfo, transactionId: row.Id, error: error);
-            
-            // 如果有配对的手续费且处理成功，也添加到返回结果以便前端同时更新显示
-            if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
+            try
             {
-                var feeStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
-                stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, feeStatus, voucherInfo?.VoucherNo, null));
+                var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
+                await tx.CommitAsync(ct);
+                stats.Apply(outcome, voucherInfo, transactionId: row.Id, error: error);
+                
+                // 如果有配对的手续费且处理成功，也添加到返回结果以便前端同时更新显示
+                if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
+                {
+                    var feeStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
+                    stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, feeStatus, voucherInfo?.VoucherNo, null));
+                }
+            }
+            catch (PostgresException pgEx)
+            {
+                await tx.RollbackAsync(ct);
+                _logger.LogError(pgEx, "[MoneytreePosting] PostgreSQL error processing transaction {Id}", row.Id);
+                stats.Apply(PostingOutcome.Failed, transactionId: row.Id, error: $"データベースエラー: {pgEx.MessageText}");
+            }
+            catch (NpgsqlException npgEx)
+            {
+                await tx.RollbackAsync(ct);
+                _logger.LogError(npgEx, "[MoneytreePosting] Npgsql error processing transaction {Id}", row.Id);
+                stats.Apply(PostingOutcome.Failed, transactionId: row.Id, error: $"データベース接続エラー: {npgEx.Message}");
             }
         }
 
@@ -306,15 +321,30 @@ public sealed class MoneytreePostingService
                 // 如果手续费已被处理，pairedFee 保持 null
             }
 
-            var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
-            await tx.CommitAsync(ct);
-            stats.Apply(outcome, voucherInfo, transactionId: id, error: error);
-            
-            // 如果有配对的手续费且处理成功，也添加到返回结果以便前端同时更新显示
-            if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
+            try
             {
-                var feeStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
-                stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, feeStatus, voucherInfo?.VoucherNo, null));
+                var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
+                await tx.CommitAsync(ct);
+                stats.Apply(outcome, voucherInfo, transactionId: id, error: error);
+                
+                // 如果有配对的手续费且处理成功，也添加到返回结果以便前端同时更新显示
+                if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
+                {
+                    var feeStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
+                    stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, feeStatus, voucherInfo?.VoucherNo, null));
+                }
+            }
+            catch (PostgresException pgEx)
+            {
+                await tx.RollbackAsync(ct);
+                _logger.LogError(pgEx, "[MoneytreePosting] PostgreSQL error processing transaction {Id}", id);
+                stats.Apply(PostingOutcome.Failed, transactionId: id, error: $"データベースエラー: {pgEx.MessageText}");
+            }
+            catch (NpgsqlException npgEx)
+            {
+                await tx.RollbackAsync(ct);
+                _logger.LogError(npgEx, "[MoneytreePosting] Npgsql error processing transaction {Id}", id);
+                stats.Apply(PostingOutcome.Failed, transactionId: id, error: $"データベース接続エラー: {npgEx.Message}");
             }
         }
 
@@ -379,10 +409,22 @@ public sealed class MoneytreePostingService
                 return (PostingOutcome.Posted, smartVoucherInfo, null);
             }
         }
+        catch (PostgresException pgEx)
+        {
+            // PostgreSQL 异常会导致事务中止，必须回滚后重新开始，不能继续在已中止的事务中执行
+            _logger.LogWarning(pgEx, "[MoneytreePosting] Smart processing failed with PostgreSQL error for transaction {Id}, transaction aborted", row.Id);
+            throw; // 重新抛出，让调用者回滚事务
+        }
+        catch (NpgsqlException npgEx)
+        {
+            // Npgsql 异常也可能导致事务中止
+            _logger.LogWarning(npgEx, "[MoneytreePosting] Smart processing failed with Npgsql error for transaction {Id}, transaction may be aborted", row.Id);
+            throw; // 重新抛出，让调用者回滚事务
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[MoneytreePosting] Smart processing failed for transaction {Id}, falling back to rules", row.Id);
-            // 智能处理失败，继续使用规则处理
+            // 非数据库异常，继续使用规则处理
         }
         // ====== 智能处理结束，继续规则匹配 ======
 
