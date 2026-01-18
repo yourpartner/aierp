@@ -2780,8 +2780,9 @@ LIMIT 1";
         }
         linesArray.Add(debitLine);
 
-        // 如果有配对的手续费，添加手续费明细行
-        if (feeAmount > 0m)
+        // 如果有配对的手续费且是出金，添加手续费明细行
+        // 注意：手续费只应该出现在出金（付款）场景，入金不应有手续费
+        if (feeAmount > 0m && isWithdrawal)
         {
             // 获取手续费科目和消费税科目
             var bankFeeAccountCode = await GetBankFeeAccountCodeAsync(conn, companyCode, ct);
@@ -2821,13 +2822,16 @@ LIMIT 1";
             summary += $" (手数料 {feeAmount:#,0})";
         }
 
-        // 贷方行（银行科目，金额 = 支付金额 + 手续费）
+        // 贷方行
+        // 出金时：贷方=银行科目，金额=支付金额+手续费（银行实际扣款）
+        // 入金时：贷方=目标科目（如売掛金），金额=收入金额（不含手续费）
+        var creditAmount = isWithdrawal ? totalAmount : amount;
         var creditLine = new JsonObject
         {
             ["lineNo"] = lineNo++,
             ["accountCode"] = creditAccount,
             ["drcr"] = "CR",
-            ["amount"] = totalAmount,  // 使用总金额（含手续费）
+            ["amount"] = creditAmount,
             ["note"] = row.Description ?? ""
         };
         if (!string.IsNullOrWhiteSpace(creditMeta.CustomerId))
@@ -4980,9 +4984,9 @@ ORDER BY transaction_date, row_sequence";
                 break;
             }
             
-            // 必须是出金或入金（非手续费）
-            // 注意：withdrawal_amount 存储的是负数，deposit_amount 存储的是正数
-            var hasAmount = candidate.WithdrawalAmount < 0m || candidate.DepositAmount > 0m;
+            // 必须是出金（非手续费）- 银行手续费只发生在付款场景，入金不应有手续费
+            // 注意：withdrawal_amount 存储的是负数
+            var isWithdrawal = candidate.WithdrawalAmount < 0m;
             
             // 如果遇到另一条手续费，停止搜索（PayPay银行手续费必须紧邻主交易）
             if (IsBankFeeTransaction(candidate.Description))
@@ -4992,10 +4996,11 @@ ORDER BY transaction_date, row_sequence";
                 break;
             }
             
-            if (!hasAmount)
+            // 只配对出金明细（入金不应有手续费）
+            if (!isWithdrawal)
             {
-                _logger.LogInformation("[MoneytreePosting] TryPairFeeWithPayment: skipping. hasAmount={HasAmount}",
-                    hasAmount);
+                _logger.LogInformation("[MoneytreePosting] TryPairFeeWithPayment: skipping non-withdrawal transaction. isWithdrawal={IsWithdrawal}",
+                    isWithdrawal);
                 continue;
             }
             

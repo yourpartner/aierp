@@ -237,7 +237,7 @@
                         size="small"
                       >
                         {{ buttonsText.delete || '削除' }}
-                      </el-button>
+                  </el-button>
                     </template>
                   </el-popconfirm>
                   <el-tooltip
