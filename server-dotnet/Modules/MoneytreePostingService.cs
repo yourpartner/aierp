@@ -2318,21 +2318,26 @@ LIMIT 1";
             );
         }
 
-        // 策略2: 组合匹配 - 尝试找到多个未清项组合等于交易金额
-        var combination = FindSmartOpenItemCombination(candidates, amount);
-        if (combination != null && combination.Count > 0)
+        // 策略2: 组合匹配 - 按科目分组后尝试找到多个未清项组合等于交易金额
+        // 只允许同一科目的未清项组合，避免跨科目清账
+        var groupedByAccount = candidates.GroupBy(c => c.AccountCode);
+        foreach (var group in groupedByAccount)
         {
-            var totalAmount = combination.Sum(c => Math.Abs(c.ResidualAmount));
-            if (Math.Abs(totalAmount - amount) < 0.01m)
+            var combination = FindSmartOpenItemCombination(group.ToList(), amount);
+            if (combination != null && combination.Count > 0)
             {
-                _logger.LogInformation("[SmartPosting] Combination match found: {Count} items, total={Total}",
-                    combination.Count, totalAmount);
-                return new SmartOpenItemMatchResult(
-                    combination,
-                    combination[0].AccountCode,
-                    OpenItemMatchType.Combination,
-                    0m
-                );
+                var totalAmount = combination.Sum(c => Math.Abs(c.ResidualAmount));
+                if (Math.Abs(totalAmount - amount) < 0.01m)
+                {
+                    _logger.LogInformation("[SmartPosting] Combination match found: {Count} items, total={Total}, account={Account}",
+                        combination.Count, totalAmount, group.Key);
+                    return new SmartOpenItemMatchResult(
+                        combination,
+                        group.Key,
+                        OpenItemMatchType.Combination,
+                        0m
+                    );
+                }
             }
         }
 
@@ -2396,8 +2401,19 @@ LIMIT 1";
         bool isWithdrawal,
         CancellationToken ct)
     {
-        _logger.LogInformation("[SmartPosting] Learning from bank-linked vouchers: counterpartyId={Id}, kind={Kind}, isWithdrawal={IsWithdrawal}",
-            counterpartyId, counterpartyKind, isWithdrawal);
+        // 提取搜索关键词
+        var extractedName = ExtractCounterpartyNameFromDescription(searchDescription);
+        var hasCounterparty = !string.IsNullOrWhiteSpace(counterpartyId) && !string.IsNullOrWhiteSpace(counterpartyKind);
+        
+        // 如果没有对手方且描述为空，则无法进行有效的历史学习，跳过
+        if (!hasCounterparty && string.IsNullOrWhiteSpace(extractedName))
+        {
+            _logger.LogInformation("[SmartPosting] Skipping historical learning: no counterparty and empty description");
+            return null;
+        }
+
+        _logger.LogInformation("[SmartPosting] Learning from bank-linked vouchers: counterpartyId={Id}, kind={Kind}, isWithdrawal={IsWithdrawal}, extractedName={Name}",
+            counterpartyId, counterpartyKind, isWithdrawal, extractedName);
 
         await using var cmd = conn.CreateCommand();
         
@@ -2407,15 +2423,21 @@ LIMIT 1";
             FROM vouchers v
             INNER JOIN moneytree_transactions mt ON mt.voucher_id = v.id AND mt.company_code = v.company_code
             WHERE v.company_code = $1
-              AND mt.description ILIKE $2
               AND v.created_at > now() - interval '1 year'";
         
-        var paramIdx = 3;
+        var paramIdx = 2;
         
-        // 如果有对手方ID，优先按对手方筛选
-        if (!string.IsNullOrWhiteSpace(counterpartyId) && !string.IsNullOrWhiteSpace(counterpartyKind))
+        // 如果有提取到的名称，按描述筛选
+        if (!string.IsNullOrWhiteSpace(extractedName))
         {
-            var jsonPath = counterpartyKind.ToLowerInvariant() switch
+            sql += $" AND mt.description ILIKE ${paramIdx}";
+            paramIdx++;
+        }
+        
+        // 如果有对手方ID，按对手方筛选
+        if (hasCounterparty)
+        {
+            var jsonPath = counterpartyKind!.ToLowerInvariant() switch
             {
                 "customer" => "customerId",
                 "vendor" => "vendorId",
@@ -2437,10 +2459,13 @@ LIMIT 1";
         
         cmd.CommandText = sql;
         cmd.Parameters.AddWithValue(companyCode);
-        cmd.Parameters.AddWithValue("%" + ExtractCounterpartyNameFromDescription(searchDescription) + "%");
-        if (!string.IsNullOrWhiteSpace(counterpartyId) && !string.IsNullOrWhiteSpace(counterpartyKind))
+        if (!string.IsNullOrWhiteSpace(extractedName))
         {
-            cmd.Parameters.AddWithValue(counterpartyId);
+            cmd.Parameters.AddWithValue("%" + extractedName + "%");
+        }
+        if (hasCounterparty)
+        {
+            cmd.Parameters.AddWithValue(counterpartyId!);
         }
 
         var accountUsage = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -2469,7 +2494,8 @@ LIMIT 1";
                 var targetDrcr = isWithdrawal ? "DR" : "CR";
                 if (string.Equals(drcr, targetDrcr, StringComparison.OrdinalIgnoreCase))
                 {
-                    // 排除银行科目本身（通常以1开头的流动资产）
+                    // 排除银行和应收类科目（11xx现金/銀行、12xx売掛金等）
+                    // 保留：非1开头的科目 或 13xx(仮払金)、14xx(仮払消費税)、15xx(その他流動資産)
                     if (!accountCode.StartsWith("1") || accountCode.StartsWith("13") || accountCode.StartsWith("14") || accountCode.StartsWith("15"))
                     {
                         accountUsage[accountCode] = accountUsage.GetValueOrDefault(accountCode, 0) + 1;
@@ -2757,6 +2783,9 @@ LIMIT 1";
         var linesArray = new JsonArray();
         var lineNo = 1;
 
+        // 确定清账行方向：出金时借方是清账行，入金时贷方是清账行
+        var clearingTargetLine = clearedOpenItem ? (isWithdrawal ? "debit" : "credit") : null;
+
         // 借方行
         var debitLine = new JsonObject
         {
@@ -2774,6 +2803,11 @@ LIMIT 1";
             debitLine["employeeId"] = debitMeta.EmployeeId;
         if (debitMeta.PaymentDate.HasValue)
             debitLine["paymentDate"] = debitMeta.PaymentDate.Value.ToString("yyyy-MM-dd");
+        // 如果借方是清账行，标记 isClearing 避免创建新的 open_item
+        if (string.Equals(clearingTargetLine, "debit", StringComparison.OrdinalIgnoreCase))
+        {
+            debitLine["isClearing"] = true;
+        }
         linesArray.Add(debitLine);
 
         // 贷方行
@@ -2793,6 +2827,11 @@ LIMIT 1";
             creditLine["employeeId"] = creditMeta.EmployeeId;
         if (creditMeta.PaymentDate.HasValue)
             creditLine["paymentDate"] = creditMeta.PaymentDate.Value.ToString("yyyy-MM-dd");
+        // 如果贷方是清账行，标记 isClearing 避免创建新的 open_item
+        if (string.Equals(clearingTargetLine, "credit", StringComparison.OrdinalIgnoreCase))
+        {
+            creditLine["isClearing"] = true;
+        }
         linesArray.Add(creditLine);
 
         var payloadObj = new JsonObject
@@ -2806,21 +2845,6 @@ LIMIT 1";
             },
             ["lines"] = linesArray
         };
-
-        // 如果有清账信息，添加 clearings
-        if (clearedOpenItem && openItemMatch != null)
-        {
-            var clearingsArray = new JsonArray();
-            foreach (var item in openItemMatch.Items)
-            {
-                clearingsArray.Add(new JsonObject
-                {
-                    ["openItemId"] = item.Id.ToString(),
-                    ["amount"] = Math.Abs(item.ResidualAmount)
-                });
-            }
-            payloadObj["clearings"] = clearingsArray;
-        }
 
         // 创建凭证
         Guid? voucherId = null;
@@ -2840,29 +2864,42 @@ LIMIT 1";
             return null;
         }
 
-        // 执行清账
+        // 执行清账 - 更新旧的 open_items 的 residual_amount
         Guid? clearedOpenItemId = null;
         if (clearedOpenItem && openItemMatch != null && voucherId.HasValue)
         {
             try
             {
-                // 对于精确匹配或单个未清项，使用现有的清账逻辑
+                // 计算实际清账金额（使用付款金额，而非未清项全额）
+                var totalClearingAmount = amount;
+                
                 if (openItemMatch.Items.Count == 1)
                 {
-                    var entries = new List<OpenItemReservationEntry> { new OpenItemReservationEntry(openItemMatch.Items[0].Id, amount) };
-                    var reservation = new OpenItemReservation(entries, amount);
+                    // 单个未清项：使用实际付款金额（可能小于未清项金额，差额为手续费）
+                    var clearingAmount = Math.Min(amount, Math.Abs(openItemMatch.Items[0].ResidualAmount));
+                    var entries = new List<OpenItemReservationEntry> { new OpenItemReservationEntry(openItemMatch.Items[0].Id, clearingAmount) };
+                    var reservation = new OpenItemReservation(entries, clearingAmount);
                     clearedOpenItemId = await ApplyOpenItemClearingAsync(conn, tx, reservation, ct);
                 }
                 else
                 {
-                    // 多个未清项的情况，逐个清账
+                    // 多个未清项：按 FIFO 顺序分配付款金额
+                    var remainingAmount = amount;
+                    var entries = new List<OpenItemReservationEntry>();
                     foreach (var item in openItemMatch.Items)
                     {
-                        var entries = new List<OpenItemReservationEntry> { new OpenItemReservationEntry(item.Id, Math.Abs(item.ResidualAmount)) };
-                        var itemReservation = new OpenItemReservation(entries, Math.Abs(item.ResidualAmount));
-                        await ApplyOpenItemClearingAsync(conn, tx, itemReservation, ct);
+                        if (remainingAmount <= 0) break;
+                        var itemAmount = Math.Abs(item.ResidualAmount);
+                        var clearingAmount = Math.Min(remainingAmount, itemAmount);
+                        entries.Add(new OpenItemReservationEntry(item.Id, clearingAmount));
+                        remainingAmount -= clearingAmount;
                     }
-                    clearedOpenItemId = openItemMatch.Items[0].Id;
+                    if (entries.Count > 0)
+                    {
+                        var totalApplied = entries.Sum(e => e.Amount);
+                        var reservation = new OpenItemReservation(entries, totalApplied);
+                        clearedOpenItemId = await ApplyOpenItemClearingAsync(conn, tx, reservation, ct);
+                    }
                 }
                 _logger.LogInformation("[SmartPosting] Cleared open item(s) successfully");
             }
