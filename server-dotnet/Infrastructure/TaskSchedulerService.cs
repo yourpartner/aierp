@@ -639,6 +639,9 @@ WHERE u.company_code=$1";
                 finalStatus = "pending";
             }
 
+            // 失败时保留上一次成功的 lastSuccessEnd，避免重试时日期范围回退
+            var previousLastSuccessEnd = ReadLastSuccessEnd(task.Payload);
+
             var result = new JsonObject
             {
                 ["error"] = ex.Message,
@@ -658,6 +661,12 @@ WHERE u.company_code=$1";
                     ["durationMs"] = (finishedAt - startedAt).TotalMilliseconds
                 }
             };
+
+            // 保留上一次成功的 lastSuccessEnd
+            if (previousLastSuccessEnd.HasValue)
+            {
+                result["lastSuccessEnd"] = previousLastSuccessEnd.Value.ToString("yyyy-MM-dd");
+            }
 
             if (finalStatus == "failed")
             {
