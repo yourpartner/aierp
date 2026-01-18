@@ -343,41 +343,46 @@ public sealed class MoneytreePostingService
         }
 
         // ====== 智能处理：对手方识别 → 未清项清账 → 历史学习 → 兜底科目 ======
-        // 如果没有配对的手续费（手续费由规则处理），先尝试智能处理
-        if (pairedFee is null)
+        try
         {
-            try
+            var smartResult = await TrySmartProcessAsync(conn, tx, companyCode, row, pairedFee, user, postingRunId, ct);
+            if (smartResult != null && smartResult.VoucherId.HasValue)
             {
-                var smartResult = await TrySmartProcessAsync(conn, tx, companyCode, row, user, postingRunId, ct);
-                if (smartResult != null && smartResult.VoucherId.HasValue)
+                // 智能处理成功
+                await UpdateStatusAsync(conn, tx, row.Id, "posted", 
+                    smartResult.ClearedOpenItem ? "智能清账記帳" : "智能記帳",
+                    smartResult.VoucherId, smartResult.VoucherNo, 
+                    null, "SmartPosting", smartResult.ClearedOpenItemId, postingRunId, ct);
+                
+                // 如果有配对的手续费，也更新其状态
+                if (pairedFee != null && smartResult.IncludedFee)
                 {
-                    // 智能处理成功
-                    await UpdateStatusAsync(conn, tx, row.Id, "posted", 
-                        smartResult.ClearedOpenItem ? "智能清账記帳" : "智能記帳",
-                        smartResult.VoucherId, smartResult.VoucherNo, 
-                        null, "SmartPosting", smartResult.ClearedOpenItemId, postingRunId, ct);
-                    
-                    var smartVoucherInfo = new PostedVoucherInfo(
-                        row.Id,
-                        smartResult.VoucherId,
-                        smartResult.VoucherNo,
-                        smartResult.Amount,
-                        row.Description,
-                        "SmartPosting",
-                        null
-                    );
-                    
-                    _logger.LogInformation("[MoneytreePosting] Smart processing succeeded for transaction {Id}: voucher={VoucherNo}, cleared={Cleared}",
-                        row.Id, smartResult.VoucherNo, smartResult.ClearedOpenItem);
-                    
-                    return (PostingOutcome.Posted, smartVoucherInfo, null);
+                    await UpdateStatusAsync(conn, tx, pairedFee.Id, "posted", 
+                        $"智能記帳（主明細に随伴）：{smartResult.VoucherNo}",
+                        smartResult.VoucherId, smartResult.VoucherNo,
+                        null, "SmartPosting", null, postingRunId, ct);
                 }
+                
+                var smartVoucherInfo = new PostedVoucherInfo(
+                    row.Id,
+                    smartResult.VoucherId,
+                    smartResult.VoucherNo,
+                    smartResult.TotalAmount,
+                    row.Description,
+                    "SmartPosting",
+                    null
+                );
+                
+                _logger.LogInformation("[MoneytreePosting] Smart processing succeeded for transaction {Id}: voucher={VoucherNo}, cleared={Cleared}, includedFee={IncludedFee}",
+                    row.Id, smartResult.VoucherNo, smartResult.ClearedOpenItem, smartResult.IncludedFee);
+                
+                return (PostingOutcome.Posted, smartVoucherInfo, null);
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[MoneytreePosting] Smart processing failed for transaction {Id}, falling back to rules", row.Id);
-                // 智能处理失败，继续使用规则处理
-            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[MoneytreePosting] Smart processing failed for transaction {Id}, falling back to rules", row.Id);
+            // 智能处理失败，继续使用规则处理
         }
         // ====== 智能处理结束，继续规则匹配 ======
 
@@ -2625,12 +2630,17 @@ LIMIT 1";
         NpgsqlTransaction tx,
         string companyCode,
         MoneytreeTransactionRow row,
+        MoneytreeTransactionRow? pairedFee,
         Auth.UserCtx user,
         Guid postingRunId,
         CancellationToken ct)
     {
         var amount = row.GetPositiveAmount();
         if (amount <= 0m) return null;
+
+        // 计算手续费金额
+        var feeAmount = pairedFee?.GetPositiveAmount() ?? 0m;
+        var totalAmount = amount + feeAmount;
 
         // 判断交易方向
         var hasWithdrawalAmount = (row.WithdrawalAmount ?? 0m) < 0m;
@@ -2648,13 +2658,13 @@ LIMIT 1";
 
         var transactionDate = (row.TransactionDate ?? row.ImportedAt.UtcDateTime).Date;
         
-        _logger.LogInformation("[SmartPosting] Starting smart processing: txId={Id}, amount={Amount}, isWithdrawal={IsWithdrawal}, desc={Desc}",
-            row.Id, amount, isWithdrawal, row.Description);
+        _logger.LogInformation("[SmartPosting] Starting smart processing: txId={Id}, amount={Amount}, feeAmount={Fee}, isWithdrawal={IsWithdrawal}, desc={Desc}",
+            row.Id, amount, feeAmount, isWithdrawal, row.Description);
 
-        // 跳过手续费明细 - 这些由现有规则处理
+        // 跳过手续费明细本身 - 手续费会随主交易一起处理
         if (IsBankFeeTransaction(row.Description))
         {
-            _logger.LogInformation("[SmartPosting] Skipping bank fee transaction, delegating to rules");
+            _logger.LogInformation("[SmartPosting] Skipping standalone bank fee transaction, delegating to rules");
             return null;
         }
 
@@ -2810,13 +2820,54 @@ LIMIT 1";
         }
         linesArray.Add(debitLine);
 
-        // 贷方行
+        // 如果有配对的手续费，添加手续费明细行
+        if (feeAmount > 0m)
+        {
+            // 获取手续费科目和消费税科目
+            var bankFeeAccountCode = await GetBankFeeAccountCodeAsync(conn, companyCode, ct);
+            var inputTaxAccountCode = await GetInputTaxAccountCodeAsync(conn, companyCode, ct);
+            
+            // 计算手续费的本体金额和消费税（税率10%）
+            var feeNetAmount = Math.Round(feeAmount / 1.1m, 0);  // 本体金额（含税÷1.1，四舍五入）
+            var feeTaxAmount = feeAmount - feeNetAmount;  // 税额
+            
+            // 手续费本体明细行
+            var feeLineNo = lineNo++;
+            linesArray.Add(new JsonObject
+            {
+                ["lineNo"] = feeLineNo,
+                ["accountCode"] = bankFeeAccountCode,
+                ["drcr"] = "DR",
+                ["amount"] = feeNetAmount,
+                ["note"] = "振込手数料"
+            });
+            
+            // 仮払消費税明細行
+            if (feeTaxAmount > 0 && !string.IsNullOrWhiteSpace(inputTaxAccountCode))
+            {
+                linesArray.Add(new JsonObject
+                {
+                    ["lineNo"] = lineNo++,
+                    ["accountCode"] = inputTaxAccountCode,
+                    ["drcr"] = "DR",
+                    ["amount"] = feeTaxAmount,
+                    ["note"] = "振込手数料消費税",
+                    ["baseLineNo"] = feeLineNo,
+                    ["isTaxLine"] = true
+                });
+            }
+            
+            // 更新摘要以包含手续费信息
+            summary += $" (手数料 {feeAmount:#,0})";
+        }
+
+        // 贷方行（银行科目，金额 = 支付金额 + 手续费）
         var creditLine = new JsonObject
         {
             ["lineNo"] = lineNo++,
             ["accountCode"] = creditAccount,
             ["drcr"] = "CR",
-            ["amount"] = amount,
+            ["amount"] = totalAmount,  // 使用总金额（含手续费）
             ["note"] = row.Description ?? ""
         };
         if (!string.IsNullOrWhiteSpace(creditMeta.CustomerId))
@@ -2917,12 +2968,15 @@ LIMIT 1";
             voucherId,
             voucherNo,
             amount,
+            feeAmount,
+            totalAmount,
             debitAccount,
             creditAccount,
             counterparty?.Kind,
             counterparty?.Id,
             clearedOpenItem,
-            clearedOpenItemId
+            clearedOpenItemId,
+            feeAmount > 0m
         );
     }
 
@@ -2950,12 +3004,15 @@ LIMIT 1";
         Guid? VoucherId,
         string? VoucherNo,
         decimal Amount,
+        decimal FeeAmount,
+        decimal TotalAmount,
         string DebitAccount,
         string CreditAccount,
         string? CounterpartyKind,
         string? CounterpartyId,
         bool ClearedOpenItem,
-        Guid? ClearedOpenItemId
+        Guid? ClearedOpenItemId,
+        bool IncludedFee
     );
 
     #endregion
