@@ -342,6 +342,45 @@ public sealed class MoneytreePostingService
             return (PostingOutcome.Skipped, null, "amount is not positive");
         }
 
+        // ====== 智能处理：对手方识别 → 未清项清账 → 历史学习 → 兜底科目 ======
+        // 如果没有配对的手续费（手续费由规则处理），先尝试智能处理
+        if (pairedFee is null)
+        {
+            try
+            {
+                var smartResult = await TrySmartProcessAsync(conn, tx, companyCode, row, user, postingRunId, ct);
+                if (smartResult != null && smartResult.VoucherId.HasValue)
+                {
+                    // 智能处理成功
+                    await UpdateStatusAsync(conn, tx, row.Id, "posted", 
+                        smartResult.ClearedOpenItem ? "智能清账記帳" : "智能記帳",
+                        smartResult.VoucherId, smartResult.VoucherNo, 
+                        null, "SmartPosting", smartResult.ClearedOpenItemId, postingRunId, ct);
+                    
+                    var smartVoucherInfo = new PostedVoucherInfo(
+                        row.Id,
+                        smartResult.VoucherId,
+                        smartResult.VoucherNo,
+                        smartResult.Amount,
+                        row.Description,
+                        "SmartPosting",
+                        null
+                    );
+                    
+                    _logger.LogInformation("[MoneytreePosting] Smart processing succeeded for transaction {Id}: voucher={VoucherNo}, cleared={Cleared}",
+                        row.Id, smartResult.VoucherNo, smartResult.ClearedOpenItem);
+                    
+                    return (PostingOutcome.Posted, smartVoucherInfo, null);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[MoneytreePosting] Smart processing failed for transaction {Id}, falling back to rules", row.Id);
+                // 智能处理失败，继续使用规则处理
+            }
+        }
+        // ====== 智能处理结束，继续规则匹配 ======
+
         var rule = FindMatchingRule(rules, row);
         if (rule is null)
         {
@@ -1965,6 +2004,924 @@ LIMIT 1";
 
         return !activeOnly;
     }
+
+    #region Smart Counterparty Identification and Open Item Matching
+
+    // 银行摘要中常见的转账前缀词
+    private static readonly string[] TransferPrefixes = { "振込", "フリコミ", "ﾌﾘｺﾐ", "振替", "フリカエ", "ﾌﾘｶｴ" };
+
+    /// <summary>
+    /// 从银行摘要中提取对手方名称
+    /// 例如：「振込 ヤマナカ ヨシマサ」→「ヤマナカ ヨシマサ」
+    /// </summary>
+    private static string ExtractCounterpartyNameFromDescription(string? description)
+    {
+        if (string.IsNullOrWhiteSpace(description)) return string.Empty;
+        var result = description.Trim();
+        
+        // 移除转账前缀
+        foreach (var prefix in TransferPrefixes)
+        {
+            if (result.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                result = result.Substring(prefix.Length).TrimStart();
+                break; // 只移除一个前缀
+            }
+        }
+        
+        // 移除括号内容（如账号信息）
+        result = Regex.Replace(result, @"\(.+?\)", "").Trim();
+        // 移除尾部数字（可能是账号或金额）
+        result = Regex.Replace(result, @"\s+\d+$", "").Trim();
+        
+        return result;
+    }
+
+    /// <summary>
+    /// 智能识别对手方 - 根据交易方向按优先级匹配
+    /// 出金：员工 → 供应商 → 未识别
+    /// 入金：客户 → 未识别
+    /// </summary>
+    private async Task<SmartCounterpartyResult?> IdentifyCounterpartySmartAsync(
+        NpgsqlConnection conn,
+        string companyCode,
+        MoneytreeTransactionRow row,
+        bool isWithdrawal,
+        CancellationToken ct)
+    {
+        var extractedName = ExtractCounterpartyNameFromDescription(row.Description);
+        if (string.IsNullOrWhiteSpace(extractedName))
+        {
+            _logger.LogInformation("[SmartPosting] No counterparty name extracted from description: {Desc}", row.Description);
+            return null;
+        }
+
+        _logger.LogInformation("[SmartPosting] Identifying counterparty: extractedName={Name}, isWithdrawal={IsWithdrawal}", 
+            extractedName, isWithdrawal);
+
+        if (isWithdrawal)
+        {
+            // 出金：员工 → 供应商 → 未识别
+            var employee = await MatchEmployeeByNameAsync(conn, companyCode, extractedName, row, ct);
+            if (employee.HasValue)
+            {
+                _logger.LogInformation("[SmartPosting] Matched employee: {Code} ({Name})", employee.Value.Id, employee.Value.Name);
+                return new SmartCounterpartyResult("employee", employee.Value.Id, employee.Value.Name, "debit");
+            }
+
+            var vendor = await MatchBusinessPartnerByNameAsync(conn, companyCode, "vendor", extractedName, ct);
+            if (vendor.HasValue)
+            {
+                _logger.LogInformation("[SmartPosting] Matched vendor: {Code} ({Name})", vendor.Value.Id, vendor.Value.Name);
+                return new SmartCounterpartyResult("vendor", vendor.Value.Id, vendor.Value.Name, "debit");
+            }
+        }
+        else
+        {
+            // 入金：客户 → 未识别
+            var customer = await MatchBusinessPartnerByNameAsync(conn, companyCode, "customer", extractedName, ct);
+            if (customer.HasValue)
+            {
+                _logger.LogInformation("[SmartPosting] Matched customer: {Code} ({Name})", customer.Value.Id, customer.Value.Name);
+                return new SmartCounterpartyResult("customer", customer.Value.Id, customer.Value.Name, "credit");
+            }
+        }
+
+        _logger.LogInformation("[SmartPosting] No counterparty matched for: {Name}", extractedName);
+        return null;
+    }
+
+    /// <summary>
+    /// 通过名称匹配员工
+    /// </summary>
+    private async Task<(string Id, string? Name)?> MatchEmployeeByNameAsync(
+        NpgsqlConnection conn,
+        string companyCode,
+        string searchName,
+        MoneytreeTransactionRow row,
+        CancellationToken ct)
+    {
+        var referenceDate = (row.TransactionDate ?? row.ImportedAt.UtcDateTime).Date;
+        var normalizedSearch = NormalizePartnerText(searchName);
+        
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT employee_code, payload 
+            FROM employees 
+            WHERE company_code = $1
+            ORDER BY updated_at DESC
+            LIMIT 100";
+        cmd.Parameters.AddWithValue(companyCode);
+
+        var candidates = new List<(string Code, string? Name, string? NameKana, JsonElement Root, double Score)>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            var code = reader.GetString(0);
+            var payloadStr = reader.GetString(1);
+            using var doc = JsonDocument.Parse(payloadStr);
+            var root = doc.RootElement.Clone();
+            
+            // 检查雇佣状态
+            if (!EmploymentMatches(root, null, true, referenceDate))
+                continue;
+
+            var nameKanji = root.TryGetProperty("nameKanji", out var nk) && nk.ValueKind == JsonValueKind.String ? nk.GetString() : null;
+            var name = root.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : nameKanji;
+            var nameKana = root.TryGetProperty("nameKana", out var nkn) && nkn.ValueKind == JsonValueKind.String ? nkn.GetString() : null;
+
+            // 计算匹配分数 - 优先使用片假名匹配
+            double score = 0;
+            if (!string.IsNullOrWhiteSpace(nameKana))
+            {
+                var normalizedKana = NormalizePartnerText(nameKana);
+                if (string.Equals(normalizedSearch, normalizedKana, StringComparison.OrdinalIgnoreCase))
+                    score = 1.0;
+                else if (normalizedSearch.Contains(normalizedKana, StringComparison.OrdinalIgnoreCase) ||
+                         normalizedKana.Contains(normalizedSearch, StringComparison.OrdinalIgnoreCase))
+                    score = 0.9;
+            }
+            if (score < 0.5 && !string.IsNullOrWhiteSpace(name))
+            {
+                score = Math.Max(score, SimilarityScore(searchName, name));
+            }
+
+            if (score >= 0.6)
+            {
+                candidates.Add((code, name, nameKana, root, score));
+            }
+        }
+
+        if (candidates.Count == 0) return null;
+
+        // 选择最高分且有足够差距的
+        var sorted = candidates.OrderByDescending(c => c.Score).ToList();
+        var best = sorted[0];
+        var second = sorted.Count > 1 ? sorted[1].Score : 0;
+        
+        if (best.Score >= 0.7 && (best.Score - second) >= 0.1)
+        {
+            return (best.Code, best.Name);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 通过名称匹配业务伙伴（客户或供应商）
+    /// </summary>
+    private async Task<(string Id, string? Name)?> MatchBusinessPartnerByNameAsync(
+        NpgsqlConnection conn,
+        string companyCode,
+        string type,
+        string searchName,
+        CancellationToken ct)
+    {
+        var isCustomer = string.Equals(type, "customer", StringComparison.OrdinalIgnoreCase);
+        var flagField = isCustomer ? "isCustomer" : "isVendor";
+        
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $@"
+            SELECT payload->>'code', payload 
+            FROM businesspartners 
+            WHERE company_code = $1
+              AND (payload->>'{flagField}')::boolean = true
+            ORDER BY updated_at DESC
+            LIMIT 200";
+        cmd.Parameters.AddWithValue(companyCode);
+
+        var candidates = new List<(string Code, string? Name, double Score)>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            var code = reader.IsDBNull(0) ? null : reader.GetString(0);
+            if (string.IsNullOrWhiteSpace(code)) continue;
+            
+            var payloadStr = reader.GetString(1);
+            using var doc = JsonDocument.Parse(payloadStr);
+            var root = doc.RootElement;
+
+            var name = root.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null;
+            var nameKana = root.TryGetProperty("nameKana", out var nk) && nk.ValueKind == JsonValueKind.String ? nk.GetString() : null;
+
+            // 计算匹配分数
+            double score = 0;
+            if (!string.IsNullOrWhiteSpace(nameKana))
+            {
+                score = Math.Max(score, SimilarityScore(searchName, nameKana));
+            }
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                score = Math.Max(score, SimilarityScore(searchName, name));
+            }
+
+            if (score >= 0.6)
+            {
+                candidates.Add((code, name, score));
+            }
+        }
+
+        if (candidates.Count == 0) return null;
+
+        var sorted = candidates.OrderByDescending(c => c.Score).ToList();
+        var best = sorted[0];
+        var second = sorted.Count > 1 ? sorted[1].Score : 0;
+        
+        if (best.Score >= 0.7 && (best.Score - second) >= 0.1)
+        {
+            return (best.Code, best.Name);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 根据对手方查找匹配的未清项
+    /// </summary>
+    private async Task<SmartOpenItemMatchResult?> FindOpenItemsForCounterpartyAsync(
+        NpgsqlConnection conn,
+        NpgsqlTransaction? tx,
+        string companyCode,
+        SmartCounterpartyResult counterparty,
+        decimal amount,
+        bool isWithdrawal,
+        DateTime transactionDate,
+        CancellationToken ct)
+    {
+        // 确定要查找的未清项方向
+        // 出金 → 找贷方未清项（负债：未払給与、買掛金等）
+        // 入金 → 找借方未清项（资产：売掛金等）
+        var targetDirection = isWithdrawal ? "CR" : "DR";
+
+        _logger.LogInformation("[SmartPosting] Finding open items: counterparty={Kind}:{Id}, amount={Amount}, direction={Dir}",
+            counterparty.Kind, counterparty.Id, amount, targetDirection);
+
+        await using var cmd = conn.CreateCommand();
+        if (tx != null) cmd.Transaction = tx;
+        
+        // 根据对手方类型确定查询的 partner_id 字段
+        var partnerIdField = counterparty.Kind.ToLowerInvariant() switch
+        {
+            "employee" => "employee_id",
+            "vendor" => "partner_id",
+            "customer" => "partner_id",
+            _ => "partner_id"
+        };
+
+        cmd.CommandText = $@"
+            SELECT id, account_code, residual_amount, posting_date, voucher_no, drcr
+            FROM open_items
+            WHERE company_code = $1
+              AND {partnerIdField} = $2
+              AND drcr = $3
+              AND ABS(residual_amount) > 0.01
+              AND posting_date <= $4
+            ORDER BY ABS(ABS(residual_amount) - $5) ASC, posting_date DESC
+            LIMIT 20";
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue(counterparty.Id);
+        cmd.Parameters.AddWithValue(targetDirection);
+        cmd.Parameters.AddWithValue(transactionDate);
+        cmd.Parameters.AddWithValue(amount);
+
+        var candidates = new List<SmartOpenItemCandidate>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            candidates.Add(new SmartOpenItemCandidate(
+                reader.GetGuid(0),
+                reader.GetString(1),
+                reader.GetDecimal(2),
+                reader.GetDateTime(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.GetString(5)
+            ));
+        }
+
+        if (candidates.Count == 0)
+        {
+            _logger.LogInformation("[SmartPosting] No open items found for counterparty {Kind}:{Id}", counterparty.Kind, counterparty.Id);
+            return null;
+        }
+
+        // 策略1: 精确匹配
+        var exactMatch = candidates.FirstOrDefault(c => Math.Abs(Math.Abs(c.ResidualAmount) - amount) < 0.01m);
+        if (exactMatch != null)
+        {
+            _logger.LogInformation("[SmartPosting] Exact match found: openItemId={Id}, account={Account}, amount={Amount}",
+                exactMatch.Id, exactMatch.AccountCode, exactMatch.ResidualAmount);
+            return new SmartOpenItemMatchResult(
+                new List<SmartOpenItemCandidate> { exactMatch },
+                exactMatch.AccountCode,
+                OpenItemMatchType.Exact,
+                0m
+            );
+        }
+
+        // 策略2: 组合匹配 - 尝试找到多个未清项组合等于交易金额
+        var combination = FindSmartOpenItemCombination(candidates, amount);
+        if (combination != null && combination.Count > 0)
+        {
+            var totalAmount = combination.Sum(c => Math.Abs(c.ResidualAmount));
+            if (Math.Abs(totalAmount - amount) < 0.01m)
+            {
+                _logger.LogInformation("[SmartPosting] Combination match found: {Count} items, total={Total}",
+                    combination.Count, totalAmount);
+                return new SmartOpenItemMatchResult(
+                    combination,
+                    combination[0].AccountCode,
+                    OpenItemMatchType.Combination,
+                    0m
+                );
+            }
+        }
+
+        // 策略3: 允许小额差异（可能是手续费）- 差异不超过5%且不超过1000
+        var tolerance = Math.Min(amount * 0.05m, 1000m);
+        var closeMatch = candidates.FirstOrDefault(c => Math.Abs(Math.Abs(c.ResidualAmount) - amount) <= tolerance);
+        if (closeMatch != null)
+        {
+            var diff = Math.Abs(closeMatch.ResidualAmount) - amount;
+            _logger.LogInformation("[SmartPosting] Close match found with tolerance: openItemId={Id}, diff={Diff}",
+                closeMatch.Id, diff);
+            return new SmartOpenItemMatchResult(
+                new List<SmartOpenItemCandidate> { closeMatch },
+                closeMatch.AccountCode,
+                OpenItemMatchType.WithTolerance,
+                diff
+            );
+        }
+
+        _logger.LogInformation("[SmartPosting] No matching open items found within tolerance");
+        return null;
+    }
+
+    /// <summary>
+    /// 尝试找到未清项的组合，使其总额等于目标金额
+    /// </summary>
+    private static List<SmartOpenItemCandidate>? FindSmartOpenItemCombination(List<SmartOpenItemCandidate> candidates, decimal targetAmount)
+    {
+        // 简单的贪心算法：按金额排序后尝试组合
+        var sorted = candidates.OrderByDescending(c => Math.Abs(c.ResidualAmount)).ToList();
+        var result = new List<SmartOpenItemCandidate>();
+        var remaining = targetAmount;
+
+        foreach (var item in sorted)
+        {
+            var itemAmount = Math.Abs(item.ResidualAmount);
+            if (itemAmount <= remaining + 0.01m)
+            {
+                result.Add(item);
+                remaining -= itemAmount;
+                if (remaining < 0.01m)
+                    break;
+            }
+        }
+
+        if (Math.Abs(remaining) < 0.01m && result.Count > 0)
+            return result;
+
+        return null;
+    }
+
+    /// <summary>
+    /// 从银行明细关联的历史凭证中学习科目
+    /// </summary>
+    private async Task<LearnedAccountInfo?> LearnFromBankLinkedVouchersAsync(
+        NpgsqlConnection conn,
+        string companyCode,
+        string? counterpartyId,
+        string? counterpartyKind,
+        string searchDescription,
+        bool isWithdrawal,
+        CancellationToken ct)
+    {
+        _logger.LogInformation("[SmartPosting] Learning from bank-linked vouchers: counterpartyId={Id}, kind={Kind}, isWithdrawal={IsWithdrawal}",
+            counterpartyId, counterpartyKind, isWithdrawal);
+
+        await using var cmd = conn.CreateCommand();
+        
+        // 只查找银行明细关联的凭证
+        var sql = @"
+            SELECT v.payload, mt.description
+            FROM vouchers v
+            INNER JOIN moneytree_transactions mt ON mt.voucher_id = v.id AND mt.company_code = v.company_code
+            WHERE v.company_code = $1
+              AND mt.description ILIKE $2
+              AND v.created_at > now() - interval '1 year'";
+        
+        var paramIdx = 3;
+        
+        // 如果有对手方ID，优先按对手方筛选
+        if (!string.IsNullOrWhiteSpace(counterpartyId) && !string.IsNullOrWhiteSpace(counterpartyKind))
+        {
+            var jsonPath = counterpartyKind.ToLowerInvariant() switch
+            {
+                "customer" => "customerId",
+                "vendor" => "vendorId",
+                "employee" => "employeeId",
+                _ => null
+            };
+            if (jsonPath != null)
+            {
+                sql += $@"
+              AND EXISTS (
+                  SELECT 1 FROM jsonb_array_elements(v.payload->'lines') AS line
+                  WHERE line->>'{jsonPath}' = ${paramIdx}
+              )";
+                paramIdx++;
+            }
+        }
+        
+        sql += " ORDER BY v.created_at DESC LIMIT 10";
+        
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue("%" + ExtractCounterpartyNameFromDescription(searchDescription) + "%");
+        if (!string.IsNullOrWhiteSpace(counterpartyId) && !string.IsNullOrWhiteSpace(counterpartyKind))
+        {
+            cmd.Parameters.AddWithValue(counterpartyId);
+        }
+
+        var accountUsage = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            var payloadStr = reader.GetString(0);
+            using var doc = JsonDocument.Parse(payloadStr);
+            var root = doc.RootElement;
+            
+            if (!root.TryGetProperty("lines", out var lines) || lines.ValueKind != JsonValueKind.Array)
+                continue;
+
+            foreach (var line in lines.EnumerateArray())
+            {
+                var drcr = line.TryGetProperty("drcr", out var drcrEl) && drcrEl.ValueKind == JsonValueKind.String
+                    ? drcrEl.GetString() : null;
+                var accountCode = line.TryGetProperty("accountCode", out var accEl) && accEl.ValueKind == JsonValueKind.String
+                    ? accEl.GetString() : null;
+
+                if (string.IsNullOrWhiteSpace(accountCode)) continue;
+
+                // 出金：学习借方科目（银行在贷方）
+                // 入金：学习贷方科目（银行在借方）
+                var targetDrcr = isWithdrawal ? "DR" : "CR";
+                if (string.Equals(drcr, targetDrcr, StringComparison.OrdinalIgnoreCase))
+                {
+                    // 排除银行科目本身（通常以1开头的流动资产）
+                    if (!accountCode.StartsWith("1") || accountCode.StartsWith("13") || accountCode.StartsWith("14") || accountCode.StartsWith("15"))
+                    {
+                        accountUsage[accountCode] = accountUsage.GetValueOrDefault(accountCode, 0) + 1;
+                    }
+                }
+            }
+        }
+
+        if (accountUsage.Count == 0)
+        {
+            _logger.LogInformation("[SmartPosting] No historical account usage found");
+            return null;
+        }
+
+        // 选择使用次数最多的科目
+        var mostUsed = accountUsage.OrderByDescending(kv => kv.Value).First();
+        var accountName = await GetAccountNameAsync(conn, companyCode, mostUsed.Key, ct);
+        
+        _logger.LogInformation("[SmartPosting] Learned account from history: {Code} ({Name}), usage={Count}",
+            mostUsed.Key, accountName, mostUsed.Value);
+
+        return new LearnedAccountInfo(mostUsed.Key, accountName, mostUsed.Value);
+    }
+
+    /// <summary>
+    /// 根据科目名称查找科目代码（复用 LookupAccountTool 的逻辑）
+    /// </summary>
+    private async Task<string?> LookupAccountByNameAsync(
+        NpgsqlConnection conn,
+        string companyCode,
+        string accountName,
+        CancellationToken ct)
+    {
+        // 精确名称匹配
+        await using var cmd1 = conn.CreateCommand();
+        cmd1.CommandText = "SELECT account_code FROM accounts WHERE company_code=$1 AND LOWER(payload->>'name') = LOWER($2) LIMIT 1";
+        cmd1.Parameters.AddWithValue(companyCode);
+        cmd1.Parameters.AddWithValue(accountName);
+        var result = await cmd1.ExecuteScalarAsync(ct);
+        if (result is string code1 && !string.IsNullOrWhiteSpace(code1))
+            return code1;
+
+        // 别名匹配
+        await using var cmd2 = conn.CreateCommand();
+        cmd2.CommandText = @"
+            SELECT account_code FROM accounts 
+            WHERE company_code=$1 AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements_text(COALESCE(payload->'aliases','[]'::jsonb)) AS alias
+                WHERE LOWER(alias) = LOWER($2)
+            ) LIMIT 1";
+        cmd2.Parameters.AddWithValue(companyCode);
+        cmd2.Parameters.AddWithValue(accountName);
+        result = await cmd2.ExecuteScalarAsync(ct);
+        if (result is string code2 && !string.IsNullOrWhiteSpace(code2))
+            return code2;
+
+        // 模糊匹配
+        await using var cmd3 = conn.CreateCommand();
+        cmd3.CommandText = @"
+            SELECT account_code FROM accounts 
+            WHERE company_code=$1 AND (
+                payload->>'name' ILIKE $2
+                OR EXISTS (
+                    SELECT 1 FROM jsonb_array_elements_text(COALESCE(payload->'aliases','[]'::jsonb)) AS alias
+                    WHERE alias ILIKE $2
+                )
+            ) ORDER BY account_code LIMIT 1";
+        cmd3.Parameters.AddWithValue(companyCode);
+        cmd3.Parameters.AddWithValue("%" + accountName + "%");
+        result = await cmd3.ExecuteScalarAsync(ct);
+        if (result is string code3 && !string.IsNullOrWhiteSpace(code3))
+            return code3;
+
+        return null;
+    }
+
+    /// <summary>
+    /// 获取兜底科目代码
+    /// </summary>
+    private async Task<string?> GetFallbackAccountCodeAsync(
+        NpgsqlConnection conn,
+        string companyCode,
+        bool isWithdrawal,
+        CancellationToken ct)
+    {
+        // 出金兜底：仮払金
+        // 入金兜底：仮受金
+        var accountNames = isWithdrawal
+            ? new[] { "仮払金", "仮払費用", "立替金" }
+            : new[] { "仮受金", "前受金", "預り金" };
+
+        foreach (var name in accountNames)
+        {
+            var code = await LookupAccountByNameAsync(conn, companyCode, name, ct);
+            if (!string.IsNullOrWhiteSpace(code))
+            {
+                _logger.LogInformation("[SmartPosting] Found fallback account: {Name} -> {Code}", name, code);
+                return code;
+            }
+        }
+
+        _logger.LogWarning("[SmartPosting] No fallback account found for {Type}", isWithdrawal ? "withdrawal" : "deposit");
+        return null;
+    }
+
+    // 智能识别结果
+    private sealed record SmartCounterpartyResult(string Kind, string Id, string? Name, string AssignLine);
+    
+    // 智能处理的未清项候选
+    private sealed record SmartOpenItemCandidate(Guid Id, string AccountCode, decimal ResidualAmount, DateTime PostingDate, string? VoucherNo, string Drcr);
+    
+    // 智能处理的未清项匹配结果
+    private sealed record SmartOpenItemMatchResult(List<SmartOpenItemCandidate> Items, string AccountCode, OpenItemMatchType MatchType, decimal Difference);
+    
+    // 匹配类型
+    private enum OpenItemMatchType { Exact, Combination, WithTolerance }
+    
+    // 历史学习结果
+    private sealed record LearnedAccountInfo(string AccountCode, string? AccountName, int UsageCount);
+
+    /// <summary>
+    /// 智能处理银行明细记账 - 主入口
+    /// 处理流程：对手方识别 → 未清项清账 → 历史学习 → 兜底科目
+    /// </summary>
+    private async Task<SmartPostingResult?> TrySmartProcessAsync(
+        NpgsqlConnection conn,
+        NpgsqlTransaction tx,
+        string companyCode,
+        MoneytreeTransactionRow row,
+        Auth.UserCtx user,
+        Guid postingRunId,
+        CancellationToken ct)
+    {
+        var amount = row.GetPositiveAmount();
+        if (amount <= 0m) return null;
+
+        // 判断交易方向
+        var hasWithdrawalAmount = (row.WithdrawalAmount ?? 0m) < 0m;
+        var hasDepositAmount = (row.DepositAmount ?? 0m) > 0m;
+        bool isWithdrawal;
+        if (hasDepositAmount || hasWithdrawalAmount)
+        {
+            isWithdrawal = hasWithdrawalAmount && !hasDepositAmount;
+        }
+        else
+        {
+            var net = row.NetAmount ?? 0m;
+            isWithdrawal = net < 0m;
+        }
+
+        var transactionDate = (row.TransactionDate ?? row.ImportedAt.UtcDateTime).Date;
+        
+        _logger.LogInformation("[SmartPosting] Starting smart processing: txId={Id}, amount={Amount}, isWithdrawal={IsWithdrawal}, desc={Desc}",
+            row.Id, amount, isWithdrawal, row.Description);
+
+        // 跳过手续费明细 - 这些由现有规则处理
+        if (IsBankFeeTransaction(row.Description))
+        {
+            _logger.LogInformation("[SmartPosting] Skipping bank fee transaction, delegating to rules");
+            return null;
+        }
+
+        // Step 1: 识别对手方
+        var counterparty = await IdentifyCounterpartySmartAsync(conn, companyCode, row, isWithdrawal, ct);
+        
+        string? targetAccountCode = null;
+        string? targetAccountName = null;
+        SmartOpenItemMatchResult? openItemMatch = null;
+        bool clearedOpenItem = false;
+
+        // Step 2: 如果识别到对手方，查找未清项
+        if (counterparty != null)
+        {
+            openItemMatch = await FindOpenItemsForCounterpartyAsync(
+                conn, tx, companyCode, counterparty, amount, isWithdrawal, transactionDate, ct);
+            
+            if (openItemMatch != null)
+            {
+                // 使用未清项的科目
+                targetAccountCode = openItemMatch.AccountCode;
+                targetAccountName = await GetAccountNameAsync(conn, companyCode, targetAccountCode, ct);
+                clearedOpenItem = true;
+                _logger.LogInformation("[SmartPosting] Will clear open item(s): account={Account}, matchType={Type}",
+                    targetAccountCode, openItemMatch.MatchType);
+            }
+        }
+
+        // Step 3: 如果没有未清项，尝试历史学习
+        if (targetAccountCode == null)
+        {
+            var learned = await LearnFromBankLinkedVouchersAsync(
+                conn, companyCode,
+                counterparty?.Id,
+                counterparty?.Kind,
+                row.Description ?? "",
+                isWithdrawal,
+                ct);
+            
+            if (learned != null)
+            {
+                targetAccountCode = learned.AccountCode;
+                targetAccountName = learned.AccountName;
+                _logger.LogInformation("[SmartPosting] Using learned account: {Code} ({Name})", targetAccountCode, targetAccountName);
+            }
+        }
+
+        // Step 4: 如果还是没有，使用兜底科目
+        if (targetAccountCode == null)
+        {
+            targetAccountCode = await GetFallbackAccountCodeAsync(conn, companyCode, isWithdrawal, ct);
+            if (targetAccountCode != null)
+            {
+                targetAccountName = await GetAccountNameAsync(conn, companyCode, targetAccountCode, ct);
+                _logger.LogInformation("[SmartPosting] Using fallback account: {Code} ({Name})", targetAccountCode, targetAccountName);
+            }
+        }
+
+        // 如果仍然没有找到科目，返回 null 让现有规则处理
+        if (string.IsNullOrWhiteSpace(targetAccountCode))
+        {
+            _logger.LogWarning("[SmartPosting] No account found, delegating to rules");
+            return null;
+        }
+
+        // 获取银行科目
+        var bankAccountCode = await ResolveBankAccountCodeAsync(companyCode, row, ct);
+        if (string.IsNullOrWhiteSpace(bankAccountCode))
+        {
+            _logger.LogWarning("[SmartPosting] No bank account found, delegating to rules");
+            return null;
+        }
+        var bankAccountName = await GetAccountNameAsync(conn, companyCode, bankAccountCode, ct);
+
+        // 构建凭证
+        string debitAccount, creditAccount;
+        string? debitAccountName, creditAccountName;
+        var debitMeta = new LineMeta();
+        var creditMeta = new LineMeta();
+
+        if (isWithdrawal)
+        {
+            // 出金：借方=目标科目（未払給与等），贷方=银行
+            debitAccount = targetAccountCode;
+            debitAccountName = targetAccountName;
+            creditAccount = bankAccountCode;
+            creditAccountName = bankAccountName;
+            
+            // 对手方信息放在借方
+            if (counterparty != null)
+            {
+                ApplyCounterpartyToLineMeta(debitMeta, counterparty);
+            }
+        }
+        else
+        {
+            // 入金：借方=银行，贷方=目标科目（売掛金等）
+            debitAccount = bankAccountCode;
+            debitAccountName = bankAccountName;
+            creditAccount = targetAccountCode;
+            creditAccountName = targetAccountName;
+            
+            // 对手方信息放在贷方
+            if (counterparty != null)
+            {
+                ApplyCounterpartyToLineMeta(creditMeta, counterparty);
+            }
+        }
+
+        // 应用 paymentDate 规则
+        var paymentDateForLine = transactionDate;
+        if (counterparty != null)
+        {
+            if (isWithdrawal)
+                debitMeta.PaymentDate = paymentDateForLine;
+            else
+                creditMeta.PaymentDate = paymentDateForLine;
+        }
+
+        // 生成摘要
+        var summary = $"{(isWithdrawal ? "支払" : "入金")} {row.Description}";
+        var voucherType = isWithdrawal ? "OT" : "IN";
+
+        // 构建凭证 payload
+        var postingDate = transactionDate.ToString("yyyy-MM-dd");
+        var linesArray = new JsonArray();
+        var lineNo = 1;
+
+        // 借方行
+        var debitLine = new JsonObject
+        {
+            ["lineNo"] = lineNo++,
+            ["accountCode"] = debitAccount,
+            ["drcr"] = "DR",
+            ["amount"] = amount,
+            ["note"] = row.Description ?? ""
+        };
+        if (!string.IsNullOrWhiteSpace(debitMeta.CustomerId))
+            debitLine["customerId"] = debitMeta.CustomerId;
+        if (!string.IsNullOrWhiteSpace(debitMeta.VendorId))
+            debitLine["vendorId"] = debitMeta.VendorId;
+        if (!string.IsNullOrWhiteSpace(debitMeta.EmployeeId))
+            debitLine["employeeId"] = debitMeta.EmployeeId;
+        if (debitMeta.PaymentDate.HasValue)
+            debitLine["paymentDate"] = debitMeta.PaymentDate.Value.ToString("yyyy-MM-dd");
+        linesArray.Add(debitLine);
+
+        // 贷方行
+        var creditLine = new JsonObject
+        {
+            ["lineNo"] = lineNo++,
+            ["accountCode"] = creditAccount,
+            ["drcr"] = "CR",
+            ["amount"] = amount,
+            ["note"] = row.Description ?? ""
+        };
+        if (!string.IsNullOrWhiteSpace(creditMeta.CustomerId))
+            creditLine["customerId"] = creditMeta.CustomerId;
+        if (!string.IsNullOrWhiteSpace(creditMeta.VendorId))
+            creditLine["vendorId"] = creditMeta.VendorId;
+        if (!string.IsNullOrWhiteSpace(creditMeta.EmployeeId))
+            creditLine["employeeId"] = creditMeta.EmployeeId;
+        if (creditMeta.PaymentDate.HasValue)
+            creditLine["paymentDate"] = creditMeta.PaymentDate.Value.ToString("yyyy-MM-dd");
+        linesArray.Add(creditLine);
+
+        var payloadObj = new JsonObject
+        {
+            ["header"] = new JsonObject
+            {
+                ["postingDate"] = postingDate,
+                ["voucherType"] = voucherType,
+                ["summary"] = summary,
+                ["currency"] = row.Currency ?? "JPY"
+            },
+            ["lines"] = linesArray
+        };
+
+        // 如果有清账信息，添加 clearings
+        if (clearedOpenItem && openItemMatch != null)
+        {
+            var clearingsArray = new JsonArray();
+            foreach (var item in openItemMatch.Items)
+            {
+                clearingsArray.Add(new JsonObject
+                {
+                    ["openItemId"] = item.Id.ToString(),
+                    ["amount"] = Math.Abs(item.ResidualAmount)
+                });
+            }
+            payloadObj["clearings"] = clearingsArray;
+        }
+
+        // 创建凭证
+        Guid? voucherId = null;
+        string? voucherNo = null;
+        try
+        {
+            var payloadJson = payloadObj.ToJsonString();
+            using var payloadDoc = JsonDocument.Parse(payloadJson);
+            var (json, _) = await _financeService.CreateVoucher(
+                companyCode, "vouchers", payloadDoc.RootElement, user,
+                VoucherSource.Auto, targetUserId: user.UserId);
+            (voucherId, voucherNo) = ExtractVoucherInfo(json);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[SmartPosting] Failed to create voucher");
+            return null;
+        }
+
+        // 执行清账
+        Guid? clearedOpenItemId = null;
+        if (clearedOpenItem && openItemMatch != null && voucherId.HasValue)
+        {
+            try
+            {
+                // 对于精确匹配或单个未清项，使用现有的清账逻辑
+                if (openItemMatch.Items.Count == 1)
+                {
+                    var entries = new List<OpenItemReservationEntry> { new OpenItemReservationEntry(openItemMatch.Items[0].Id, amount) };
+                    var reservation = new OpenItemReservation(entries, amount);
+                    clearedOpenItemId = await ApplyOpenItemClearingAsync(conn, tx, reservation, ct);
+                }
+                else
+                {
+                    // 多个未清项的情况，逐个清账
+                    foreach (var item in openItemMatch.Items)
+                    {
+                        var entries = new List<OpenItemReservationEntry> { new OpenItemReservationEntry(item.Id, Math.Abs(item.ResidualAmount)) };
+                        var itemReservation = new OpenItemReservation(entries, Math.Abs(item.ResidualAmount));
+                        await ApplyOpenItemClearingAsync(conn, tx, itemReservation, ct);
+                    }
+                    clearedOpenItemId = openItemMatch.Items[0].Id;
+                }
+                _logger.LogInformation("[SmartPosting] Cleared open item(s) successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[SmartPosting] Failed to clear open items");
+                // 清账失败不影响凭证创建，继续
+            }
+        }
+
+        _logger.LogInformation("[SmartPosting] Successfully created voucher: {VoucherNo}, clearedOpenItem={Cleared}",
+            voucherNo, clearedOpenItem);
+
+        return new SmartPostingResult(
+            voucherId,
+            voucherNo,
+            amount,
+            debitAccount,
+            creditAccount,
+            counterparty?.Kind,
+            counterparty?.Id,
+            clearedOpenItem,
+            clearedOpenItemId
+        );
+    }
+
+    /// <summary>
+    /// 将 SmartCounterpartyResult 应用到 LineMeta
+    /// </summary>
+    private static void ApplyCounterpartyToLineMeta(LineMeta meta, SmartCounterpartyResult result)
+    {
+        switch (result.Kind.ToLowerInvariant())
+        {
+            case "customer":
+                meta.CustomerId ??= result.Id;
+                break;
+            case "vendor":
+                meta.VendorId ??= result.Id;
+                break;
+            case "employee":
+                meta.EmployeeId ??= result.Id;
+                break;
+        }
+    }
+
+    // 智能处理结果
+    private sealed record SmartPostingResult(
+        Guid? VoucherId,
+        string? VoucherNo,
+        decimal Amount,
+        string DebitAccount,
+        string CreditAccount,
+        string? CounterpartyKind,
+        string? CounterpartyId,
+        bool ClearedOpenItem,
+        Guid? ClearedOpenItemId
+    );
+
+    #endregion
 
     private static JsonDocument BuildVoucherPayload(
         MoneytreeAction action,
