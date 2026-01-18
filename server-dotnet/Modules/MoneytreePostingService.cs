@@ -1218,31 +1218,6 @@ LIMIT 1";
             }
         }
 
-        if (matcher.TryGetPropertyValue("bankNameIn", out var bankNode) &&
-            bankNode is JsonArray bankArray &&
-            !MatchesAny(row.BankName, bankArray))
-        {
-            return false;
-        }
-
-        if (matcher.TryGetPropertyValue("accountNameIn", out var accNameNode) &&
-            accNameNode is JsonArray accNameArray &&
-            !MatchesAny(row.AccountName, accNameArray))
-        {
-            return false;
-        }
-
-        if (matcher.TryGetPropertyValue("accountNumberEquals", out var accNumNode) &&
-            accNumNode is JsonValue accNumValue &&
-            accNumValue.TryGetValue<string>(out var expectedAccountNumber) &&
-            !string.IsNullOrWhiteSpace(expectedAccountNumber))
-        {
-            if (!string.Equals(row.AccountNumber ?? string.Empty, expectedAccountNumber.Trim(), StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-        }
-
         var amount = row.GetPositiveAmount();
         if (matcher.TryGetPropertyValue("amountMin", out var minNode) &&
             minNode is not null &&
@@ -1286,21 +1261,6 @@ LIMIT 1";
             }
         }
         return true;
-    }
-
-    private static bool MatchesAny(string? source, JsonArray values)
-    {
-        if (source is null) return false;
-        foreach (var node in values)
-        {
-            if (node is not JsonValue val || !val.TryGetValue<string>(out var target) || string.IsNullOrWhiteSpace(target))
-                continue;
-            if (string.Equals(source.Trim(), target.Trim(), StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static bool TryGetDecimal(JsonNode node, out decimal value)
