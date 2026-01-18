@@ -51,11 +51,17 @@ public sealed class AgentKitService
     private static string NormalizeLanguage(string? language)
     {
         if (string.Equals(language, "zh", StringComparison.OrdinalIgnoreCase)) return "zh";
+        if (string.Equals(language, "en", StringComparison.OrdinalIgnoreCase)) return "en";
         return "ja";
     }
 
-    private static string Localize(string language, string ja, string zh) =>
-        string.Equals(language, "zh", StringComparison.OrdinalIgnoreCase) ? zh : ja;
+    private static string Localize(string language, string ja, string zh, string? en = null) =>
+        language switch
+        {
+            "zh" => zh,
+            "en" => en ?? ja,
+            _ => ja
+        };
 
     public AgentKitService(
         NpgsqlDataSource ds,
@@ -128,7 +134,7 @@ public sealed class AgentKitService
     {
         var language = NormalizeLanguage(request.Language);
         if (string.IsNullOrWhiteSpace(request.ApiKey))
-            throw new InvalidOperationException(Localize(language, "OpenAI API キーが設定されていません。", "OpenAI API Key 未配置"));
+            throw new InvalidOperationException(Localize(language, "OpenAI API キーが設定されていません。", "OpenAI API Key 未配置", "OpenAI API Key is not configured"));
 
         if (request.TaskId.HasValue)
         {
@@ -250,14 +256,16 @@ public sealed class AgentKitService
         if (documentLabelEntries.Count > 0)
         {
             var groupSummary = new StringBuilder();
-            groupSummary.AppendLine(Localize(language, "現在の証憑グループ：", "当前票据分组："));
+            groupSummary.AppendLine(Localize(language, "現在の証憑グループ：", "当前票据分组：", "Current document groups:"));
             foreach (var entry in documentLabelEntries)
             {
                 var highlightJa = string.IsNullOrWhiteSpace(entry.Highlight) ? string.Empty : $"；ハイライト：{entry.Highlight}";
                 var highlightZh = string.IsNullOrWhiteSpace(entry.Highlight) ? string.Empty : $"；{entry.Highlight}";
+                var highlightEn = string.IsNullOrWhiteSpace(entry.Highlight) ? string.Empty : $"; highlight: {entry.Highlight}";
                 var line = Localize(language,
                     $"{entry.Label}：{entry.DisplayName}（fileId={entry.PrimaryFileId}；docSessionId={entry.SessionId}{highlightJa}）",
-                    $"{entry.Label}：{entry.DisplayName}（fileId={entry.PrimaryFileId}；docSessionId={entry.SessionId}{highlightZh}）");
+                    $"{entry.Label}：{entry.DisplayName}（fileId={entry.PrimaryFileId}；docSessionId={entry.SessionId}{highlightZh}）",
+                    $"{entry.Label}: {entry.DisplayName} (fileId={entry.PrimaryFileId}; docSessionId={entry.SessionId}{highlightEn})");
                 groupSummary.AppendLine(line);
             }
             messages.Add(new Dictionary<string, object?>
@@ -269,7 +277,7 @@ public sealed class AgentKitService
         if (clarification is not null)
         {
             var clarifyNote = new StringBuilder();
-            clarifyNote.Append(Localize(language, "ユーザーは以前の質問に回答しています：", "当前用户正在回答此前的问题："));
+            clarifyNote.Append(Localize(language, "ユーザーは以前の質問に回答しています：", "当前用户正在回答此前的问题：", "User is answering a previous question: "));
             if (!string.IsNullOrWhiteSpace(clarification.DocumentLabel))
             {
                 clarifyNote.Append('[').Append(clarification.DocumentLabel).Append(']');
@@ -278,15 +286,15 @@ public sealed class AgentKitService
             var docLabel = !string.IsNullOrWhiteSpace(clarification.DocumentName) ? clarification.DocumentName : clarification.DocumentId;
             if (!string.IsNullOrWhiteSpace(docLabel))
             {
-                clarifyNote.Append(Localize(language, "（ファイル：", "（文件：")).Append(docLabel).Append('）');
+                clarifyNote.Append(Localize(language, "（ファイル：", "（文件：", " (File: ")).Append(docLabel).Append(')');
             }
             if (!string.IsNullOrWhiteSpace(clarification.Detail))
             {
-                clarifyNote.Append(Localize(language, "。補足：", "。补充说明：")).Append(clarification.Detail);
+                clarifyNote.Append(Localize(language, "。補足：", "。补充说明：", ". Note: ")).Append(clarification.Detail);
             }
             if (!string.IsNullOrWhiteSpace(clarification.DocumentSessionId))
             {
-                clarifyNote.Append(Localize(language, "。関連コンテキスト：", "。关联上下文：")).Append(clarification.DocumentSessionId);
+                clarifyNote.Append(Localize(language, "。関連コンテキスト：", "。关联上下文：", ". Related context: ")).Append(clarification.DocumentSessionId);
             }
             messages.Add(new Dictionary<string, object?>
             {
@@ -297,10 +305,10 @@ public sealed class AgentKitService
         if (latestUpload is not null && latestUpload.Documents.Count > 0)
         {
             var hint = new StringBuilder();
-            hint.Append(Localize(language, "直近にアップロードした証憑を続けて処理できます。", "最近一次上传的票据可继续处理。"));
+            hint.Append(Localize(language, "直近にアップロードした証憑を続けて処理できます。", "最近一次上传的票据可继续处理。", "Recently uploaded documents can be processed."));
             if (latestUpload.Documents.Count > 1)
             {
-                hint.Append(Localize(language, $" 合計 {latestUpload.Documents.Count} 件のファイル。", $"共 {latestUpload.Documents.Count} 个文件。"));
+                hint.Append(Localize(language, $" 合計 {latestUpload.Documents.Count} 件のファイル。", $"共 {latestUpload.Documents.Count} 个文件。", $" Total {latestUpload.Documents.Count} file(s)."));
             }
             if (!string.IsNullOrWhiteSpace(activeDocumentSessionId))
             {
@@ -308,13 +316,15 @@ public sealed class AgentKitService
                 {
                     hint.Append(Localize(language,
                         $" 現在のコンテキスト：{activeEntryInfo.Label}（{activeEntryInfo.DisplayName}）。",
-                        $" 当前上下文：{activeEntryInfo.Label}（{activeEntryInfo.DisplayName}）。"));
+                        $" 当前上下文：{activeEntryInfo.Label}（{activeEntryInfo.DisplayName}）。",
+                        $" Current context: {activeEntryInfo.Label} ({activeEntryInfo.DisplayName})."));
                 }
                 else
                 {
                     hint.Append(Localize(language,
                         $" 現在のドキュメントセッション：{activeDocumentSessionId}。",
-                        $" 当前上下文文档会话：{activeDocumentSessionId}。"));
+                        $" 当前上下文文档会话：{activeDocumentSessionId}。",
+                        $" Current document session: {activeDocumentSessionId}."));
                 }
             }
             if (primaryDoc?.Analysis is JsonObject analysisObj)
@@ -332,11 +342,11 @@ public sealed class AgentKitService
                         totalAmount = parsedFromString;
                     }
                 }
-                if (!string.IsNullOrWhiteSpace(primaryDoc.FileId)) hint.Append(Localize(language, $" デフォルト fileId={primaryDoc.FileId}。", $" 默认文件ID={primaryDoc.FileId}。"));
-                if (!string.IsNullOrWhiteSpace(partner)) hint.Append(Localize(language, $" 取引先：{partner}。", $" 供应方：{partner}。"));
-                if (totalAmount.HasValue) hint.Append(Localize(language, $" 税込金額：{totalAmount.Value:0.##}。", $" 含税金额：{totalAmount.Value:0.##}。"));
+                if (!string.IsNullOrWhiteSpace(primaryDoc.FileId)) hint.Append(Localize(language, $" デフォルト fileId={primaryDoc.FileId}。", $" 默认文件ID={primaryDoc.FileId}。", $" Default fileId={primaryDoc.FileId}."));
+                if (!string.IsNullOrWhiteSpace(partner)) hint.Append(Localize(language, $" 取引先：{partner}。", $" 供应方：{partner}。", $" Partner: {partner}."));
+                if (totalAmount.HasValue) hint.Append(Localize(language, $" 税込金額：{totalAmount.Value:0.##}。", $" 含税金额：{totalAmount.Value:0.##}。", $" Total amount (tax incl.): {totalAmount.Value:0.##}."));
             }
-            hint.Append(Localize(language, " ユーザーが「この一枚」「さっきのもの」などと指す場合は、今回のアップロードを継続して処理してください。", " 若用户提及「这张」「上一张」等指代，请延续本次上传的票据继续执行。"));
+            hint.Append(Localize(language, " ユーザーが「この一枚」「さっきのもの」などと指す場合は、今回のアップロードを継続して処理してください。", " 若用户提及「这张」「上一张」等指代，请延续本次上传的票据继续执行。", " If user refers to 'this one' or 'the previous one', continue processing the current upload."));
             messages.Add(new Dictionary<string, object?>
             {
                 ["role"] = "system",
@@ -417,18 +427,18 @@ public sealed class AgentKitService
     {
         var language = NormalizeLanguage(request.Language);
         if (!request.TaskId.HasValue)
-            throw new InvalidOperationException(Localize(language, "taskId が指定されていません。", "taskId 未提供"));
+            throw new InvalidOperationException(Localize(language, "taskId が指定されていません。", "taskId 未提供", "taskId is not specified"));
 
         var taskId = request.TaskId.Value;
         var task = await _invoiceTaskService.GetAsync(taskId, ct);
         if (task is null)
-            throw new InvalidOperationException(Localize(language, "該当する証憑タスクが見つかりません。", "未找到对应的票据任务"));
+            throw new InvalidOperationException(Localize(language, "該当する証憑タスクが見つかりません。", "未找到对应的票据任务", "Document task not found"));
         if (!string.Equals(task.CompanyCode, request.CompanyCode, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException(Localize(language, "この証憑タスクは現在の会社に属していません。", "票据任务不属于当前公司"));
+            throw new InvalidOperationException(Localize(language, "この証憑タスクは現在の会社に属していません。", "票据任务不属于当前公司", "This document task does not belong to the current company"));
         if (!string.IsNullOrWhiteSpace(task.UserId) &&
             !string.IsNullOrWhiteSpace(request.UserCtx.UserId) &&
             !string.Equals(task.UserId, request.UserCtx.UserId, StringComparison.Ordinal))
-            throw new InvalidOperationException(Localize(language, "この票据タスクにアクセスする権限がありません。", "无权访问该票据任务"));
+            throw new InvalidOperationException(Localize(language, "この票据タスクにアクセスする権限がありません。", "无权访问该票据任务", "You do not have permission to access this document task"));
 
         var sessionId = await EnsureSessionAsync(task.SessionId, request.CompanyCode, request.UserCtx, ct);
         var history = await LoadHistoryAsync(sessionId, null, 20, task.Id, ct);
@@ -490,13 +500,13 @@ public sealed class AgentKitService
         var summaryBuilder = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(task.DocumentLabel))
         {
-            summaryBuilder.AppendLine(Localize(language, $"現在の証憑：{task.DocumentLabel}（{task.FileName}）", $"当前票据：{task.DocumentLabel}（{task.FileName}）"));
+            summaryBuilder.AppendLine(Localize(language, $"現在の証憑：{task.DocumentLabel}（{task.FileName}）", $"当前票据：{task.DocumentLabel}（{task.FileName}）", $"Current document: {task.DocumentLabel} ({task.FileName})"));
         }
         else
         {
-            summaryBuilder.AppendLine(Localize(language, $"現在の証憑：{task.FileName}", $"当前票据：{task.FileName}"));
+            summaryBuilder.AppendLine(Localize(language, $"現在の証憑：{task.FileName}", $"当前票据：{task.FileName}", $"Current document: {task.FileName}"));
         }
-        summaryBuilder.AppendLine(Localize(language, $"fileId={task.FileId}；docSessionId={task.DocumentSessionId}", $"fileId={task.FileId}；docSessionId={task.DocumentSessionId}"));
+        summaryBuilder.AppendLine(Localize(language, $"fileId={task.FileId}；docSessionId={task.DocumentSessionId}", $"fileId={task.FileId}；docSessionId={task.DocumentSessionId}", $"fileId={task.FileId}; docSessionId={task.DocumentSessionId}"));
         if (!string.IsNullOrWhiteSpace(task.Summary))
         {
             summaryBuilder.AppendLine(task.Summary);
@@ -509,7 +519,7 @@ public sealed class AgentKitService
         if (clarification is not null)
         {
             var clarifyNote = new StringBuilder();
-            clarifyNote.Append(Localize(language, "ユーザーは以前の質問に回答しています：", "当前用户正在回答此前的问题："));
+            clarifyNote.Append(Localize(language, "ユーザーは以前の質問に回答しています：", "当前用户正在回答此前的问题：", "User is answering a previous question: "));
             if (!string.IsNullOrWhiteSpace(clarification.DocumentLabel))
             {
                 clarifyNote.Append('[').Append(clarification.DocumentLabel).Append(']');
@@ -517,11 +527,11 @@ public sealed class AgentKitService
             clarifyNote.Append(clarification.Question);
             if (!string.IsNullOrWhiteSpace(clarification.DocumentId))
             {
-                clarifyNote.Append(Localize(language, "（fileId：", "（fileId：")).Append(clarification.DocumentId).Append('）');
+                clarifyNote.Append(Localize(language, "（fileId：", "（fileId：", " (fileId: ")).Append(clarification.DocumentId).Append(')');
             }
             if (!string.IsNullOrWhiteSpace(clarification.Detail))
             {
-                clarifyNote.Append(Localize(language, "。補足：", "。补充说明：")).Append(clarification.Detail);
+                clarifyNote.Append(Localize(language, "。補足：", "。补充说明：", ". Note: ")).Append(clarification.Detail);
             }
             messages.Add(new Dictionary<string, object?>
             {
@@ -559,7 +569,7 @@ public sealed class AgentKitService
     {
         var language = NormalizeLanguage(request.Language);
         if (string.IsNullOrWhiteSpace(request.ApiKey))
-            throw new InvalidOperationException(Localize(language, "OpenAI API キーが設定されていません。", "OpenAI API Key 未配置"));
+            throw new InvalidOperationException(Localize(language, "OpenAI API キーが設定されていません。", "OpenAI API Key 未配置", "OpenAI API Key is not configured"));
 
         var sessionId = await EnsureSessionAsync(request.SessionId, request.CompanyCode, request.UserCtx, ct);
         var history = Array.Empty<(string Role, string Content)>();
@@ -590,7 +600,8 @@ public sealed class AgentKitService
 
         var prompt = Localize(language,
             $"ユーザーがファイルをアップロードしました：{request.FileName}（ID: {request.FileId}、種類: {request.ContentType}、サイズ: {request.Size} バイト）。必要に応じて解析し、関連する会計処理を完了してください。",
-            $"用户上传了文件：{request.FileName}（ID: {request.FileId}，类型: {request.ContentType}，大小: {request.Size} 字节）。请根据需要分析此文件，并完成相关会计处理。");
+            $"用户上传了文件：{request.FileName}（ID: {request.FileId}，类型: {request.ContentType}，大小: {request.Size} 字节）。请根据需要分析此文件，并完成相关会计处理。",
+            $"User uploaded a file: {request.FileName} (ID: {request.FileId}, Type: {request.ContentType}, Size: {request.Size} bytes). Please analyze and complete the related accounting process.");
 
         var uploadPayload = new JsonObject
         {
@@ -754,13 +765,13 @@ public sealed class AgentKitService
     {
         var language = NormalizeLanguage(null);
         if (string.IsNullOrWhiteSpace(prompt))
-            throw new ArgumentException(Localize(language, "prompt は必須です。", "prompt 必填"), nameof(prompt));
+            throw new ArgumentException(Localize(language, "prompt は必須です。", "prompt 必填", "prompt is required"), nameof(prompt));
 
         var http = _httpClientFactory.CreateClient("openai");
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
         var existingSummary = existingScenarios.Count == 0
-            ? Localize(language, "（現在シナリオは未設定）", "(当前尚未配置场景)")
+            ? Localize(language, "（現在シナリオは未設定）", "(当前尚未配置场景)", "(No scenarios configured)")
             : string.Join('\n', existingScenarios
                 .OrderBy(s => s.Priority)
                 .Select(s => $"- {s.ScenarioKey}: {s.Title}"));
@@ -820,7 +831,7 @@ public sealed class AgentKitService
 
         var requestBody = new
         {
-            model = "gpt-4o-mini",
+            model = "gpt-4o",
             temperature = 0.2,
             response_format = new { type = "json_object" },
             messages = new object[]
@@ -830,20 +841,20 @@ public sealed class AgentKitService
             }
         };
 
-        using var response = await http.PostAsync("v1/chat/completions",
+        using var response = await http.PostAsync("chat/completions",
             new StringContent(JsonSerializer.Serialize(requestBody, JsonOptions), Encoding.UTF8, "application/json"), ct);
         var responseText = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning("[AgentKit] 生成场景失败: {Status} {Body}", response.StatusCode, responseText);
-            throw new Exception(Localize(language, "プロンプトからシナリオ設定を生成できませんでした。", "无法根据提示生成场景配置"));
+            throw new Exception(Localize(language, "プロンプトからシナリオ設定を生成できませんでした。", "无法根据提示生成场景配置", "Failed to generate scenario from prompt"));
         }
 
         using var rootDoc = JsonDocument.Parse(responseText);
         var choice = rootDoc.RootElement.GetProperty("choices")[0];
         var content = choice.GetProperty("message").GetProperty("content").GetString();
         if (string.IsNullOrWhiteSpace(content))
-            throw new Exception(Localize(language, "モデルがシナリオ内容を返しませんでした。", "模型未返回任何场景内容"));
+            throw new Exception(Localize(language, "モデルがシナリオ内容を返しませんでした。", "模型未返回任何场景内容", "Model did not return scenario content"));
 
         using var scenarioDoc = JsonDocument.Parse(content);
         var scenarioRoot = scenarioDoc.RootElement;
@@ -1029,10 +1040,10 @@ public sealed class AgentKitService
     {
         var language = NormalizeLanguage(request.Language);
         if (string.IsNullOrWhiteSpace(request.ApiKey))
-            throw new InvalidOperationException(Localize(language, "OpenAI API キーが設定されていません。", "OpenAI API Key 未配置"));
+            throw new InvalidOperationException(Localize(language, "OpenAI API キーが設定されていません。", "OpenAI API Key 未配置", "OpenAI API Key is not configured"));
 
         if (files.Count == 0)
-            throw new InvalidOperationException(Localize(language, "少なくとも1件のファイルが必要です。", "至少需要一个文件"));
+            throw new InvalidOperationException(Localize(language, "少なくとも1件のファイルが必要です。", "至少需要一个文件", "At least one file is required"));
 
         var sessionId = await EnsureSessionAsync(request.SessionId, request.CompanyCode, request.UserCtx, ct);
 
@@ -1232,8 +1243,8 @@ public sealed class AgentKitService
         }
 
         var content = documents.Count == 1
-            ? Localize(language, $"ユーザーがファイル {documents[0].FileName} をアップロードし、システムが初期解析を完了しました。", $"用户上传了文件 {documents[0].FileName}，系统已完成初步解析。")
-            : Localize(language, $"ユーザーが {documents.Count} 件のファイルをアップロードし、システムが初期解析を完了しました。", $"用户上传了 {documents.Count} 个文件，系统已完成初步解析。");
+            ? Localize(language, $"ユーザーがファイル {documents[0].FileName} をアップロードし、システムが初期解析を完了しました。", $"用户上传了文件 {documents[0].FileName}，系统已完成初步解析。", $"User uploaded file {documents[0].FileName}, initial parsing complete.")
+            : Localize(language, $"ユーザーが {documents.Count} 件のファイルをアップロードし、システムが初期解析を完了しました。", $"用户上传了 {documents.Count} 个文件，系统已完成初步解析。", $"User uploaded {documents.Count} file(s), initial parsing complete.");
 
         await PersistMessageAsync(sessionId, "user", content, uploadPayload, null, null, ct);
         if (!string.IsNullOrWhiteSpace(activeDocumentSessionId))
@@ -1335,7 +1346,7 @@ public sealed class AgentKitService
             var match = scenarios.FirstOrDefault(s => string.Equals(s.ScenarioKey, overrideKey, StringComparison.OrdinalIgnoreCase));
             if (match is null)
             {
-                throw new InvalidOperationException(Localize(language, $"指定されたシナリオ {request.ScenarioKeyOverride} は存在しないか無効です。", $"指定场景 {request.ScenarioKeyOverride} 不存在或未启用"));
+                throw new InvalidOperationException(Localize(language, $"指定されたシナリオ {request.ScenarioKeyOverride} は存在しないか無効です。", $"指定场景 {request.ScenarioKeyOverride} 不存在或未启用", $"Specified scenario {request.ScenarioKeyOverride} does not exist or is disabled"));
             }
 
             var overridePlans = new List<TaskGroupPlan>();
@@ -1349,8 +1360,8 @@ public sealed class AgentKitService
                     : group.Key;
                 var ids = group.Select(d => d.FileId).ToArray();
                 var reason = grouped.Length > 1
-                    ? Localize(language, "ユーザー指定シナリオ（文書ごとに分割）", "用户指定场景（按文档拆分）")
-                    : Localize(language, "ユーザー指定シナリオ", "用户指定场景");
+                    ? Localize(language, "ユーザー指定シナリオ（文書ごとに分割）", "用户指定场景（按文档拆分）", "User-specified scenario (split by document)")
+                    : Localize(language, "ユーザー指定シナリオ", "用户指定场景", "User-specified scenario");
                 overridePlans.Add(new TaskGroupPlan(match.ScenarioKey, sessionIdKey, ids, reason, request.Message));
             }
             return new AgentTaskPlanningResult(sessionId, overridePlans, suppressedDocumentIds.ToArray());
@@ -1432,7 +1443,25 @@ public sealed class AgentKitService
             "6. 每个文件都包含 documentSessionId，用于标识同一业务上下文。一个任务内的所有文件必须具有完全一致的 documentSessionId；如需处理多个上下文，请拆分为多条任务。",
             "7. 输出的每个任务必须包含 documentSessionId 字段，并与任务中文件实际所属的 documentSessionId 一致。"
         };
-        var plannerLines = string.Equals(language, "zh", StringComparison.OrdinalIgnoreCase) ? plannerLinesZh : plannerLinesJa;
+        var plannerLinesEn = new[]
+        {
+            "You are an ERP task orchestration coordinator. Based on multiple files uploaded by the user and the message content, determine how to group them and select the most appropriate Agent scenario.",
+            "Follow these principles:",
+            "1. Determine whether files belong to the same business task (e.g., multiple pages of the same contract, front and back of the same receipt). If so, process them together; if completely independent, split into multiple tasks.",
+            "2. Combine each file's analysis information with user input text to determine the best matching scenario.",
+            "3. The scenario list (in order of priority from high to low) is:",
+            scenarioSummary,
+            "4. Only select a scenario when highly confident; if no suitable scenario is found, add files to unassignedDocuments.",
+            "5. If there are additional notes or information needed from the user, include them in the message field.",
+            "6. Each file contains a documentSessionId representing the same business context. All files within a task must have the exact same documentSessionId; if multiple contexts need to be processed, split into multiple tasks.",
+            "7. Each output task must include the documentSessionId field, matching the actual documentSessionId of the files in the task."
+        };
+        var plannerLines = language switch
+        {
+            "zh" => plannerLinesZh,
+            "en" => plannerLinesEn,
+            _ => plannerLinesJa
+        };
         foreach (var line in plannerLines)
         {
             systemPrompt.AppendLine(line);
@@ -1451,11 +1480,11 @@ public sealed class AgentKitService
         systemPrompt.AppendLine("  ],");
         systemPrompt.AppendLine("  \"unassignedDocuments\": string[]");
         systemPrompt.AppendLine("}");
-        systemPrompt.AppendLine(Localize(language, "confidence の範囲は 0~1（任意項目）です。", "其中 confidence 范围 0~1，可选。"));
+        systemPrompt.AppendLine(Localize(language, "confidence の範囲は 0~1（任意項目）です。", "其中 confidence 范围 0~1，可选。", "confidence range is 0~1 (optional)."));
         if (focusNotes.Count > 0)
         {
             systemPrompt.AppendLine();
-            systemPrompt.AppendLine(Localize(language, "注意：以下の対象のみ処理し、それ以外のファイルは保留してください。", "注意：当前只需处理以下目标范围，其他文件暂缓："));
+            systemPrompt.AppendLine(Localize(language, "注意：以下の対象のみ処理し、それ以外のファイルは保留してください。", "注意：当前只需处理以下目标范围，其他文件暂缓：", "Note: Only process the following targets, other files are on hold:"));
             foreach (var note in focusNotes.Distinct())
             {
                 systemPrompt.AppendLine($"- {note}");
@@ -1464,15 +1493,15 @@ public sealed class AgentKitService
         if (clarification is not null)
         {
             systemPrompt.AppendLine();
-            systemPrompt.AppendLine(Localize(language, "補足: ユーザーは次の質問に回答しています。関連するファイルを優先し、計画理由に対応関係を明示してください。", "补充说明：用户正在回应以下问题，请优先关注相关文件并在计划理由中标记对应关系。"));
-            systemPrompt.AppendLine(Localize(language, $"質問：{clarification.Question}", $"问题：{clarification.Question}"));
+            systemPrompt.AppendLine(Localize(language, "補足: ユーザーは次の質問に回答しています。関連するファイルを優先し、計画理由に対応関係を明示してください。", "补充说明：用户正在回应以下问题，请优先关注相关文件并在计划理由中标记对应关系。", "Note: User is responding to the following question. Prioritize related files and indicate the relationship in the planning reason."));
+            systemPrompt.AppendLine(Localize(language, $"質問：{clarification.Question}", $"问题：{clarification.Question}", $"Question: {clarification.Question}"));
             if (!string.IsNullOrWhiteSpace(clarification.DocumentId))
             {
-                systemPrompt.AppendLine(Localize(language, $"関連ファイルID：{clarification.DocumentId}", $"关联文件ID：{clarification.DocumentId}"));
+                systemPrompt.AppendLine(Localize(language, $"関連ファイルID：{clarification.DocumentId}", $"关联文件ID：{clarification.DocumentId}", $"Related fileId: {clarification.DocumentId}"));
             }
             if (!string.IsNullOrWhiteSpace(clarification.Detail))
             {
-                systemPrompt.AppendLine(Localize(language, $"備考：{clarification.Detail}", $"备注：{clarification.Detail}"));
+                systemPrompt.AppendLine(Localize(language, $"備考：{clarification.Detail}", $"备注：{clarification.Detail}", $"Remarks: {clarification.Detail}"));
             }
         }
 
@@ -1509,20 +1538,20 @@ public sealed class AgentKitService
             }
         };
 
-        using var response = await http.PostAsync("v1/chat/completions",
+        using var response = await http.PostAsync("chat/completions",
             new StringContent(JsonSerializer.Serialize(requestBody, JsonOptions), Encoding.UTF8, "application/json"), ct);
         var responseText = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning("[AgentKit] 任务分组模型调用失败: {Status} {Body}", response.StatusCode, responseText);
-            throw new Exception(Localize(language, "タスクのグルーピングを完了できませんでした。しばらくしてから再試行してください。", "无法完成任务分组，请稍后重试"));
+            throw new Exception(Localize(language, "タスクのグルーピングを完了できませんでした。しばらくしてから再試行してください。", "无法完成任务分组，请稍后重试", "Unable to complete task grouping. Please try again later."));
         }
 
         using var rootDoc = JsonDocument.Parse(responseText);
         var content = rootDoc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
         if (string.IsNullOrWhiteSpace(content))
         {
-            throw new Exception(Localize(language, "モデルがタスク分割の結果を返しませんでした。", "模型未返回任务分组结果"));
+            throw new Exception(Localize(language, "モデルがタスク分割の結果を返しませんでした。", "模型未返回任务分组结果", "Model did not return task grouping result"));
         }
 
         using var planDoc = JsonDocument.Parse(content);
@@ -1614,7 +1643,7 @@ public sealed class AgentKitService
                             : sessionGroup.Key;
                         var sessionDocs = sessionGroup.Select(d => d.FileId).ToArray();
                         var localizedReason = string.IsNullOrWhiteSpace(reason)
-                            ? Localize(language, "ファイルごとに自動分割しました。", "按文档自动拆分")
+                            ? Localize(language, "ファイルごとに自動分割しました。", "按文档自动拆分", "Auto-split by document")
                             : reason;
                         plans.Add(new TaskGroupPlan(
                             scenario.ScenarioKey,
@@ -2011,16 +2040,16 @@ public sealed class AgentKitService
         var parts = new List<string>();
         if (TryGetJsonString(analysis, "partnerName", out var partner) && !string.IsNullOrWhiteSpace(partner))
         {
-            parts.Add(Localize(language, $"取引先：{partner}", $"供应方：{partner}"));
+            parts.Add(Localize(language, $"取引先：{partner}", $"供应方：{partner}", $"Partner: {partner}"));
         }
         if (TryGetJsonString(analysis, "issueDate", out var issueDate) && !string.IsNullOrWhiteSpace(issueDate))
         {
-            parts.Add(Localize(language, $"日付：{issueDate}", $"日期：{issueDate}"));
+            parts.Add(Localize(language, $"日付：{issueDate}", $"日期：{issueDate}", $"Date: {issueDate}"));
         }
         var amount = TryGetJsonDecimal(analysis, "totalAmount");
         if (amount.HasValue && amount.Value > 0)
         {
-            parts.Add(Localize(language, $"税込金額：{amount.Value:0.##}", $"含税金额：{amount.Value:0.##}"));
+            parts.Add(Localize(language, $"税込金額：{amount.Value:0.##}", $"含税金额：{amount.Value:0.##}", $"Total (tax incl.): {amount.Value:0.##}"));
         }
         if (parts.Count == 0) return null;
         return string.Equals(language, "zh", StringComparison.OrdinalIgnoreCase)
@@ -2720,7 +2749,7 @@ public sealed class AgentKitService
 
             if (!string.IsNullOrWhiteSpace(plan.DocumentSessionId) && processedDocumentSessions.Contains(plan.DocumentSessionId))
             {
-                var duplicateText = Localize(language, $"ドキュメントコンテキスト {plan.DocumentSessionId} は既に処理済みのため、タスク {plan.ScenarioKey} をスキップしました。", $"文档上下文 {plan.DocumentSessionId} 已处理，跳过重复任务 {plan.ScenarioKey}。");
+                var duplicateText = Localize(language, $"ドキュメントコンテキスト {plan.DocumentSessionId} は既に処理済みのため、タスク {plan.ScenarioKey} をスキップしました。", $"文档上下文 {plan.DocumentSessionId} 已处理，跳过重复任务 {plan.ScenarioKey}。", $"Document context {plan.DocumentSessionId} already processed, skipping duplicate task {plan.ScenarioKey}.");
                 var dupMsg = new AgentResultMessage("assistant", duplicateText, "info", null);
                 await PersistAssistantMessagesAsync(request.SessionId, taskInfo?.TaskId, new[] { dupMsg }, ct);
                 allMessages.Add(dupMsg);
@@ -2730,7 +2759,7 @@ public sealed class AgentKitService
             var scenarioDef = scenarios.FirstOrDefault(s => string.Equals(s.ScenarioKey, plan.ScenarioKey, StringComparison.OrdinalIgnoreCase));
             if (scenarioDef is null)
             {
-                var scenarioMissing = Localize(language, $"シナリオ {plan.ScenarioKey} が見つからないか、無効化されています。", $"场景 {plan.ScenarioKey} 未找到或未启用。");
+                var scenarioMissing = Localize(language, $"シナリオ {plan.ScenarioKey} が見つからないか、無効化されています。", $"场景 {plan.ScenarioKey} 未找到或未启用。", $"Scenario {plan.ScenarioKey} not found or disabled.");
                 allMessages.Add(new AgentResultMessage("assistant", scenarioMissing, "warning", null));
                 continue;
             }
@@ -2774,24 +2803,24 @@ public sealed class AgentKitService
             {
                 if (!string.IsNullOrWhiteSpace(clarification.Question))
                 {
-                    summaryBuilder.AppendLine(Localize(language, "質問への回答：" + clarification.Question, "问题答复：" + clarification.Question));
+                    summaryBuilder.AppendLine(Localize(language, "質問への回答：" + clarification.Question, "问题答复：" + clarification.Question, "Answer to question: " + clarification.Question));
                 }
                 if (!string.IsNullOrWhiteSpace(clarification.Detail))
                 {
-                    summaryBuilder.AppendLine(Localize(language, "補足説明：" + clarification.Detail, "补充说明：" + clarification.Detail));
+                    summaryBuilder.AppendLine(Localize(language, "補足説明：" + clarification.Detail, "补充说明：" + clarification.Detail, "Additional info: " + clarification.Detail));
                 }
                 var docLabel = clarification.DocumentName ?? clarification.DocumentId;
                 if (!string.IsNullOrWhiteSpace(docLabel))
                 {
-                    summaryBuilder.AppendLine(Localize(language, "関連ファイル：" + docLabel, "关联文件：" + docLabel));
+                    summaryBuilder.AppendLine(Localize(language, "関連ファイル：" + docLabel, "关联文件：" + docLabel, "Related file: " + docLabel));
                 }
                 if (!string.IsNullOrWhiteSpace(clarification.DocumentSessionId))
                 {
-                    summaryBuilder.AppendLine(Localize(language, "関連コンテキスト：" + clarification.DocumentSessionId, "关联上下文：" + clarification.DocumentSessionId));
+                    summaryBuilder.AppendLine(Localize(language, "関連コンテキスト：" + clarification.DocumentSessionId, "关联上下文：" + clarification.DocumentSessionId, "Related context: " + clarification.DocumentSessionId));
                 }
                 if (!string.IsNullOrWhiteSpace(clarification.DocumentLabel))
                 {
-                    summaryBuilder.AppendLine(Localize(language, "関連グループ：" + clarification.DocumentLabel, "关联分组：" + clarification.DocumentLabel));
+                    summaryBuilder.AppendLine(Localize(language, "関連グループ：" + clarification.DocumentLabel, "关联分组：" + clarification.DocumentLabel, "Related group: " + clarification.DocumentLabel));
                 }
             }
             decimal? planNetAmount = null;
@@ -2802,7 +2831,7 @@ public sealed class AgentKitService
                 var doc = request.Documents.FirstOrDefault(d => string.Equals(d.FileId, docId, StringComparison.OrdinalIgnoreCase));
                 if (doc is null)
                 {
-                    var warnText = Localize(language, $"タスク {plan.ScenarioKey} は不明なファイル {docId} を参照しているためスキップしました。", $"任务 {plan.ScenarioKey} 引用了未知文件 {docId}，已跳过。");
+                    var warnText = Localize(language, $"タスク {plan.ScenarioKey} は不明なファイル {docId} を参照しているためスキップしました。", $"任务 {plan.ScenarioKey} 引用了未知文件 {docId}，已跳过。", $"Task {plan.ScenarioKey} references unknown file {docId}, skipped.");
                     var warnMsg = new AgentResultMessage("assistant", warnText, "warning", null);
                     await PersistAssistantMessagesAsync(request.SessionId, taskInfo?.TaskId, new[] { warnMsg }, ct);
                     allMessages.Add(warnMsg);
@@ -2811,7 +2840,7 @@ public sealed class AgentKitService
 
                 if (processedFiles.Contains(doc.FileId))
                 {
-                    var infoText = Localize(language, $"ファイル {doc.FileName ?? doc.FileId} は別のタスクで処理済みのためスキップしました。", $"文件 {doc.FileName ?? doc.FileId} 已在其他任务中执行，已跳过。");
+                    var infoText = Localize(language, $"ファイル {doc.FileName ?? doc.FileId} は別のタスクで処理済みのためスキップしました。", $"文件 {doc.FileName ?? doc.FileId} 已在其他任务中执行，已跳过。", $"File {doc.FileName ?? doc.FileId} already processed in another task, skipped.");
                     var infoMsg = new AgentResultMessage("assistant", infoText, "info", null);
                     await PersistAssistantMessagesAsync(request.SessionId, taskInfo?.TaskId, new[] { infoMsg }, ct);
                     allMessages.Add(infoMsg);
@@ -2821,7 +2850,7 @@ public sealed class AgentKitService
                 if (!string.IsNullOrWhiteSpace(plan.DocumentSessionId) &&
                     !string.Equals(doc.DocumentSessionId, plan.DocumentSessionId, StringComparison.OrdinalIgnoreCase))
                 {
-                    var mismatchText = Localize(language, $"タスク {plan.ScenarioKey} のファイル {doc.FileName ?? doc.FileId} は文書コンテキストが一致しないためスキップしました。", $"任务 {plan.ScenarioKey} 的文件 {doc.FileName ?? doc.FileId} 上下文不匹配，已跳过。");
+                    var mismatchText = Localize(language, $"タスク {plan.ScenarioKey} のファイル {doc.FileName ?? doc.FileId} は文書コンテキストが一致しないためスキップしました。", $"任务 {plan.ScenarioKey} 的文件 {doc.FileName ?? doc.FileId} 上下文不匹配，已跳过。", $"File {doc.FileName ?? doc.FileId} in task {plan.ScenarioKey} has mismatched context, skipped.");
                     var mismatchMsg = new AgentResultMessage("assistant", mismatchText, "warning", null);
                     await PersistAssistantMessagesAsync(request.SessionId, taskInfo?.TaskId, new[] { mismatchMsg }, ct);
                     allMessages.Add(mismatchMsg);
@@ -2833,7 +2862,7 @@ public sealed class AgentKitService
                 {
                     labelPrefix = $"[{labelEntry.Label}] ";
                 }
-                summaryBuilder.AppendLine(Localize(language, $"ファイル：{labelPrefix}{doc.FileName} ({doc.ContentType}, {doc.Size} bytes)", $"文件：{labelPrefix}{doc.FileName} ({doc.ContentType}, {doc.Size} bytes)"));
+                summaryBuilder.AppendLine(Localize(language, $"ファイル：{labelPrefix}{doc.FileName} ({doc.ContentType}, {doc.Size} bytes)", $"文件：{labelPrefix}{doc.FileName} ({doc.ContentType}, {doc.Size} bytes)", $"File: {labelPrefix}{doc.FileName} ({doc.ContentType}, {doc.Size} bytes)"));
                 if (doc.Data is JsonObject obj)
                 {
                     summaryBuilder.AppendLine(obj.ToJsonString());
@@ -2861,13 +2890,13 @@ public sealed class AgentKitService
             if (!string.IsNullOrWhiteSpace(plan.DocumentSessionId))
             {
                 summaryBuilder.AppendLine();
-                summaryBuilder.AppendLine(Localize(language, "ドキュメントコンテキスト：" + plan.DocumentSessionId, "文档上下文：" + plan.DocumentSessionId));
+                summaryBuilder.AppendLine(Localize(language, "ドキュメントコンテキスト：" + plan.DocumentSessionId, "文档上下文：" + plan.DocumentSessionId, "Document context: " + plan.DocumentSessionId));
             }
 
             if (!string.IsNullOrWhiteSpace(plan.UserMessageOverride))
             {
                 summaryBuilder.AppendLine();
-                summaryBuilder.AppendLine(Localize(language, "ユーザー備考：" + plan.UserMessageOverride, "用户备注：" + plan.UserMessageOverride));
+                summaryBuilder.AppendLine(Localize(language, "ユーザー備考：" + plan.UserMessageOverride, "用户备注：" + plan.UserMessageOverride, "User note: " + plan.UserMessageOverride));
             }
 
             messages.Add(new Dictionary<string, object?>
@@ -3008,20 +3037,20 @@ public sealed class AgentKitService
         {
             var requestBody = new
             {
-                model = "gpt-4.1-mini",
+                model = "gpt-4o",
                 temperature = 0.1,
                 tool_choice = "auto",
                 messages = openAiMessages,
                 tools
             };
 
-            using var response = await http.PostAsync("v1/chat/completions",
+            using var response = await http.PostAsync("chat/completions",
                 new StringContent(JsonSerializer.Serialize(requestBody, JsonOptions), Encoding.UTF8, "application/json"), ct);
             var responseText = await response.Content.ReadAsStringAsync(ct);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogError("[AgentKit] OpenAI 调用失败：{Status} {Body}", response.StatusCode, responseText);
-                var errorContent = Localize(context.Language, $"LLM 呼び出しに失敗しました：{response.StatusCode}", $"调用语言模型失败：{response.StatusCode}");
+                var errorContent = Localize(context.Language, $"LLM 呼び出しに失敗しました：{response.StatusCode}", $"调用语言模型失败：{response.StatusCode}", $"LLM call failed: {response.StatusCode}");
                 aggregated.Add(new AgentResultMessage("assistant", errorContent, "error", null));
                 return new AgentExecutionResult(aggregated);
             }
@@ -3076,7 +3105,7 @@ public sealed class AgentKitService
             return new AgentExecutionResult(finalized);
         }
 
-        aggregated.Add(new AgentResultMessage("assistant", Localize(context.Language, "処理ステップが多すぎるため停止しました。", "执行步骤过多，已停止。"), "error", null));
+        aggregated.Add(new AgentResultMessage("assistant", Localize(context.Language, "処理ステップが多すぎるため停止しました。", "执行步骤过多，已停止。", "Too many processing steps, stopped."), "error", null));
         var finalMessages = FinalizeMessages(aggregated, context);
         return new AgentExecutionResult(finalMessages);
     }
@@ -3095,7 +3124,7 @@ public sealed class AgentKitService
                 .ToList();
             if (messages.Count == 0)
             {
-                messages.Add(new AgentResultMessage("assistant", Localize(context.Language, "AI が会計伝票を作成できませんでした。証憑内容をご確認いただくか、しばらくしてから再試行してください。", "AI 未能创建会计凭证，请确认票据内容或稍后重试。"), "warning", null));
+                messages.Add(new AgentResultMessage("assistant", Localize(context.Language, "AI が会計伝票を作成できませんでした。証憑内容をご確認いただくか、しばらくしてから再試行してください。", "AI 未能创建会计凭证，请确认票据内容或稍后重试。", "AI could not create accounting voucher. Please verify document content or try again later."), "warning", null));
             }
         }
         return messages;
@@ -3123,7 +3152,7 @@ public sealed class AgentKitService
                         fileId = context.DefaultFileId;
                     }
                     if (string.IsNullOrWhiteSpace(fileId))
-                        throw new Exception(Localize(context.Language, "file_id が指定されていません。", "file_id 缺失"));
+                        throw new Exception(Localize(context.Language, "file_id が指定されていません。", "file_id 缺失", "file_id is not specified"));
                     if (context.TryGetDocument(fileId!, out var cached) && cached is JsonObject cachedObj)
                     {
                         _logger.LogInformation("[AgentKit] 使用缓存的发票解析结果 fileId={FileId}", fileId);
@@ -3137,7 +3166,7 @@ public sealed class AgentKitService
                     }
                     var file = context.ResolveFile(fileId!);
                     if (file is null)
-                        throw new Exception(Localize(context.Language, $"ファイル {fileId} が見つからないか期限切れです。", $"文件 {fileId} 未找到或已过期"));
+                        throw new Exception(Localize(context.Language, $"ファイル {fileId} が見つからないか期限切れです。", $"文件 {fileId} 未找到或已过期", $"File {fileId} not found or expired"));
                     var data = await ExtractInvoiceDataAsync(fileId!, file, context, ct);
                     context.RegisterDocument(fileId, data);
                     return ToolExecutionResult.FromModel(data ?? new JsonObject { ["status"] = "error" });
@@ -3146,7 +3175,7 @@ public sealed class AgentKitService
                 {
                     var query = args.TryGetProperty("query", out var qEl) ? qEl.GetString() : null;
                     if (string.IsNullOrWhiteSpace(query))
-                        throw new Exception(Localize(context.Language, "query を指定してください。", "query 不能为空"));
+                        throw new Exception(Localize(context.Language, "query を指定してください。", "query 不能为空", "query is required"));
                     _logger.LogInformation("[AgentKit] 调用工具 lookup_account，query={Query}", query);
                     var match = await LookupAccountAsync(context.CompanyCode, query!, ct);
                     return ToolExecutionResult.FromModel(match);
@@ -3155,7 +3184,7 @@ public sealed class AgentKitService
                 {
                     var posting = args.TryGetProperty("posting_date", out var pdEl) ? pdEl.GetString() : null;
                     if (string.IsNullOrWhiteSpace(posting))
-                        throw new Exception(Localize(context.Language, "posting_date を指定してください。", "posting_date 不能为空"));
+                        throw new Exception(Localize(context.Language, "posting_date を指定してください。", "posting_date 不能为空", "posting_date is required"));
                     _logger.LogInformation("[AgentKit] 调用工具 check_accounting_period，postingDate={Posting}", posting);
                     var status = await CheckAccountingPeriodAsync(context.CompanyCode, posting!, ct);
                     return ToolExecutionResult.FromModel(status);
@@ -3164,7 +3193,7 @@ public sealed class AgentKitService
                 {
                     var regNo = args.TryGetProperty("registration_no", out var regEl) ? regEl.GetString() : null;
                     if (string.IsNullOrWhiteSpace(regNo))
-                        throw new Exception(Localize(context.Language, "registration_no を指定してください。", "registration_no 不能为空"));
+                        throw new Exception(Localize(context.Language, "registration_no を指定してください。", "registration_no 不能为空", "registration_no is required"));
                     var trimmedRegNo = regNo.Trim();
                     if (IsPlaceholderRegistrationNo(trimmedRegNo))
                     {
@@ -3183,7 +3212,7 @@ public sealed class AgentKitService
                 {
                     var query = args.TryGetProperty("query", out var qEl) ? qEl.GetString() : null;
                     if (string.IsNullOrWhiteSpace(query))
-                        throw new Exception(Localize(context.Language, "query を指定してください。", "query 不能为空"));
+                        throw new Exception(Localize(context.Language, "query を指定してください。", "query 不能为空", "query is required"));
                     var limit = args.TryGetProperty("limit", out var limitEl) && limitEl.TryGetInt32(out var parsedLimit) && parsedLimit > 0 ? parsedLimit : 10;
                     _logger.LogInformation("[AgentKit] 调用工具 lookup_customer，query={Query} limit={Limit}", query, limit);
                     var payload = await LookupCustomerAsync(context.CompanyCode, query!.Trim(), limit, ct);
@@ -3193,7 +3222,7 @@ public sealed class AgentKitService
                 {
                     var query = args.TryGetProperty("query", out var qEl) ? qEl.GetString() : null;
                     if (string.IsNullOrWhiteSpace(query))
-                        throw new Exception(Localize(context.Language, "query を指定してください。", "query 不能为空"));
+                        throw new Exception(Localize(context.Language, "query を指定してください。", "query 不能为空", "query is required"));
                     var limit = args.TryGetProperty("limit", out var limitEl) && limitEl.TryGetInt32(out var parsedLimit) && parsedLimit > 0 ? parsedLimit : 10;
                     _logger.LogInformation("[AgentKit] 调用工具 lookup_material，query={Query} limit={Limit}", query, limit);
                     var payload = await LookupMaterialAsync(context.CompanyCode, query!.Trim(), limit, ct);
@@ -3203,10 +3232,10 @@ public sealed class AgentKitService
                 {
                     var docId = args.TryGetProperty("document_id", out var docIdEl) ? docIdEl.GetString() : null;
                     if (string.IsNullOrWhiteSpace(docId))
-                        throw new Exception(Localize(context.Language, "document_id が指定されていません。", "document_id 缺失"));
+                        throw new Exception(Localize(context.Language, "document_id が指定されていません。", "document_id 缺失", "document_id is not specified"));
                     var question = args.TryGetProperty("question", out var questionEl) ? questionEl.GetString() : null;
                     if (string.IsNullOrWhiteSpace(question))
-                        throw new Exception(Localize(context.Language, "question が指定されていません。", "question 缺失"));
+                        throw new Exception(Localize(context.Language, "question が指定されていません。", "question 缺失", "question is not specified"));
                     var detail = args.TryGetProperty("detail", out var detailEl) ? detailEl.GetString() : null;
                     var questionId = $"q_{Guid.NewGuid():N}";
                     var documentSessionId = context.GetDocumentSessionIdByFileId(docId!) ?? context.ActiveDocumentSessionId;
@@ -3283,7 +3312,7 @@ public sealed class AgentKitService
                 {
                     var voucherNo = args.TryGetProperty("voucher_no", out var vEl) ? vEl.GetString() : null;
                     if (string.IsNullOrWhiteSpace(voucherNo))
-                        throw new Exception(Localize(context.Language, "voucher_no を指定してください。", "voucher_no 不能为空"));
+                        throw new Exception(Localize(context.Language, "voucher_no を指定してください。", "voucher_no 不能为空", "voucher_no is required"));
                     _logger.LogInformation("[AgentKit] 调用工具 get_voucher_by_number，voucherNo={VoucherNo}", voucherNo);
                     var payload = await GetVoucherByNumberAsync(context.CompanyCode, voucherNo!, ct);
                     return ToolExecutionResult.FromModel(payload);
@@ -3292,7 +3321,7 @@ public sealed class AgentKitService
                 {
                     var partnerName = args.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null;
                     if (string.IsNullOrWhiteSpace(partnerName))
-                        throw new Exception(Localize(context.Language, "取引先名を指定してください。", "取引先名不能为空"));
+                        throw new Exception(Localize(context.Language, "取引先名を指定してください。", "取引先名不能为空", "partner_name is required"));
                     _logger.LogInformation("[AgentKit] 调用工具 create_business_partner，name={Name}", partnerName);
                     var result = await CreateBusinessPartnerAsync(context, args, ct);
                     return result;
@@ -3301,13 +3330,13 @@ public sealed class AgentKitService
                 {
                     var url = args.TryGetProperty("url", out var urlEl) ? urlEl.GetString() : null;
                     if (string.IsNullOrWhiteSpace(url))
-                        throw new Exception(Localize(context.Language, "url を指定してください。", "url 不能为空"));
+                        throw new Exception(Localize(context.Language, "url を指定してください。", "url 不能为空", "url is required"));
                     _logger.LogInformation("[AgentKit] 调用工具 fetch_webpage，url={Url}", url);
                     var content = await FetchWebpageContentAsync(url!, ct);
                     return ToolExecutionResult.FromModel(new { status = "ok", url, content });
                 }
                 default:
-                    throw new Exception(Localize(context.Language, $"未登録のツールです：{name}", $"未知的工具：{name}"));
+                    throw new Exception(Localize(context.Language, $"未登録のツールです：{name}", $"未知的工具：{name}", $"Unknown tool: {name}"));
             }
         }
         catch (Exception ex)
@@ -3318,7 +3347,7 @@ public sealed class AgentKitService
                 status = "error",
                 message = ex.Message
             };
-            var failMessage = new AgentResultMessage("assistant", Localize(context.Language, $"ツール {name} の実行に失敗しました：{ex.Message}", $"工具 {name} 执行失败：{ex.Message}"), "error", null);
+            var failMessage = new AgentResultMessage("assistant", Localize(context.Language, $"ツール {name} の実行に失敗しました：{ex.Message}", $"工具 {name} 执行失败：{ex.Message}", $"Tool {name} execution failed: {ex.Message}"), "error", null);
             return ToolExecutionResult.FromModel(errorModel, new List<AgentResultMessage> { failMessage });
         }
     }
@@ -3949,8 +3978,8 @@ public sealed class AgentKitService
             : null;
 
         var content = voucherNo is not null
-            ? Localize(context.Language, $"会計伝票 {voucherNo} を作成しました。", $"已创建会计凭证 {voucherNo}")
-            : Localize(context.Language, "会計伝票を作成しました。", "已创建会计凭证");
+            ? Localize(context.Language, $"会計伝票 {voucherNo} を作成しました。", $"已创建会计凭证 {voucherNo}", $"Created accounting voucher {voucherNo}")
+            : Localize(context.Language, "会計伝票を作成しました。", "已创建会计凭证", "Created accounting voucher");
 
         context.MarkVoucherCreated(voucherNo);
         if (context.TaskId.HasValue)
@@ -4058,7 +4087,7 @@ public sealed class AgentKitService
             }
         };
 
-        using var response = await http.PostAsync("v1/chat/completions",
+        using var response = await http.PostAsync("chat/completions",
             new StringContent(JsonSerializer.Serialize(body, JsonOptions), Encoding.UTF8, "application/json"), ct);
         var text = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
@@ -4368,7 +4397,7 @@ public sealed class AgentKitService
         var customerCode = ReadJsonString(root, "customerCode") ?? ReadJsonString(customerNode, "code");
         if (string.IsNullOrWhiteSpace(customerCode))
         {
-            throw new Exception(Localize(context.Language, "顧客コードが必須です。", "customerCode 必须指定"));
+            throw new Exception(Localize(context.Language, "顧客コードが必須です。", "customerCode 必须指定", "customerCode is required"));
         }
         customerCode = customerCode.Trim();
 
@@ -4387,7 +4416,7 @@ public sealed class AgentKitService
 
         if (!root.TryGetPropertyValue("lines", out var linesNode) || linesNode is not JsonArray lineArray || lineArray.Count == 0)
         {
-            throw new Exception(Localize(context.Language, "品目明細が不足しています。", "缺少品目明细"));
+            throw new Exception(Localize(context.Language, "品目明細が不足しています。", "缺少品目明细", "Item details are missing"));
         }
 
         var lines = new JsonArray();
@@ -4403,14 +4432,14 @@ public sealed class AgentKitService
                                ?? ReadJsonString(lineObj, "item");
             if (string.IsNullOrWhiteSpace(materialCode))
             {
-                throw new Exception(Localize(context.Language, $"明細 {lineNo} に品目コードがありません。", $"明细 {lineNo} 缺少 materialCode"));
+                throw new Exception(Localize(context.Language, $"明細 {lineNo} に品目コードがありません。", $"明细 {lineNo} 缺少 materialCode", $"Line {lineNo} is missing materialCode"));
             }
             materialCode = materialCode.Trim();
 
             var qty = ReadJsonDecimal(lineObj, "quantity");
             if (qty <= 0m)
             {
-                throw new Exception(Localize(context.Language, $"明細 {lineNo} の数量が不正です。", $"明细 {lineNo} 的数量必须大于 0"));
+                throw new Exception(Localize(context.Language, $"明細 {lineNo} の数量が不正です。", $"明细 {lineNo} 的数量必须大于 0", $"Line {lineNo} has invalid quantity"));
             }
 
             var uom = ReadJsonString(lineObj, "uom") ?? ReadJsonString(lineObj, "unit") ?? "EA";
@@ -4465,7 +4494,7 @@ public sealed class AgentKitService
 
         if (lines.Count == 0)
         {
-            throw new Exception(Localize(context.Language, "品目明細が不足しています。", "缺少品目明细"));
+            throw new Exception(Localize(context.Language, "品目明細が不足しています。", "缺少品目明细", "Item details are missing"));
         }
 
         var soNo = GenerateSalesOrderNumber(context.CompanyCode);
@@ -4508,7 +4537,7 @@ public sealed class AgentKitService
         var insertedJson = await Crud.InsertRawJson(_ds, "sales_orders", context.CompanyCode, payloadDoc.RootElement.GetRawText());
         if (string.IsNullOrWhiteSpace(insertedJson))
         {
-            throw new Exception(Localize(context.Language, "受注の登録に失敗しました。", "创建受注订单失败。"));
+            throw new Exception(Localize(context.Language, "受注の登録に失敗しました。", "创建受注订单失败。", "Failed to create sales order."));
         }
 
         using var insertedDoc = JsonDocument.Parse(insertedJson);
@@ -4575,11 +4604,11 @@ public sealed class AgentKitService
             ct);
 
         var messageContent = string.IsNullOrWhiteSpace(soNo)
-            ? Localize(context.Language, "受注を登録しました。", "已创建受注订单。")
-            : Localize(context.Language, $"受注 {soNo} を登録しました。", $"已创建受注订单 {soNo}。");
+            ? Localize(context.Language, "受注を登録しました。", "已创建受注订单。", "Sales order created.")
+            : Localize(context.Language, $"受注 {soNo} を登録しました。", $"已创建受注订单 {soNo}。", $"Sales order {soNo} created.");
         if (!string.IsNullOrWhiteSpace(deliveryDate))
         {
-            messageContent += Localize(context.Language, $" 納期: {deliveryDate}", $" 交期: {deliveryDate}");
+            messageContent += Localize(context.Language, $" 納期: {deliveryDate}", $" 交期: {deliveryDate}", $" Delivery: {deliveryDate}");
         }
 
         var tag = new
@@ -4816,14 +4845,14 @@ public sealed class AgentKitService
         }
         if (!string.IsNullOrWhiteSpace(deliveryDate))
         {
-            parts.Add(Localize(language, $"納期 {deliveryDate}", $"交期 {deliveryDate}"));
+            parts.Add(Localize(language, $"納期 {deliveryDate}", $"交期 {deliveryDate}", $"Delivery: {deliveryDate}"));
         }
         if (totalAmount > 0m)
         {
             var amountText = $"{currency.ToUpperInvariant()} {totalAmount:0.##}";
-            parts.Add(Localize(language, $"金額 {amountText}", $"金额 {amountText}"));
+            parts.Add(Localize(language, $"金額 {amountText}", $"金额 {amountText}", $"Amount: {amountText}"));
         }
-        return parts.Count == 0 ? Localize(language, "受注", "受注订单") : string.Join(" / ", parts);
+        return parts.Count == 0 ? Localize(language, "受注", "受注订单", "Sales Order") : string.Join(" / ", parts);
     }
 
     private async Task<ToolExecutionResult> GetVoucherByNumberAsync(string companyCode, string voucherNo, CancellationToken ct)
@@ -4861,7 +4890,7 @@ public sealed class AgentKitService
     {
         var partnerName = args.TryGetProperty("name", out var nameEl) ? nameEl.GetString()?.Trim() : null;
         if (string.IsNullOrWhiteSpace(partnerName))
-            throw new Exception(Localize(context.Language, "取引先名を指定してください。", "取引先名不能为空"));
+            throw new Exception(Localize(context.Language, "取引先名を指定してください。", "取引先名不能为空", "partner_name is required"));
         
         var nameKana = args.TryGetProperty("nameKana", out var kanaEl) ? kanaEl.GetString()?.Trim() : null;
         var isCustomer = args.TryGetProperty("isCustomer", out var custEl) && custEl.GetBoolean();
@@ -4970,7 +4999,10 @@ public sealed class AgentKitService
                 : $"取引先「{partnerName}」を登録しました（コード：{partnerCode}）。",
             invoiceRegNo != null
                 ? $"已创建取引先「{partnerName}」（编码：{partnerCode}）。已自动匹配 T 番号 {invoiceRegNo}。"
-                : $"已创建取引先「{partnerName}」（编码：{partnerCode}）。");
+                : $"已创建取引先「{partnerName}」（编码：{partnerCode}）。",
+            invoiceRegNo != null
+                ? $"Created partner \"{partnerName}\" (code: {partnerCode}). Invoice registration number {invoiceRegNo} was auto-assigned."
+                : $"Created partner \"{partnerName}\" (code: {partnerCode}).");
 
         var msg = new AgentResultMessage("assistant", resultMsg, "success", new
         {
@@ -5303,7 +5335,18 @@ public sealed class AgentKitService
                             total_amount = new { type = "number" },
                             tax_amount = new { type = "number" },
                             summary = new { type = "string" },
-                            lines = new { type = "array" }
+                            lines = new { 
+                                type = "array",
+                                items = new {
+                                    type = "object",
+                                    properties = new {
+                                        description = new { type = "string" },
+                                        amount = new { type = "number" },
+                                        quantity = new { type = "number" },
+                                        unit_price = new { type = "number" }
+                                    }
+                                }
+                            }
                         },
                         required = new[] { "vendor_id" }
                     }

@@ -2269,16 +2269,25 @@ LIMIT 1";
         if (tx != null) cmd.Transaction = tx;
         
         // open_items 表只有 partner_id 列，员工/供应商/客户的 ID 都存储在这里
-        // 注意：不要使用 employee_id，open_items 表中没有这个列！
+        // 注意：open_items 表的日期列是 doc_date，不是 posting_date
+        // 通过 JOIN vouchers 获取 voucher_no 和原始凭证行的 drcr
         cmd.CommandText = $@"
-            SELECT id, account_code, residual_amount, posting_date, voucher_no, drcr
-            FROM open_items
-            WHERE company_code = $1
-              AND partner_id = $2
-              AND drcr = $3
-              AND ABS(residual_amount) > 0.01
-              AND posting_date <= $4
-            ORDER BY ABS(ABS(residual_amount) - $5) ASC, posting_date DESC
+            WITH oi_with_drcr AS (
+                SELECT oi.id, oi.account_code, oi.residual_amount, oi.doc_date, 
+                       v.voucher_no,
+                       COALESCE((SELECT line->>'drcr' FROM jsonb_array_elements(v.payload->'lines') AS line 
+                                 WHERE (line->>'lineNo')::int = oi.voucher_line_no LIMIT 1), 'DR') as drcr
+                FROM open_items oi
+                JOIN vouchers v ON v.id = oi.voucher_id AND v.company_code = oi.company_code
+                WHERE oi.company_code = $1
+                  AND oi.partner_id = $2
+                  AND ABS(oi.residual_amount) > 0.01
+                  AND oi.doc_date <= $4
+            )
+            SELECT id, account_code, residual_amount, doc_date, voucher_no, drcr
+            FROM oi_with_drcr
+            WHERE drcr = $3
+            ORDER BY ABS(ABS(residual_amount) - $5) ASC, doc_date DESC
             LIMIT 20";
         cmd.Parameters.AddWithValue(companyCode);
         cmd.Parameters.AddWithValue(counterparty.Id);
