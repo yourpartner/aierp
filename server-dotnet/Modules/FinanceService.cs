@@ -130,7 +130,9 @@ public class FinanceService
         Auth.UserCtx userCtx,
         VoucherSource source = VoucherSource.Manual,
         string? sessionId = null,
-        string? targetUserId = null)
+        string? targetUserId = null,
+        NpgsqlConnection? externalConn = null,
+        NpgsqlTransaction? externalTx = null)
     {
         var payloadNode = JsonNode.Parse(payload.GetRawText()) as JsonObject
             ?? throw new Exception("invalid voucher payload");
@@ -233,8 +235,18 @@ public class FinanceService
         var payloadElement = payloadDoc.RootElement;
 
         string? violation = null;
-        await using var conn = await _ds.OpenConnectionAsync();
-        await using var tx = await conn.BeginTransactionAsync();
+        // 支持外部传入连接和事务（用于事务一致性场景），否则自己创建
+        var ownsConnection = externalConn is null;
+        var conn = externalConn ?? await _ds.OpenConnectionAsync();
+        NpgsqlTransaction? tx = null;
+        if (ownsConnection)
+        {
+            tx = await conn.BeginTransactionAsync();
+        }
+        else
+        {
+            tx = externalTx; // 使用外部事务
+        }
         var accountMetaCache = new Dictionary<string, AccountMeta?>(StringComparer.OrdinalIgnoreCase);
         async Task<AccountMeta?> LoadAccountMetaAsync(string accountCode)
         {
@@ -347,15 +359,29 @@ public class FinanceService
             }
         }
 
-        await tx.CommitAsync();
+        // 只有在自己创建连接时才提交事务
+        if (ownsConnection && tx != null)
+        {
+            await tx.CommitAsync();
+        }
         
-        // 刷新总账物化视图，确保报表数据一致
-        await RefreshGlViewAsync(conn);
+        // 刷新总账物化视图，确保报表数据一致（仅在自己管理连接时）
+        if (ownsConnection)
+        {
+            await RefreshGlViewAsync(conn);
+        }
         
         // 对于 Auto source，如果有发票警告，创建警报任务通知用户
         if (source == VoucherSource.Auto && invoiceWarning != null && !string.IsNullOrWhiteSpace(targetUserId))
         {
             await CreateInvoiceWarningAlertAsync(companyCode, invoiceWarning, targetUserId, insertedVoucherNo, insertedVoucherId != Guid.Empty ? insertedVoucherId : null);
+        }
+        
+        // 清理自己创建的资源
+        if (ownsConnection)
+        {
+            if (tx != null) await tx.DisposeAsync();
+            await conn.DisposeAsync();
         }
         
         return (json, invoiceWarning);

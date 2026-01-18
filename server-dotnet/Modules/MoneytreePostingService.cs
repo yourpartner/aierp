@@ -890,9 +890,11 @@ public sealed class MoneytreePostingService
                 debitAccount, creditAccount, learnedFromHistory, clearingTargetLine);
             using var payloadDoc = BuildVoucherPayload(action, row, amount, debitAccount, creditAccount, debitMeta, creditMeta, feeInfo, clearingTargetLine, clearedItemInfos);
             // Moneytree 是后台自动场景，传入 targetUserId 以便创建警报任务
+            // 传入外部事务，确保凭证创建与后续操作在同一事务中
             var (json, _) = await _financeService.CreateVoucher(
                 companyCode, "vouchers", payloadDoc.RootElement, user,
-                VoucherSource.Auto, targetUserId: user.UserId);
+                VoucherSource.Auto, targetUserId: user.UserId,
+                externalConn: conn, externalTx: tx);
             insertedJson = json;
             (voucherId, voucherNo) = ExtractVoucherInfo(insertedJson);
         }
@@ -2266,20 +2268,13 @@ LIMIT 1";
         await using var cmd = conn.CreateCommand();
         if (tx != null) cmd.Transaction = tx;
         
-        // 根据对手方类型确定查询的 partner_id 字段
-        var partnerIdField = counterparty.Kind.ToLowerInvariant() switch
-        {
-            "employee" => "employee_id",
-            "vendor" => "partner_id",
-            "customer" => "partner_id",
-            _ => "partner_id"
-        };
-
+        // open_items 表只有 partner_id 列，员工/供应商/客户的 ID 都存储在这里
+        // 注意：不要使用 employee_id，open_items 表中没有这个列！
         cmd.CommandText = $@"
             SELECT id, account_code, residual_amount, posting_date, voucher_no, drcr
             FROM open_items
             WHERE company_code = $1
-              AND {partnerIdField} = $2
+              AND partner_id = $2
               AND drcr = $3
               AND ABS(residual_amount) > 0.01
               AND posting_date <= $4
@@ -2910,9 +2905,11 @@ LIMIT 1";
         {
             var payloadJson = payloadObj.ToJsonString();
             using var payloadDoc = JsonDocument.Parse(payloadJson);
+            // 传入外部事务，确保凭证创建与后续操作在同一事务中
             var (json, _) = await _financeService.CreateVoucher(
                 companyCode, "vouchers", payloadDoc.RootElement, user,
-                VoucherSource.Auto, targetUserId: user.UserId);
+                VoucherSource.Auto, targetUserId: user.UserId,
+                externalConn: conn, externalTx: tx);
             (voucherId, voucherNo) = ExtractVoucherInfo(json);
         }
         catch (Exception ex)
