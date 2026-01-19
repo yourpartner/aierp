@@ -95,9 +95,11 @@ public class FinanceReportsModule : ModuleBase
                 normalized AS (
                     SELECT
                         *,
+                        -- 消費税科目自体には税区分を表示しない（費用/収入科目にのみ表示）
                         CASE
-                            WHEN (tax_type ILIKE '%INPUT%' OR account_name_raw ILIKE '%仮払消費税%') THEN 'INPUT'
-                            WHEN (tax_type ILIKE '%OUTPUT%' OR account_name_raw ILIKE '%仮受消費税%') THEN 'OUTPUT'
+                            WHEN account_name_raw ILIKE '%仮払消費税%' OR account_name_raw ILIKE '%仮受消費税%' THEN NULL
+                            WHEN tax_type ILIKE '%INPUT%' THEN 'INPUT'
+                            WHEN tax_type ILIKE '%OUTPUT%' THEN 'OUTPUT'
                             ELSE NULL
                         END as tax_side,
                         CASE
