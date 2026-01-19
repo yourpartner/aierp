@@ -215,6 +215,7 @@
                 active: task.id === activeTaskId,
                 completed: task.status === 'completed',
                 failed: task.status === 'failed',
+                error: task.status === 'error',
                 cancelled: task.status === 'cancelled'
                 }
               ]"
@@ -250,6 +251,7 @@
                       active: task.id === activeTaskId,
                       completed: task.status === 'completed',
                       failed: task.status === 'failed',
+                      error: task.status === 'error',
                       cancelled: task.status === 'cancelled'
                       }
                     ]"
@@ -386,6 +388,18 @@
                 </div>
                 <div class="task-header-actions">
                   <el-tag size="small" :type="taskStatusType(section.status)">{{ taskStatusLabel(section.status) }}</el-tag>
+                  <el-button
+                    v-if="section.kind === 'invoice' && canRetrySection(section)"
+                    link
+                    size="small"
+                    type="primary"
+                    :icon="Refresh"
+                    :loading="retryingTaskId === section.invoiceTask.id"
+                    @click.stop="retryInvoiceTask(section.invoiceTask)"
+                    class="task-retry-btn"
+                  >
+                    {{ localize('再試行', '重试', 'Retry') }}
+                  </el-button>
                   <el-button
                     v-if="section.kind === 'invoice' && section.invoiceTask && canCancelTask(section.invoiceTask)"
                     link
@@ -997,7 +1011,7 @@ import { loadEditionInfo, menuTree as editionMenuTree } from '../stores/edition'
 import type { MenuTreeNode } from '../api/edition'
 import { useI18n } from '../i18n'
 import SalesChartMessage from '../components/SalesChartMessage.vue'
-import { Document, Close, Plus, Delete, ArrowDown, ArrowRight, Loading } from '@element-plus/icons-vue'
+import { Document, Close, Plus, Delete, ArrowDown, ArrowRight, Loading, Refresh } from '@element-plus/icons-vue'
 
 // 所有业务组件使用 defineAsyncComponent 按需加载，提升首次加载性能
 // 财务核心
@@ -1930,6 +1944,7 @@ function taskStatusType(status: string){
   const normalized = status?.toLowerCase() || ''
   if (normalized === 'completed') return 'success'
   if (normalized === 'failed') return 'danger'
+  if (normalized === 'error') return 'danger'
   if (normalized === 'cancelled') return 'info'
   if (normalized === 'in_progress') return 'warning'
   if (normalized === 'approved') return 'success'
@@ -1946,8 +1961,45 @@ function taskStatusLabel(status: string){
 
 function canCancelTask(task: InvoiceTask){
   const normalized = task.status?.toLowerCase() || ''
-  if (!normalized) return true
-  return normalized !== 'completed'
+  // 允许删除任何状态的任务，因为后端现在支持强制删除已完成的任务
+  return true
+}
+
+function canRetryTask(task: InvoiceTask){
+  const normalized = task.status?.toLowerCase() || ''
+  return normalized === 'failed' || normalized === 'error' || normalized === 'cancelled'
+}
+
+function canRetrySection(section: TaskSectionItem){
+  if (!section || section.kind !== 'invoice' || !section.invoiceTask) return false
+  if (canRetryTask(section.invoiceTask)) return true
+  const msgs = Array.isArray(section.messages) ? section.messages : []
+  return msgs.some((m: any) => (m?.status || '').toLowerCase() === 'error')
+}
+
+async function retryInvoiceTask(task: InvoiceTask){
+  if (!activeSessionId.value){
+    ElMessage.error('请先选择会话')
+    return
+  }
+  if (retryingTaskId.value === task.id) return
+  retryingTaskId.value = task.id
+  try{
+    const retryMessage = localize('このタスクを再試行してください。', '请重新尝试该任务。', 'Please retry this task.')
+    const payload: Record<string, any> = { message: retryMessage, language: lang.value, taskId: task.id }
+    if (activeSessionId.value) payload.sessionId = activeSessionId.value
+    const resp = await api.post('/ai/agent/message', payload)
+    applySessionFromResponse(resp.data?.sessionId)
+    activeTaskId.value = task.id
+    await loadMessages()
+    await loadTasks()
+    ElMessage.success(localize('再試行を開始しました。', '已开始重试。', 'Retry started.'))
+  }catch(e:any){
+    const errText = e?.response?.data?.error || e?.message || localize('再試行に失敗しました。', '重试失败。', 'Retry failed.')
+    ElMessage.error(errText)
+  }finally{
+    retryingTaskId.value = ''
+  }
 }
 
 async function confirmCancelTask(task: InvoiceTask){
@@ -3344,6 +3396,7 @@ watch(clarificationMap, map => {
   })
 })
 const sending = ref(false)
+const retryingTaskId = ref('')
 const chatBoxRef = ref<HTMLElement | null>(null)
 const localize = (ja: string, zh: string, en?: string) => {
   if (lang.value === 'zh') return zh
@@ -3379,6 +3432,7 @@ const defaultTaskStatusLabels: Record<string, string> = {
   in_progress: '処理中',
   completed: '完了',
   failed: '失敗',
+  error: 'エラー',
   cancelled: 'キャンセル',
   approved: '承認済み',
   rejected: '却下'
@@ -5321,6 +5375,15 @@ function onChatDragLeave(){
 }
 
 .task-panel-item.failed::before {
+  background: #ef4444;
+  opacity: 1;
+}
+
+.task-panel-item.error {
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.task-panel-item.error::before {
   background: #ef4444;
   opacity: 1;
 }

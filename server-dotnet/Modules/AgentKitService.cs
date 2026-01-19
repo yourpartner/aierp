@@ -557,7 +557,8 @@ public sealed class AgentKitService
                     messages.Add(new Dictionary<string, object?>
                     {
                         ["role"] = "system",
-                        ["content"] = $"[SYSTEM CALCULATION] 人均金额 = {perPerson:N0} JPY ({netAmount:N0} / {personCount}人)。根据 10,000 JPY 规则，科目判定应为：【{suggestedAccount}】。请调用 lookup_account 获取该科目的最新代码。同时，请将凭证摘要（header.summary）更新为：「{suggestedAccount} | {partnerName} ({request.Message})」。"
+                        ["content"] = $"[SYSTEM INFO] 当前正在处理的文件 ID 为：\"{task.FileId}\" (标签: {task.DocumentLabel ?? "无"})。如果需要再次提取数据，请务必使用此 ID。\n" + 
+                                     $"[SYSTEM CALCULATION] 人均金额 = {perPerson:N0} JPY ({netAmount:N0} / {personCount}人)。根据 10,000 JPY 规则，科目判定应为：【{suggestedAccount}】。请调用 lookup_account 获取该科目的最新代码。同时，请将凭证摘要（header.summary）更新为：「{suggestedAccount} | {partnerName} ({request.Message})」。"
                     });
                 }
             }
@@ -2223,25 +2224,30 @@ public sealed class AgentKitService
             storedPath = path.Trim();
         }
         var contentType = string.IsNullOrWhiteSpace(task.ContentType) ? "application/octet-stream" : task.ContentType;
-        return fileId =>
-        {
-            if (string.IsNullOrWhiteSpace(fileId)) return null;
-            
-            // 1. 完全匹配
-            if (string.Equals(fileId, task.FileId, StringComparison.OrdinalIgnoreCase)) goto match;
-            
-            // 2. 匹配标签（如 "#1"）
-            if (fileId.StartsWith("#") && !string.IsNullOrWhiteSpace(task.DocumentLabel) && 
-                string.Equals(fileId, task.DocumentLabel, StringComparison.OrdinalIgnoreCase)) goto match;
-            
-            // 3. 匹配去除前缀后的 ID（处理 tmp_ 或 file_ 前缀不一致的情况）
-            var cleanId = fileId.Contains('_') ? fileId.Split('_', 2)[1] : fileId;
-            var cleanTaskId = task.FileId.Contains('_') ? task.FileId.Split('_', 2)[1] : task.FileId;
-            if (string.Equals(cleanId, cleanTaskId, StringComparison.OrdinalIgnoreCase)) goto match;
+            return fileId =>
+            {
+                if (string.IsNullOrWhiteSpace(fileId)) return null;
+                
+                var fid = fileId.Trim();
+                // 1. 完全匹配
+                if (string.Equals(fid, task.FileId, StringComparison.OrdinalIgnoreCase)) goto match;
+                
+                // 2. 匹配标签（如 "#1"）
+                if (fid.StartsWith("#") && !string.IsNullOrWhiteSpace(task.DocumentLabel) && 
+                    string.Equals(fid, task.DocumentLabel, StringComparison.OrdinalIgnoreCase)) goto match;
+                
+                // 3. 匹配去除前缀后的 ID（处理 tmp_ 或 file_ 前缀不一致的情况）
+                var cleanId = fid.Contains('_') ? fid.Split('_', 2)[1] : fid;
+                var cleanTaskId = task.FileId.Contains('_') ? task.FileId.Split('_', 2)[1] : task.FileId;
+                if (string.Equals(cleanId, cleanTaskId, StringComparison.OrdinalIgnoreCase)) goto match;
 
-            return null;
+                // 4. 模糊匹配：如果输入 ID 包含在任务 ID 中，或反之（处理某些哈希截断或前缀丢失）
+                if (task.FileId.Contains(cleanId, StringComparison.OrdinalIgnoreCase) || 
+                    fid.Contains(cleanTaskId, StringComparison.OrdinalIgnoreCase)) goto match;
 
-            match:
+                return null;
+
+                match:
             var analysisClone = task.Analysis is not null ? task.Analysis.DeepClone().AsObject() : null;
             return new UploadedFileRecord(
                 task.FileName,
@@ -3270,6 +3276,18 @@ public sealed class AgentKitService
                         fileId = resolvedFileId;
                     }
                     var file = context.ResolveFile(fileId!);
+                    if (file is null && !string.IsNullOrWhiteSpace(context.DefaultFileId) &&
+                        !string.Equals(fileId, context.DefaultFileId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var fallbackId = context.DefaultFileId!;
+                        var fallbackFile = context.ResolveFile(fallbackId);
+                        if (fallbackFile is not null)
+                        {
+                            _logger.LogWarning("[AgentKit] fileId={FileId} 未解析到文件，回退使用默认文件 {FallbackId}", fileId, fallbackId);
+                            fileId = fallbackId;
+                            file = fallbackFile;
+                        }
+                    }
                     if (file is null)
                         throw new Exception(Localize(context.Language, $"ファイル {fileId} が見つからないか期限切れです。", $"文件 {fileId} 未找到或已过期", $"File {fileId} not found or expired"));
                     var data = await ExtractInvoiceDataAsync(fileId!, file, context, ct);
@@ -6181,7 +6199,16 @@ public sealed class AgentKitService
 
         public bool TryGetDocument(string fileId, out JsonObject? parsedData)
         {
-            return _parsedDocuments.TryGetValue(fileId, out parsedData);
+            if (_parsedDocuments.TryGetValue(fileId, out parsedData)) return true;
+            
+            // 如果直接找找不到，尝试解析 token 再找
+            if (TryResolveAttachmentToken(fileId, out var resolvedId))
+            {
+                return _parsedDocuments.TryGetValue(resolvedId, out parsedData);
+            }
+            
+            parsedData = null;
+            return false;
         }
 
         public void SetDefaultFileId(string? fileId)
@@ -6234,9 +6261,19 @@ public sealed class AgentKitService
             resolvedFileId = string.Empty;
             if (string.IsNullOrWhiteSpace(token)) return false;
             var normalized = token.Trim();
+            
+            // 1. 如果本身就是已知的 FileId
             if (_knownFileIds.Contains(normalized))
             {
                 resolvedFileId = normalized;
+                return true;
+            }
+
+            // 2. 如果是 DocumentSessionId (doc_xxx 或 xxx)
+            var sessionKey = normalized.StartsWith("doc_") ? normalized : "doc_" + normalized;
+            if (_fileIdsByDocumentSession.TryGetValue(sessionKey, out var sessionFiles) && sessionFiles.Count > 0)
+            {
+                resolvedFileId = sessionFiles[0];
                 return true;
             }
             if (_documentSessionByFileId.ContainsKey(normalized))
@@ -6244,11 +6281,8 @@ public sealed class AgentKitService
                 resolvedFileId = normalized;
                 return true;
             }
-            if (_fileIdsByDocumentSession.TryGetValue(normalized, out var sessionFiles) && sessionFiles.Count > 0)
-            {
-                resolvedFileId = sessionFiles[0];
-                return true;
-            }
+
+            // 3. 标签匹配 (#1)
             foreach (var kvp in _documentSessionLabels)
             {
                 if (string.Equals(kvp.Value, normalized, StringComparison.OrdinalIgnoreCase))
@@ -6260,19 +6294,17 @@ public sealed class AgentKitService
                     }
                 }
             }
-            if (normalized.StartsWith("#", StringComparison.Ordinal))
+
+            // 4. 模糊匹配 (处理哈希值不完整的情况)
+            var bestMatch = _knownFileIds.FirstOrDefault(fid => 
+                fid.Contains(normalized, StringComparison.OrdinalIgnoreCase) || 
+                normalized.Contains(fid, StringComparison.OrdinalIgnoreCase));
+            if (bestMatch != null)
             {
-                foreach (var kvp in _documentSessionLabels)
-                {
-                    if (string.Equals(kvp.Value, normalized, StringComparison.OrdinalIgnoreCase) &&
-                        _fileIdsByDocumentSession.TryGetValue(kvp.Key, out var labelFiles) &&
-                        labelFiles.Count > 0)
-                    {
-                        resolvedFileId = labelFiles[0];
-                        return true;
-                    }
-                }
+                resolvedFileId = bestMatch;
+                return true;
             }
+
             return false;
         }
 

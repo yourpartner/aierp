@@ -70,7 +70,7 @@ const defaultApiBase = (() => {
     } catch {}
   }
 
-  // 3) In dev mode (localhost), directly hit backend on port 5179 (no proxy needed)
+  // 3) In dev mode (localhost), always force backend on port 5179 to avoid stale overrides
   if (typeof window !== 'undefined') {
     try {
       const origin = new URL(window.location.href)
@@ -78,12 +78,10 @@ const defaultApiBase = (() => {
       const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1'
       if (isLocalHost) {
         const localDefault = `${origin.protocol}//${hostname}:5179`
-        // 如果存的不是 5179（或为空），直接重置，避免端口错配
-        if (!stored || !stored.endsWith(':5179')) {
-          stored = localDefault
-          safeSet('api_base_url', stored)
-        }
-        return stored
+        // 始终覆盖本地缓存，避免残留地址导致 Network Error
+        stored = localDefault
+        safeSet('api_base_url', stored)
+        return localDefault
       }
     } catch {}
   }
