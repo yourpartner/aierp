@@ -3848,6 +3848,20 @@ public sealed class AgentKitService
             }
 
             // 查找已存在的税金分录和费用分录
+            // 1. 预处理：确保所有行都有 lineNo，方便后续关联
+            int tempLineNo = 1;
+            foreach (var item in linesNode)
+            {
+                if (item is JsonObject line)
+                {
+                    if (!line.ContainsKey("lineNo"))
+                    {
+                        line["lineNo"] = tempLineNo;
+                    }
+                    tempLineNo++;
+                }
+            }
+
             // 同时检查是否有嵌套的 tax 属性（LLM 可能用这种方式生成税金）
             JsonObject? existingTaxLine = null;
             JsonObject? existingExpenseLine = null;
@@ -3881,6 +3895,7 @@ public sealed class AgentKitService
                 {
                     existingTaxLine ??= line;
                     detectedTaxAmount += ReadAmount(line);
+                    line["isTaxLine"] = true;
                 }
                 else if (existingExpenseLine is null)
                 {
@@ -3918,7 +3933,8 @@ public sealed class AgentKitService
                     {
                         ["accountCode"] = inputTaxAccountCode,
                         ["drcr"] = "DR",
-                        ["note"] = "仮払消費税"
+                        ["note"] = "仮払消費税",
+                        ["isTaxLine"] = true
                     };
                     linesNode.Add(existingTaxLine);
                 }
@@ -3926,6 +3942,17 @@ public sealed class AgentKitService
                 if (existingTaxLine is not null)
                 {
                     WriteAmount(existingTaxLine, Math.Round(finalTaxAmount, 2));
+                    existingTaxLine["isTaxLine"] = true;
+
+                    if (existingExpenseLine is not null && existingExpenseLine.TryGetPropertyValue("lineNo", out var baseLineNoNode))
+                    {
+                        existingTaxLine["baseLineNo"] = baseLineNoNode.DeepClone();
+                    }
+                    else if (existingExpenseLine is not null)
+                    {
+                        // 如果还没有 lineNo，我们将在后面统一设置，或者在这里先假设一个
+                        // 但在 CreateVoucherAsync 中，我们会在最后统一设置 lineNo
+                    }
                     
                     if (taxRate.HasValue)
                     {
