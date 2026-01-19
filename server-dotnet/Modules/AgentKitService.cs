@@ -451,7 +451,7 @@ public sealed class AgentKitService
             if (request.TaskId.HasValue)
             {
                 _logger.LogError(ex, "[AgentKit] 任务执行出错: taskId={TaskId}", request.TaskId.Value);
-                await _invoiceTaskService.UpdateStatusAsync(request.TaskId.Value, "error", ex.Message, ct);
+                await _invoiceTaskService.UpdateStatusAsync(request.TaskId.Value, "error", new JsonObject { ["error"] = ex.Message }, ct);
             }
             throw;
         }
@@ -618,7 +618,7 @@ public sealed class AgentKitService
         catch (Exception ex)
         {
             _logger.LogError(ex, "[AgentKit] 票据任务执行出错: taskId={TaskId}", task.Id);
-            await _invoiceTaskService.UpdateStatusAsync(task.Id, "error", ex.Message, ct);
+            await _invoiceTaskService.UpdateStatusAsync(task.Id, "error", new JsonObject { ["error"] = ex.Message }, ct);
             throw;
         }
     }
