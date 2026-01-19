@@ -70,24 +70,87 @@ public class FinanceReportsModule : ModuleBase
             await using var cmd = conn.CreateCommand();
 
             cmd.CommandText = @"
+                WITH base_lines AS (
+                    SELECT 
+                        v.posting_date,
+                        v.voucher_no,
+                        v.payload->'header'->>'summary' as summary,
+                        v.payload->'header'->>'invoiceRegistrationNo' as invoice_no,
+                        line->>'lineNo' as line_no,
+                        line->>'accountCode' as account_code,
+                        COALESCE(a.payload->>'name', line->>'accountCode') as account_name,
+                        a.payload->>'name' as account_name_raw,
+                        COALESCE(line->>'taxType', a.payload->>'taxType') as tax_type,
+                        line->>'taxRate' as tax_rate_raw,
+                        line->>'drcr' as drcr,
+                        (line->>'amount')::numeric as amount,
+                        line->>'note' as description
+                    FROM vouchers v
+                    CROSS JOIN LATERAL jsonb_array_elements(v.payload->'lines') as line
+                    LEFT JOIN accounts a ON a.company_code = v.company_code AND a.account_code = line->>'accountCode'
+                    WHERE v.company_code = $1
+                      AND v.posting_date >= $2::date
+                      AND v.posting_date <= $3::date
+                ),
+                normalized AS (
+                    SELECT
+                        *,
+                        CASE
+                            WHEN (tax_type ILIKE '%INPUT%' OR account_name_raw ILIKE '%仮払消費税%') THEN 'INPUT'
+                            WHEN (tax_type ILIKE '%OUTPUT%' OR account_name_raw ILIKE '%仮受消費税%') THEN 'OUTPUT'
+                            ELSE NULL
+                        END as tax_side,
+                        CASE
+                            WHEN tax_rate_raw IS NULL OR tax_rate_raw = '' THEN NULL
+                            WHEN tax_rate_raw ~ '^[0-9]+(\.[0-9]+)?$' THEN
+                                CASE
+                                    WHEN (tax_rate_raw)::numeric > 0 AND (tax_rate_raw)::numeric < 1 THEN ROUND((tax_rate_raw)::numeric * 100)
+                                    ELSE ROUND((tax_rate_raw)::numeric)
+                                END
+                            ELSE NULL
+                        END as tax_rate_num,
+                        UPPER(REGEXP_REPLACE(COALESCE(invoice_no, ''), '[^A-Za-z0-9]', '', 'g')) as invoice_no_norm
+                    FROM base_lines
+                )
                 SELECT 
-                    v.posting_date,
-                    v.voucher_no,
-                    v.payload->'header'->>'summary' as summary,
-                    line->>'lineNo' as line_no,
-                    line->>'accountCode' as account_code,
-                    COALESCE(a.payload->>'name', line->>'accountCode') as account_name,
-                    line->>'drcr' as drcr,
-                    (line->>'amount')::numeric as amount,
-                    line->>'note' as description,
-                    line->>'taxCode' as tax_code
-                FROM vouchers v
-                CROSS JOIN LATERAL jsonb_array_elements(v.payload->'lines') as line
-                LEFT JOIN accounts a ON a.company_code = v.company_code AND a.account_code = line->>'accountCode'
-                WHERE v.company_code = $1
-                  AND v.posting_date >= $2::date
-                  AND v.posting_date <= $3::date
-                ORDER BY v.posting_date, v.voucher_no, (line->>'lineNo')::int
+                    posting_date,
+                    voucher_no,
+                    summary,
+                    line_no,
+                    account_code,
+                    account_name,
+                    drcr,
+                    amount,
+                    description,
+                    CASE
+                        WHEN tax_side IS NULL THEN NULL
+                        WHEN tax_side = 'INPUT' THEN
+                            '进项税(' ||
+                            COALESCE(
+                                CASE
+                                    WHEN tax_rate_num IS NULL THEN '税率不明'
+                                    WHEN tax_rate_num = 0 THEN '0%'
+                                    ELSE tax_rate_num::int::text || '%'
+                                END, '税率不明'
+                            ) || ',' ||
+                            CASE
+                                WHEN invoice_no_norm IN ('T1234567890123','1234567890123') THEN '非合规'
+                                WHEN invoice_no_norm LIKE 'T%' THEN '合规'
+                                ELSE '非合规'
+                            END || ')'
+                        WHEN tax_side = 'OUTPUT' THEN
+                            '销项税(' ||
+                            COALESCE(
+                                CASE
+                                    WHEN tax_rate_num IS NULL THEN '税率不明'
+                                    WHEN tax_rate_num = 0 THEN '0%'
+                                    ELSE tax_rate_num::int::text || '%'
+                                END, '税率不明'
+                            ) || ')'
+                        ELSE NULL
+                    END as tax_code
+                FROM normalized
+                ORDER BY posting_date, voucher_no, (line_no)::int
             ";
             cmd.Parameters.AddWithValue(cc.ToString());
             cmd.Parameters.AddWithValue(startDate);

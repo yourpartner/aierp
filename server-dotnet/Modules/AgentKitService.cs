@@ -538,6 +538,31 @@ public sealed class AgentKitService
 
         var messages = BuildInitialMessages(request.CompanyCode, selectedScenarios, accountingRules, history, tokens, language);
 
+        // 如果票据中已经识别出人数，则无需再询问人数，仅询问姓名并直接计算人均
+        if (clarification is null && task.Analysis is JsonObject autoAnalysis)
+        {
+            var netAmount = TryGetJsonDecimal(autoAnalysis, "totalAmount") - (TryGetJsonDecimal(autoAnalysis, "taxAmount") ?? 0m);
+            if (netAmount >= 20000)
+            {
+                var detectedCount = TryGetPersonCount(autoAnalysis);
+                if (detectedCount is not null && detectedCount.Value > 0)
+                {
+                    var perPerson = netAmount.Value / detectedCount.Value;
+                    var suggestedAccount = perPerson > 10000 ? "交際費" : "会議費";
+                    var partnerName = ReadString(autoAnalysis, "partnerName") ?? task.FileName;
+                    messages.Add(new Dictionary<string, object?>
+                    {
+                        ["role"] = "system",
+                        ["content"] =
+                            $"[SYSTEM CALCULATION] 票据中已识别用餐人数 = {detectedCount.Value}人。人均金额 = {perPerson:N0} JPY ({netAmount:N0} / {detectedCount.Value}人)。根据 10,000 JPY 规则，科目判定应为：【{suggestedAccount}】。" +
+                            "请不要再询问人数，只需向用户确认“参加者氏名”。" +
+                            "请调用 lookup_account 获取该科目的最新代码，并在凭证摘要中体现人数与参加者信息。" +
+                            $" 凭证摘要建议：{suggestedAccount} | {partnerName} ({detectedCount.Value}人, 参加者: 未确认)"
+                    });
+                }
+            }
+        }
+
         // 如果是回答澄清问题的流程，且金额较大，后端计算好科目建议注入 AI，防止其选错
         if (clarification is not null && task.Analysis is JsonObject analysis)
         {
@@ -2162,6 +2187,28 @@ public sealed class AgentKitService
         if (jsonValue.TryGetValue<decimal>(out var dec)) return dec;
         if (jsonValue.TryGetValue<double>(out var dbl)) return Convert.ToDecimal(dbl);
         if (jsonValue.TryGetValue<string>(out var str) && decimal.TryParse(str, out var parsed)) return parsed;
+        return null;
+    }
+
+    private static int? TryGetPersonCount(JsonObject obj)
+    {
+        var keys = new[]
+        {
+            "personCount", "peopleCount", "partySize", "numberOfPeople", "numPeople",
+            "attendeeCount", "participants", "attendees"
+        };
+        foreach (var key in keys)
+        {
+            if (!obj.TryGetPropertyValue(key, out var node) || node is not JsonValue jsonValue) continue;
+            if (jsonValue.TryGetValue<int>(out var intVal) && intVal > 0) return intVal;
+            if (jsonValue.TryGetValue<decimal>(out var decVal) && decVal > 0) return (int)Math.Round(decVal, MidpointRounding.AwayFromZero);
+            if (jsonValue.TryGetValue<double>(out var dblVal) && dblVal > 0) return (int)Math.Round(dblVal, MidpointRounding.AwayFromZero);
+            if (jsonValue.TryGetValue<string>(out var strVal) && !string.IsNullOrWhiteSpace(strVal))
+            {
+                var match = Regex.Match(strVal, @"(\d+)");
+                if (match.Success && int.TryParse(match.Groups[1].Value, out var parsed) && parsed > 0) return parsed;
+            }
+        }
         return null;
     }
 

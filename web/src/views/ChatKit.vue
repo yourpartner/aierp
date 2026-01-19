@@ -190,12 +190,11 @@
               <div class="avatar">{{ profileInitials }}</div>
               <div class="user-meta">
                 <div class="user-name">{{ profile.name }}</div>
-                <div class="user-role">{{ text.nav.chat }}</div>
+                <el-button type="danger" size="small" plain @click="handleLogout">
+                  {{ text.common?.logout || 'ログアウト' }}
+                </el-button>
               </div>
             </div>
-            <el-button type="danger" size="small" plain @click="handleLogout">
-              {{ text.common?.logout || 'ログアウト' }}
-            </el-button>
           </div>
         </div>
       </header>

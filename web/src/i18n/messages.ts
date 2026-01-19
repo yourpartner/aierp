@@ -2710,6 +2710,7 @@ zh.nav = {
   accountNew: '新增科目',
   bankReceipt: '银行收款',
   bankPayment: '银行出金配分',
+  fbPayment: '自动支付',
   bankPlanner: '银行入金配分',
   moneytreeTransactions: '银行明细',
   financialReports: '财务报表',
