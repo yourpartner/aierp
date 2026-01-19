@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="page page-medium">
     <el-card>
       <template #header>
@@ -112,8 +112,8 @@ function buildPeriod(year: number, monthIndex: number) {
   const lastDay = new Date(year, monthIndex + 1, 0).getDate()
   const dd = String(lastDay).padStart(2, '0')
   return {
-    start: `${year}-${mm}-01`,
-    end: `${year}-${mm}-${dd}`
+    start: ${year}--01,
+    end: ${year}--
   }
 }
 
@@ -124,14 +124,14 @@ async function loadYear(year: number) {
   const draft = createBlankMonths()
   try {
     await ensureSchema()
-    const start = `${year}-01-01`
-    const end = `${year}-12-31`
+    const start = ${year}-01-01
+    const end = ${year}-12-31
     const resp = await api.post('/objects/accounting_period/search', {
       page: 1,
       pageSize: 200,
       where: [
-        { field: 'period_start', op: 'ge', value: start },
-        { field: 'period_start', op: 'le', value: end }
+        { field: 'period_start', op: 'gte', value: start },
+        { field: 'period_start', op: 'lte', value: end }
       ],
       orderBy: [{ field: 'period_start', dir: 'ASC' }]
     })
@@ -143,6 +143,10 @@ async function loadYear(year: number) {
       if (!raw) return
       const dt = new Date(raw)
       if (Number.isNaN(dt.getTime())) return
+      
+      // 纭繚鍙湁褰撳墠骞翠唤鐨勬暟鎹鏄犲皠
+      if (dt.getFullYear() !== year) return
+      
       const idx = dt.getMonth()
       const entry = draft[idx]
       if (!entry) return
@@ -174,7 +178,7 @@ async function openMonth(entry: MonthEntry) {
 async function closeMonth(entry: MonthEntry) {
   if (!entry.id) return
   await ensureSchema()
-  await api.delete(`/objects/accounting_period/${entry.id}`)
+  await api.delete(/objects/accounting_period/)
   await loadYear(currentYear.value)
   ElMessage.success(text.value.tables.accountingPeriods.deleteSuccess)
 }
@@ -223,7 +227,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
-/* 标题区域样式 */
+/* 鏍囬鍖哄煙鏍峰紡 */
 .page-header-left {
   display: flex;
   align-items: center;
@@ -269,4 +273,3 @@ onMounted(() => {
   color: #1f2937;
 }
 </style>
-
