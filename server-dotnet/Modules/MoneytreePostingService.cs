@@ -197,15 +197,15 @@ public sealed class MoneytreePostingService
 
             try
             {
-                var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
-                await tx.CommitAsync(ct);
-                stats.Apply(outcome, voucherInfo, transactionId: row.Id, error: error);
-                
-                // 如果有配对的手续费且处理成功，也添加到返回结果以便前端同时更新显示
-                if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
-                {
-                    var feeStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
-                    stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, feeStatus, voucherInfo?.VoucherNo, null));
+            var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
+            await tx.CommitAsync(ct);
+            stats.Apply(outcome, voucherInfo, transactionId: row.Id, error: error);
+            
+            // 如果有配对的手续费且处理成功，也添加到返回结果以便前端同时更新显示
+            if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
+            {
+                var feeStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
+                stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, feeStatus, voucherInfo?.VoucherNo, null));
                 }
             }
             catch (PostgresException pgEx)
@@ -323,15 +323,15 @@ public sealed class MoneytreePostingService
 
             try
             {
-                var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
-                await tx.CommitAsync(ct);
-                stats.Apply(outcome, voucherInfo, transactionId: id, error: error);
-                
-                // 如果有配对的手续费且处理成功，也添加到返回结果以便前端同时更新显示
-                if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
-                {
-                    var feeStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
-                    stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, feeStatus, voucherInfo?.VoucherNo, null));
+            var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
+            await tx.CommitAsync(ct);
+            stats.Apply(outcome, voucherInfo, transactionId: id, error: error);
+            
+            // 如果有配对的手续费且处理成功，也添加到返回结果以便前端同时更新显示
+            if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
+            {
+                var feeStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
+                stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, feeStatus, voucherInfo?.VoucherNo, null));
                 }
             }
             catch (PostgresException pgEx)
@@ -2481,39 +2481,42 @@ LIMIT 1";
 
         var accountUsage = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         
-        await using var reader = await cmd.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
+        // 使用显式代码块限制 reader 作用域，确保在调用其他数据库方法前关闭
         {
-            var payloadStr = reader.GetString(0);
-            using var doc = JsonDocument.Parse(payloadStr);
-            var root = doc.RootElement;
-            
-            if (!root.TryGetProperty("lines", out var lines) || lines.ValueKind != JsonValueKind.Array)
-                continue;
-
-            foreach (var line in lines.EnumerateArray())
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
             {
-                var drcr = line.TryGetProperty("drcr", out var drcrEl) && drcrEl.ValueKind == JsonValueKind.String
-                    ? drcrEl.GetString() : null;
-                var accountCode = line.TryGetProperty("accountCode", out var accEl) && accEl.ValueKind == JsonValueKind.String
-                    ? accEl.GetString() : null;
+                var payloadStr = reader.GetString(0);
+                using var doc = JsonDocument.Parse(payloadStr);
+                var root = doc.RootElement;
+                
+                if (!root.TryGetProperty("lines", out var lines) || lines.ValueKind != JsonValueKind.Array)
+                    continue;
 
-                if (string.IsNullOrWhiteSpace(accountCode)) continue;
-
-                // 出金：学习借方科目（银行在贷方）
-                // 入金：学习贷方科目（银行在借方）
-                var targetDrcr = isWithdrawal ? "DR" : "CR";
-                if (string.Equals(drcr, targetDrcr, StringComparison.OrdinalIgnoreCase))
+                foreach (var line in lines.EnumerateArray())
                 {
-                    // 排除银行和应收类科目（11xx现金/銀行、12xx売掛金等）
-                    // 保留：非1开头的科目 或 13xx(仮払金)、14xx(仮払消費税)、15xx(その他流動資産)
-                    if (!accountCode.StartsWith("1") || accountCode.StartsWith("13") || accountCode.StartsWith("14") || accountCode.StartsWith("15"))
+                    var drcr = line.TryGetProperty("drcr", out var drcrEl) && drcrEl.ValueKind == JsonValueKind.String
+                        ? drcrEl.GetString() : null;
+                    var accountCode = line.TryGetProperty("accountCode", out var accEl) && accEl.ValueKind == JsonValueKind.String
+                        ? accEl.GetString() : null;
+
+                    if (string.IsNullOrWhiteSpace(accountCode)) continue;
+
+                    // 出金：学习借方科目（银行在贷方）
+                    // 入金：学习贷方科目（银行在借方）
+                    var targetDrcr = isWithdrawal ? "DR" : "CR";
+                    if (string.Equals(drcr, targetDrcr, StringComparison.OrdinalIgnoreCase))
                     {
-                        accountUsage[accountCode] = accountUsage.GetValueOrDefault(accountCode, 0) + 1;
+                        // 排除银行和应收类科目（11xx现金/銀行、12xx売掛金等）
+                        // 保留：非1开头的科目 或 13xx(仮払金)、14xx(仮払消費税)、15xx(その他流動資産)
+                        if (!accountCode.StartsWith("1") || accountCode.StartsWith("13") || accountCode.StartsWith("14") || accountCode.StartsWith("15"))
+                        {
+                            accountUsage[accountCode] = accountUsage.GetValueOrDefault(accountCode, 0) + 1;
+                        }
                     }
                 }
             }
-        }
+        } // reader 在这里关闭
 
         if (accountUsage.Count == 0)
         {

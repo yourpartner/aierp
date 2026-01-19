@@ -186,7 +186,7 @@ RETURNING t.id, t.company_code, t.payload, t.next_run_at, t.last_run_at;";
                         ? await ExecuteTimesheetComplianceAsync(task, plan, schedule, startedAt, ct)
                         : string.Equals(action, "moneytree.sync", StringComparison.OrdinalIgnoreCase)
                             ? await ExecuteMoneytreeSyncAsync(task, plan, schedule, startedAt, ct)
-                            : TaskExecutionOutcome.Failure("未支持的任务类型", plan);
+                        : TaskExecutionOutcome.Failure("未支持的任务类型", plan);
 
             if (schedule is not null)
             {

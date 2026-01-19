@@ -409,18 +409,52 @@ public sealed class AgentKitService
 
         await SetSessionActiveDocumentAsync(sessionId, activeDocumentSessionId, ct);
 
-        await PersistMessageAsync(sessionId, "user", request.Message, null, null, request.TaskId, ct);
-
-        if (clarification is not null)
+        try
         {
-            await MarkClarificationAnsweredAsync(sessionId, clarification.QuestionId, ct);
+            if (request.TaskId.HasValue)
+            {
+                await _invoiceTaskService.UpdateStatusAsync(request.TaskId.Value, "in_progress", null, ct);
+            }
+
+            // 保存用户消息时包含 answerTo，以便前端能正确关联回答到问题
+            JsonObject? userPayload = null;
+            if (!string.IsNullOrWhiteSpace(request.AnswerTo))
+            {
+                userPayload = new JsonObject { ["answerTo"] = request.AnswerTo };
+            }
+            await PersistMessageAsync(sessionId, "user", request.Message, userPayload, null, request.TaskId, ct);
+
+            if (clarification is not null)
+            {
+                await MarkClarificationAnsweredAsync(sessionId, clarification.QuestionId, ct);
+            }
+
+            var agentResult = await RunAgentAsync(messages, context, ct);
+
+            await PersistAssistantMessagesAsync(sessionId, context.TaskId, agentResult.Messages, ct);
+
+            // 如果有关联的任务，在执行完成后更新任务状态，避免卡在“处理中”
+            if (context.TaskId.HasValue)
+            {
+                var hasError = agentResult.Messages.Any(m => string.Equals(m.Status, "error", StringComparison.OrdinalIgnoreCase));
+                var needsClarification = agentResult.Messages.Any(m => string.Equals(m.Status, "clarify", StringComparison.OrdinalIgnoreCase));
+                
+                var nextStatus = hasError ? "error" : (needsClarification ? "pending" : "completed");
+                _logger.LogInformation("[AgentKit] 任务执行完毕，自动更新状态: taskId={TaskId}, status={Status}", context.TaskId.Value, nextStatus);
+                await _invoiceTaskService.UpdateStatusAsync(context.TaskId.Value, nextStatus, null, ct);
+            }
+
+            return new AgentRunResult(sessionId, agentResult.Messages);
         }
-
-        var agentResult = await RunAgentAsync(messages, context, ct);
-
-        await PersistAssistantMessagesAsync(sessionId, context.TaskId, agentResult.Messages, ct);
-
-        return new AgentRunResult(sessionId, agentResult.Messages);
+        catch (Exception ex)
+        {
+            if (request.TaskId.HasValue)
+            {
+                _logger.LogError(ex, "[AgentKit] 任务执行出错: taskId={TaskId}", request.TaskId.Value);
+                await _invoiceTaskService.UpdateStatusAsync(request.TaskId.Value, "error", ex.Message, ct);
+            }
+            throw;
+        }
     }
 
     private async Task<AgentRunResult> ProcessTaskMessageAsync(AgentMessageRequest request, CancellationToken ct)
@@ -553,17 +587,40 @@ public sealed class AgentKitService
         context.SetDefaultFileId(task.FileId);
         context.SetActiveDocumentSession(task.DocumentSessionId);
 
-        await _invoiceTaskService.UpdateStatusAsync(task.Id, "in_progress", null, ct);
-        await PersistMessageAsync(sessionId, "user", request.Message, null, null, request.TaskId, ct);
-        if (clarification is not null)
+        try
         {
-            await MarkClarificationAnsweredAsync(sessionId, clarification.QuestionId, ct);
+            await _invoiceTaskService.UpdateStatusAsync(task.Id, "in_progress", null, ct);
+            // 保存用户消息时包含 answerTo，以便前端能正确关联回答到问题
+            JsonObject? taskUserPayload = null;
+            if (!string.IsNullOrWhiteSpace(request.AnswerTo))
+            {
+                taskUserPayload = new JsonObject { ["answerTo"] = request.AnswerTo };
+            }
+            await PersistMessageAsync(sessionId, "user", request.Message, taskUserPayload, null, request.TaskId, ct);
+            if (clarification is not null)
+            {
+                await MarkClarificationAnsweredAsync(sessionId, clarification.QuestionId, ct);
+            }
+
+            var agentResult = await RunAgentAsync(messages, context, ct);
+            await PersistAssistantMessagesAsync(sessionId, context.TaskId, agentResult.Messages, ct);
+
+            // 任务执行完成后更新任务状态
+            var hasError = agentResult.Messages.Any(m => string.Equals(m.Status, "error", StringComparison.OrdinalIgnoreCase));
+            var needsClarification = agentResult.Messages.Any(m => string.Equals(m.Status, "clarify", StringComparison.OrdinalIgnoreCase));
+            
+            var nextStatus = hasError ? "error" : (needsClarification ? "pending" : "completed");
+            _logger.LogInformation("[AgentKit] 票据任务执行完毕，自动更新状态: taskId={TaskId}, status={Status}", task.Id, nextStatus);
+            await _invoiceTaskService.UpdateStatusAsync(task.Id, nextStatus, null, ct);
+
+            return new AgentRunResult(sessionId, agentResult.Messages);
         }
-
-        var agentResult = await RunAgentAsync(messages, context, ct);
-        await PersistAssistantMessagesAsync(sessionId, context.TaskId, agentResult.Messages, ct);
-
-        return new AgentRunResult(sessionId, agentResult.Messages);
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[AgentKit] 票据任务执行出错: taskId={TaskId}", task.Id);
+            await _invoiceTaskService.UpdateStatusAsync(task.Id, "error", ex.Message, ct);
+            throw;
+        }
     }
     internal async Task<AgentRunResult> ProcessFileAsync(AgentFileRequest request, CancellationToken ct)
     {
@@ -3670,65 +3727,123 @@ public sealed class AgentKitService
                 headerNode["summary"] = summary;
             }
 
-            if (taxAmount.HasValue && taxAmount.Value > 0.0001m && totalAmount.HasValue && totalAmount.Value >= taxAmount.Value)
-            {
-                var netAmount = Math.Max(0m, totalAmount.Value - taxAmount.Value);
-                JsonObject? taxLine = null;
-                JsonObject? expenseLine = null;
+            // 查找已存在的税金分录和费用分录
+            // 同时检查是否有嵌套的 tax 属性（LLM 可能用这种方式生成税金）
+            JsonObject? existingTaxLine = null;
+            JsonObject? existingExpenseLine = null;
+            decimal existingTaxAmount = 0m;
+            bool hasNestedTax = false;  // 标记是否有嵌套的 tax 属性
 
-                foreach (var item in linesNode)
+            foreach (var item in linesNode)
+            {
+                if (item is not JsonObject line) continue;
+                var side = ReadSide(line);
+                if (side != "DR") continue;
+                
+                // 检查是否有嵌套的 tax 属性
+                if (line.TryGetPropertyValue("tax", out var taxNode) && taxNode is JsonObject taxObj)
                 {
-                    if (item is not JsonObject line) continue;
-                    var side = ReadSide(line);
-                    if (side != "DR") continue;
-                    var code = ReadAccountCode(line);
-                    if (string.Equals(code, "1410", StringComparison.OrdinalIgnoreCase))
+                    hasNestedTax = true;
+                    // 嵌套 tax 中的金额也要计入已有税金
+                    if (taxObj.TryGetPropertyValue("amount", out var taxAmtNode))
                     {
-                        taxLine ??= line;
-                    }
-                    else if (expenseLine is null)
-                    {
-                        expenseLine = line;
+                        if (taxAmtNode is JsonValue taxAmtVal)
+                        {
+                            if (taxAmtVal.TryGetValue<decimal>(out var taxAmt)) existingTaxAmount += taxAmt;
+                            else if (taxAmtVal.TryGetValue<double>(out var taxAmtDbl)) existingTaxAmount += (decimal)taxAmtDbl;
+                        }
                     }
                 }
-
-                if (expenseLine is null)
+                
+                var code = ReadAccountCode(line);
+                if (string.Equals(code, "1410", StringComparison.OrdinalIgnoreCase))
                 {
-                    expenseLine = new JsonObject
+                    existingTaxLine ??= line;
+                    existingTaxAmount += ReadAmount(line);
+                }
+                else if (existingExpenseLine is null)
+                {
+                    existingExpenseLine = line;
+                }
+            }
+
+            if (taxAmount.HasValue && taxAmount.Value > 0.0001m && totalAmount.HasValue && totalAmount.Value >= taxAmount.Value)
+            {
+                // 有 taxAmount 时的标准处理流程
+                var netAmount = Math.Max(0m, totalAmount.Value - taxAmount.Value);
+
+                if (existingExpenseLine is null)
+                {
+                    existingExpenseLine = new JsonObject
                     {
                         ["accountCode"] = "6200",
                         ["drcr"] = "DR"
                     };
-                    linesNode.Add(expenseLine);
+                    linesNode.Add(existingExpenseLine);
                 }
 
-                if (!expenseLine.ContainsKey("note"))
+                if (!existingExpenseLine.ContainsKey("note"))
                 {
-                    expenseLine["note"] = "飲食費";
+                    existingExpenseLine["note"] = "飲食費";
                 }
 
-                WriteAmount(expenseLine, Math.Round(netAmount, 2));
+                WriteAmount(existingExpenseLine, Math.Round(netAmount, 2));
 
-                if (taxLine is null)
+                // 只有当没有嵌套 tax 且没有独立税金分录时才添加新的税金分录
+                // 这样可以避免税金被重复计算
+                if (!hasNestedTax && existingTaxLine is null)
                 {
-                    taxLine = new JsonObject
+                    existingTaxLine = new JsonObject
                     {
                         ["accountCode"] = "1410",
                         ["drcr"] = "DR",
                         ["note"] = "仮払消費税"
                     };
-                    linesNode.Add(taxLine);
-                }
-
-                WriteAmount(taxLine, Math.Round(taxAmount.Value, 2));
-                if (taxRate.HasValue)
-                {
-                    var rateValue = taxRate.Value;
-                    if (rateValue > 0 && rateValue < 1)
+                    linesNode.Add(existingTaxLine);
+                    
+                    WriteAmount(existingTaxLine, Math.Round(taxAmount.Value, 2));
+                    if (taxRate.HasValue)
                     {
-                        rateValue *= 100;
+                        var rateValue = taxRate.Value;
+                        if (rateValue > 0 && rateValue < 1)
+                        {
+                            rateValue *= 100;
+                        }
+                        existingTaxLine["taxRate"] = Math.Round(rateValue, 0);
                     }
-                    taxLine["taxRate"] = Math.Round(rateValue, 0);
+                }
+                else if (existingTaxLine is not null && !hasNestedTax)
+                {
+                    // 有独立税金分录但没有嵌套 tax，更新金额
+                    WriteAmount(existingTaxLine, Math.Round(taxAmount.Value, 2));
+                    if (taxRate.HasValue)
+                    {
+                        var rateValue = taxRate.Value;
+                        if (rateValue > 0 && rateValue < 1)
+                        {
+                            rateValue *= 100;
+                        }
+                        existingTaxLine["taxRate"] = Math.Round(rateValue, 0);
+                    }
+                }
+                // 如果有嵌套 tax，不需要额外处理，FinanceService 会自动展开
+
+                expectedTotalAmount = Math.Round(totalAmount.Value, 2);
+            }
+            else if (totalAmount.HasValue && existingTaxLine is not null && existingTaxAmount > 0.0001m && existingExpenseLine is not null)
+            {
+                // taxAmount 为空，但 LLM 已经生成了税金分录（1410）
+                // 需要调整费用分录金额 = totalAmount - 已有税金金额
+                // 这样可以避免税额被重复计算导致借贷不平衡
+                var currentExpenseAmount = ReadAmount(existingExpenseLine);
+                var expectedExpenseAmount = Math.Max(0m, totalAmount.Value - existingTaxAmount);
+                
+                // 只有当费用分录金额等于含税总额时才调整（说明 LLM 误用了含税金额）
+                if (Math.Abs(currentExpenseAmount - totalAmount.Value) < 0.01m)
+                {
+                    WriteAmount(existingExpenseLine, Math.Round(expectedExpenseAmount, 2));
+                    _logger.LogInformation("[AgentKit] 自动调整费用分录金额: {Original} -> {Adjusted} (扣除税金 {Tax})", 
+                        currentExpenseAmount, expectedExpenseAmount, existingTaxAmount);
                 }
 
                 expectedTotalAmount = Math.Round(totalAmount.Value, 2);
@@ -3738,26 +3853,36 @@ public sealed class AgentKitService
         ApplyInvoiceAdjustments();
         RecalculateTotals();
 
+        // 查询系统中默认的现金科目（不再硬编码 1000）
+        var defaultCashAccount = await GetDefaultCashAccountCodeAsync(context.CompanyCode, ct);
+        
         var creditAdjusted = false;
 
         if (firstCredit is null)
         {
-            var creditLine = new JsonObject
+            // 只有当存在默认现金科目时才自动创建贷方分录
+            if (!string.IsNullOrWhiteSpace(defaultCashAccount))
             {
-                ["accountCode"] = "1000",
-                ["drcr"] = "CR",
-                ["note"] = "現金支出"
-            };
-            linesNode.Add(creditLine);
-            creditAdjusted = true;
-            RecalculateTotals();
+                var creditLine = new JsonObject
+                {
+                    ["accountCode"] = defaultCashAccount,
+                    ["drcr"] = "CR",
+                    ["note"] = "現金支出"
+                };
+                linesNode.Add(creditLine);
+                creditAdjusted = true;
+                RecalculateTotals();
+            }
+            // 如果没有默认现金科目，让 LLM 处理（不自动创建）
         }
         else
         {
+            // 保留 LLM 提供的贷方科目代码，不再强制覆盖为硬编码值
+            // 只有当贷方科目为空时才使用默认现金科目
             var code = ReadAccountCode(firstCredit);
-            if (!string.Equals(code, "1000", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(defaultCashAccount))
             {
-                firstCredit["accountCode"] = "1000";
+                firstCredit["accountCode"] = defaultCashAccount;
                 creditAdjusted = true;
             }
             if (!firstCredit.ContainsKey("note"))
@@ -3781,18 +3906,18 @@ public sealed class AgentKitService
         {
             if (creditTotal <= Epsilon && debitTotal > Epsilon)
             {
-                if (firstCredit is null)
+                if (firstCredit is null && !string.IsNullOrWhiteSpace(defaultCashAccount))
                 {
                     var creditLine = new JsonObject
                     {
-                        ["accountCode"] = "1000",
+                        ["accountCode"] = defaultCashAccount,
                         ["drcr"] = "CR",
                         ["amount"] = Math.Round(debitTotal, 2)
                     };
                     linesNode.Add(creditLine);
                     firstCredit = creditLine;
                 }
-                else
+                else if (firstCredit is not null)
                 {
                     WriteAmount(firstCredit, Math.Round(debitTotal, 2));
                 }
@@ -4009,6 +4134,22 @@ public sealed class AgentKitService
             payload = JsonSerializer.Deserialize<object>(payload.GetRawText(), JsonOptions)
         };
         return ToolExecutionResult.FromModel(modelPayload, new List<AgentResultMessage> { message });
+    }
+
+    /// <summary>
+    /// 查询系统中默认的现金科目代码（isCash=true 的第一个科目）
+    /// </summary>
+    private async Task<string?> GetDefaultCashAccountCodeAsync(string companyCode, CancellationToken ct)
+    {
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"SELECT account_code FROM accounts 
+                            WHERE company_code = $1 
+                              AND COALESCE((payload->>'isCash')::boolean, false) = true 
+                            ORDER BY account_code LIMIT 1";
+        cmd.Parameters.AddWithValue(companyCode);
+        var result = await cmd.ExecuteScalarAsync(ct);
+        return result is string s && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;
     }
 
     private async Task<JsonObject?> ExtractInvoiceDataAsync(string fileId, UploadedFileRecord file, AgentExecutionContext context, CancellationToken ct)
@@ -5447,7 +5588,7 @@ public sealed class AgentKitService
                         {
                             month = new { type = "string", description = "YYYY-MM" },
                             overwrite = new { type = "boolean" },
-                            entries = new { type = "array" }
+                            entries = new { type = "array", items = new { type = "object" } }
                         },
                         required = new[] { "month", "entries" }
                     }

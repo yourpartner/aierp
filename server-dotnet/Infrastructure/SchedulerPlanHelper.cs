@@ -344,8 +344,8 @@ public static class SchedulerPlanHelper
                 }
                 else
                 {
-                    targetLocal = new DateTimeOffset(referenceLocal.Date.Add(time), referenceLocal.Offset);
-                    if (targetLocal <= referenceLocal) targetLocal = targetLocal.AddDays(1);
+                targetLocal = new DateTimeOffset(referenceLocal.Date.Add(time), referenceLocal.Offset);
+                if (targetLocal <= referenceLocal) targetLocal = targetLocal.AddDays(1);
                 }
                 break;
             case "weekly":
