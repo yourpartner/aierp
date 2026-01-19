@@ -143,6 +143,8 @@ async function loadYear(year: number) {
       if (!raw) return
       const dt = new Date(raw)
       if (Number.isNaN(dt.getTime())) return
+      // 确保只有当前年份的数据被映射，防止不同年份同月数据互相覆盖
+      if (dt.getFullYear() !== year) return
       const idx = dt.getMonth()
       const entry = draft[idx]
       if (!entry) return
