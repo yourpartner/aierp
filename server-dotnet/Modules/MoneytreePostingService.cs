@@ -2861,6 +2861,7 @@ LIMIT 1";
                     ["accountCode"] = inputTaxAccountCode,
                     ["drcr"] = "DR",
                     ["amount"] = feeTaxAmount,
+                    ["taxRate"] = BankFeeTaxRate,
                     ["note"] = "振込手数料消費税",
                     ["baseLineNo"] = feeLineNo,
                     ["isTaxLine"] = true
@@ -3094,6 +3095,7 @@ LIMIT 1";
                     ["accountCode"] = action.InputTaxAccountCode,
                     ["drcr"] = "DR",
                     ["amount"] = feeTaxAmount,
+                    ["taxRate"] = BankFeeTaxRate,
                     ["note"] = "消費税",
                     ["baseLineNo"] = feeLineNo,
                     ["isTaxLine"] = true
@@ -3162,6 +3164,7 @@ LIMIT 1";
                     ["accountCode"] = feeInfo.InputTaxAccountCode,
                     ["drcr"] = "DR",
                     ["amount"] = feeTaxAmount,
+                    ["taxRate"] = BankFeeTaxRate,
                     ["note"] = "振込手数料消費税",
                     ["baseLineNo"] = feeLineNo,
                     ["isTaxLine"] = true
