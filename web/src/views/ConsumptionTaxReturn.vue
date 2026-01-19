@@ -798,6 +798,7 @@ onMounted(async () => {
   justify-content: space-between;
   padding: 8px 0;
   border-bottom: 1px solid #EBEEF5;
+  font-size: 12px;
 }
 
 .calc-row.hint {
@@ -819,11 +820,13 @@ onMounted(async () => {
 
 .calc-label {
   color: #606266;
+  font-size: 12px;
 }
 
 .calc-value {
   font-weight: 500;
   font-family: 'Roboto Mono', monospace;
+  font-size: 12px;
 }
 
 .calc-value.deduct {
@@ -831,7 +834,7 @@ onMounted(async () => {
 }
 
 .calc-value.total-value {
-  font-size: 1.25rem;
+  font-size: 14px;
   font-weight: 700;
   color: #409EFF;
 }
