@@ -63,22 +63,9 @@
         <el-table-column :label="listText.summary" min-width="260">
           <template #default="{ row }">{{ row.payload?.header?.summary || '' }}</template>
         </el-table-column>
-        <el-table-column :label="listText.actions" width="160">
+        <el-table-column :label="listText.actions" width="80">
           <template #default="{ row }">
             <el-button text type="primary" @click="openDetail(row)">{{ listText.view }}</el-button>
-            <el-tooltip
-              v-if="getDeleteDisabledReason(row)"
-              :content="getDeleteDisabledReason(row)"
-              placement="top"
-            >
-              <el-button text type="danger" disabled>{{ buttonsText.delete || '削除' }}</el-button>
-            </el-tooltip>
-            <el-button
-              v-else
-              text
-              type="danger"
-              @click="confirmDelete(row)"
-            >{{ buttonsText.delete || '削除' }}</el-button>
           </template>
         </el-table-column>
       </el-table>
