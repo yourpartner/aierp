@@ -134,8 +134,10 @@ public class FinanceReportsModule : ModuleBase
                                 END, '税率不明'
                             ) || ',' ||
                             CASE
-                                WHEN invoice_no_norm IN ('T1234567890123','1234567890123') THEN '非適格'
-                                WHEN invoice_no_norm LIKE 'T%' THEN '適格'
+                                -- 有効なT番号がある場合は適格
+                                WHEN invoice_no_norm LIKE 'T%' AND invoice_no_norm NOT IN ('T1234567890123','1234567890123') THEN '適格'
+                                -- 銀行手数料は銀行が必ず適格請求書発行事業者なので適格とみなす
+                                WHEN description ILIKE '%手数料%' OR summary ILIKE '%手数料%' THEN '適格'
                                 ELSE '非適格'
                             END || ')'
                         WHEN tax_side = 'OUTPUT' THEN
