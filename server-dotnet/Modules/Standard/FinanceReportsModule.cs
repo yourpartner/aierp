@@ -125,7 +125,7 @@ public class FinanceReportsModule : ModuleBase
                     CASE
                         WHEN tax_side IS NULL THEN NULL
                         WHEN tax_side = 'INPUT' THEN
-                            '进项税(' ||
+                            '課税仕入(' ||
                             COALESCE(
                                 CASE
                                     WHEN tax_rate_num IS NULL THEN '税率不明'
@@ -134,12 +134,12 @@ public class FinanceReportsModule : ModuleBase
                                 END, '税率不明'
                             ) || ',' ||
                             CASE
-                                WHEN invoice_no_norm IN ('T1234567890123','1234567890123') THEN '非合规'
-                                WHEN invoice_no_norm LIKE 'T%' THEN '合规'
-                                ELSE '非合规'
+                                WHEN invoice_no_norm IN ('T1234567890123','1234567890123') THEN '非適格'
+                                WHEN invoice_no_norm LIKE 'T%' THEN '適格'
+                                ELSE '非適格'
                             END || ')'
                         WHEN tax_side = 'OUTPUT' THEN
-                            '销项税(' ||
+                            '課税売上(' ||
                             COALESCE(
                                 CASE
                                     WHEN tax_rate_num IS NULL THEN '税率不明'
