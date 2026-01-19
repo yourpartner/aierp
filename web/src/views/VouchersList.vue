@@ -143,6 +143,7 @@
               <el-popconfirm
                 v-if="detail && !getDeleteDisabledReason(detail)"
                 :title="`伝票を削除しますか？`"
+                :width="220"
                 confirm-button-text="削除"
                 confirm-button-type="danger"
                 cancel-button-text="キャンセル"
@@ -229,6 +230,7 @@
                   <el-popconfirm
                     v-if="detail && !getDeleteDisabledReason(detail)"
                     :title="`伝票を削除しますか？`"
+                    :width="220"
                     confirm-button-text="削除"
                     confirm-button-type="danger"
                     cancel-button-text="キャンセル"
