@@ -271,7 +271,7 @@
       <el-table :data="detailsData" border size="small" max-height="500" v-loading="loadingDetails">
         <el-table-column prop="voucherNo" label="伝票番号" width="140">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openVoucher(row.voucherId)">
+            <el-button link type="primary" @click="openVoucher(row.voucherId, row.voucherNo)">
               {{ row.voucherNo }}
             </el-button>
           </template>
@@ -295,6 +295,20 @@
         </el-table-column>
       </el-table>
     </el-dialog>
+
+    <!-- 凭证详情弹窗 -->
+    <el-dialog v-model="voucherDialogVisible" width="auto" append-to-body destroy-on-close class="voucher-detail-dialog">
+      <template #header></template>
+      <div class="voucher-dialog-card-wrap">
+        <VouchersList
+          v-if="voucherDialogVisible && (currentVoucherId || currentVoucherNo)"
+          class="voucher-detail-embed"
+          :allow-edit="false"
+          :initial-voucher-id="currentVoucherId || undefined"
+          :initial-voucher-no="currentVoucherNo || undefined"
+        />
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -303,6 +317,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Setting, DataAnalysis, DocumentAdd, Download, Refresh, Money } from '@element-plus/icons-vue'
 import api from '../api'
+import VouchersList from './VouchersList.vue'
 
 // 计算表单
 const calcForm = ref({
@@ -328,6 +343,11 @@ const loadingReturns = ref(false)
 const loadingDetails = ref(false)
 const showSettings = ref(false)
 const showDetails = ref(false)
+
+// 凭证详情弹窗
+const voucherDialogVisible = ref(false)
+const currentVoucherId = ref<string>('')
+const currentVoucherNo = ref<string>('')
 
 // 数据
 const calculation = ref<any>(null)
@@ -634,9 +654,11 @@ function exportCsv() {
 }
 
 // 打开凭证
-function openVoucher(voucherId: string) {
-  // TODO: 实现跳转到凭证详情
-  console.log('Open voucher:', voucherId)
+function openVoucher(voucherId?: string, voucherNo?: string) {
+  if (!voucherId && !voucherNo) return
+  currentVoucherId.value = voucherId || ''
+  currentVoucherNo.value = voucherNo || ''
+  voucherDialogVisible.value = true
 }
 
 // 标签转换
