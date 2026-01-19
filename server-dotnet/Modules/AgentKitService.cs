@@ -513,6 +513,12 @@ public sealed class AgentKitService
                 {
                     clarification = clarification with { DocumentId = task.FileId };
                 }
+                // 强制同步：确保 AI 看到的 DocumentId 永远与当前 Task 的 FileId 一致，防止因历史 ID 不一致导致的解析失败
+                else if (!string.Equals(clarification.DocumentId, task.FileId, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation("[AgentKit] 纠正澄清信息中的 DocumentId: {Old} -> {New}", clarification.DocumentId, task.FileId);
+                    clarification = clarification with { DocumentId = task.FileId };
+                }
                 if (string.IsNullOrWhiteSpace(clarification.DocumentLabel) && !string.IsNullOrWhiteSpace(task.DocumentLabel))
                 {
                     clarification = clarification with { DocumentLabel = task.DocumentLabel };
@@ -531,6 +537,32 @@ public sealed class AgentKitService
         }
 
         var messages = BuildInitialMessages(request.CompanyCode, selectedScenarios, accountingRules, history, tokens, language);
+
+        // 如果是回答澄清问题的流程，且金额较大，后端计算好科目建议注入 AI，防止其选错
+        if (clarification is not null && task.Analysis is JsonObject analysis)
+        {
+            var netAmount = TryGetJsonDecimal(analysis, "totalAmount") - (TryGetJsonDecimal(analysis, "taxAmount") ?? 0m);
+            if (netAmount >= 20000)
+            {
+                // 尝试从回答中提取数字
+                var match = Regex.Match(request.Message, @"(\d+)");
+                if (match.Success && int.TryParse(match.Groups[1].Value, out var personCount) && personCount > 0)
+                {
+                    var perPerson = netAmount.Value / personCount;
+                    var suggestedAccount = perPerson > 10000 ? "交際費" : "会議費";
+                    
+                    // 尝试获取商户名
+                    var partnerName = ReadString(analysis, "partnerName") ?? task.FileName;
+
+                    messages.Add(new Dictionary<string, object?>
+                    {
+                        ["role"] = "system",
+                        ["content"] = $"[SYSTEM CALCULATION] 人均金额 = {perPerson:N0} JPY ({netAmount:N0} / {personCount}人)。根据 10,000 JPY 规则，科目判定应为：【{suggestedAccount}】。请调用 lookup_account 获取该科目的最新代码。同时，请将凭证摘要（header.summary）更新为：「{suggestedAccount} | {partnerName} ({request.Message})」。"
+                    });
+                }
+            }
+        }
+
         var summaryBuilder = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(task.DocumentLabel))
         {
@@ -2193,7 +2225,23 @@ public sealed class AgentKitService
         var contentType = string.IsNullOrWhiteSpace(task.ContentType) ? "application/octet-stream" : task.ContentType;
         return fileId =>
         {
-            if (!string.Equals(fileId, task.FileId, StringComparison.OrdinalIgnoreCase)) return null;
+            if (string.IsNullOrWhiteSpace(fileId)) return null;
+            
+            // 1. 完全匹配
+            if (string.Equals(fileId, task.FileId, StringComparison.OrdinalIgnoreCase)) goto match;
+            
+            // 2. 匹配标签（如 "#1"）
+            if (fileId.StartsWith("#") && !string.IsNullOrWhiteSpace(task.DocumentLabel) && 
+                string.Equals(fileId, task.DocumentLabel, StringComparison.OrdinalIgnoreCase)) goto match;
+            
+            // 3. 匹配去除前缀后的 ID（处理 tmp_ 或 file_ 前缀不一致的情况）
+            var cleanId = fileId.Contains('_') ? fileId.Split('_', 2)[1] : fileId;
+            var cleanTaskId = task.FileId.Contains('_') ? task.FileId.Split('_', 2)[1] : task.FileId;
+            if (string.Equals(cleanId, cleanTaskId, StringComparison.OrdinalIgnoreCase)) goto match;
+
+            return null;
+
+            match:
             var analysisClone = task.Analysis is not null ? task.Analysis.DeepClone().AsObject() : null;
             return new UploadedFileRecord(
                 task.FileName,
@@ -3692,6 +3740,13 @@ public sealed class AgentKitService
             invoiceObj = docObj;
         }
 
+        // 获取公司设定的进项税科目
+        var inputTaxAccountCode = await GetInputTaxAccountCodeAsync(context.CompanyCode, ct);
+        if (string.IsNullOrWhiteSpace(inputTaxAccountCode))
+        {
+            _logger.LogWarning("[AgentKit] 未能找到有效的进项税科目（仮払消費税），将无法自动生成税金行。");
+        }
+
         var applyInvoiceDefaults = ShouldForceInvoiceDefaults(context) || invoiceObj is not null;
         if (applyInvoiceDefaults)
         {
@@ -3731,8 +3786,7 @@ public sealed class AgentKitService
             // 同时检查是否有嵌套的 tax 属性（LLM 可能用这种方式生成税金）
             JsonObject? existingTaxLine = null;
             JsonObject? existingExpenseLine = null;
-            decimal existingTaxAmount = 0m;
-            bool hasNestedTax = false;  // 标记是否有嵌套的 tax 属性
+            decimal detectedTaxAmount = 0m; 
 
             foreach (var item in linesNode)
             {
@@ -3743,23 +3797,25 @@ public sealed class AgentKitService
                 // 检查是否有嵌套的 tax 属性
                 if (line.TryGetPropertyValue("tax", out var taxNode) && taxNode is JsonObject taxObj)
                 {
-                    hasNestedTax = true;
-                    // 嵌套 tax 中的金额也要计入已有税金
+                    // 提取嵌套税金金额
                     if (taxObj.TryGetPropertyValue("amount", out var taxAmtNode))
                     {
                         if (taxAmtNode is JsonValue taxAmtVal)
                         {
-                            if (taxAmtVal.TryGetValue<decimal>(out var taxAmt)) existingTaxAmount += taxAmt;
-                            else if (taxAmtVal.TryGetValue<double>(out var taxAmtDbl)) existingTaxAmount += (decimal)taxAmtDbl;
+                            if (taxAmtVal.TryGetValue<decimal>(out var taxAmt)) detectedTaxAmount += taxAmt;
+                            else if (taxAmtVal.TryGetValue<double>(out var taxAmtDbl)) detectedTaxAmount += (decimal)taxAmtDbl;
                         }
                     }
+                    // 重要：处理完嵌套税金后，从 Json 对象中将其移除，避免 FinanceService 重复计算或处理不当
+                    line.Remove("tax");
+                    _logger.LogInformation("[AgentKit] 移除嵌套 tax 属性，准备扁平化为独立分录");
                 }
                 
                 var code = ReadAccountCode(line);
-                if (string.Equals(code, "1410", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(code, inputTaxAccountCode, StringComparison.OrdinalIgnoreCase))
                 {
                     existingTaxLine ??= line;
-                    existingTaxAmount += ReadAmount(line);
+                    detectedTaxAmount += ReadAmount(line);
                 }
                 else if (existingExpenseLine is null)
                 {
@@ -3767,19 +3823,20 @@ public sealed class AgentKitService
                 }
             }
 
-            if (taxAmount.HasValue && taxAmount.Value > 0.0001m && totalAmount.HasValue && totalAmount.Value >= taxAmount.Value)
+            // 优先使用发票识别出的税额，如果没有则使用从分录中检测到的税额
+            var finalTaxAmount = taxAmount ?? detectedTaxAmount;
+
+            if (finalTaxAmount > 0.0001m && totalAmount.HasValue && totalAmount.Value >= finalTaxAmount)
             {
-                // 有 taxAmount 时的标准处理流程
-                var netAmount = Math.Max(0m, totalAmount.Value - taxAmount.Value);
+                // 标准价税分离流程
+                var netAmount = Math.Max(0m, totalAmount.Value - finalTaxAmount);
 
                 if (existingExpenseLine is null)
                 {
-                    existingExpenseLine = new JsonObject
-                    {
-                        ["accountCode"] = "6200",
-                        ["drcr"] = "DR"
-                    };
-                    linesNode.Add(existingExpenseLine);
+                    // 不再硬编码科目代码，让 LLM 根据场景规则来决定科目（如 6200 或 6250）
+                    // 仅在已有分录时才进行价税分离调整
+                    _logger.LogInformation("[AgentKit] 未找到借方费用分录，跳过后端自动调整，交由 AI 处理");
+                    return; 
                 }
 
                 if (!existingExpenseLine.ContainsKey("note"))
@@ -3789,61 +3846,47 @@ public sealed class AgentKitService
 
                 WriteAmount(existingExpenseLine, Math.Round(netAmount, 2));
 
-                // 只有当没有嵌套 tax 且没有独立税金分录时才添加新的税金分录
-                // 这样可以避免税金被重复计算
-                if (!hasNestedTax && existingTaxLine is null)
+                // 统一扁平化生成税金分录
+                if (existingTaxLine is null && !string.IsNullOrWhiteSpace(inputTaxAccountCode))
                 {
                     existingTaxLine = new JsonObject
                     {
-                        ["accountCode"] = "1410",
+                        ["accountCode"] = inputTaxAccountCode,
                         ["drcr"] = "DR",
                         ["note"] = "仮払消費税"
                     };
                     linesNode.Add(existingTaxLine);
-                    
-                    WriteAmount(existingTaxLine, Math.Round(taxAmount.Value, 2));
-                    if (taxRate.HasValue)
-                    {
-                        var rateValue = taxRate.Value;
-                        if (rateValue > 0 && rateValue < 1)
-                        {
-                            rateValue *= 100;
-                        }
-                        existingTaxLine["taxRate"] = Math.Round(rateValue, 0);
-                    }
                 }
-                else if (existingTaxLine is not null && !hasNestedTax)
+                
+                if (existingTaxLine is not null)
                 {
-                    // 有独立税金分录但没有嵌套 tax，更新金额
-                    WriteAmount(existingTaxLine, Math.Round(taxAmount.Value, 2));
+                    WriteAmount(existingTaxLine, Math.Round(finalTaxAmount, 2));
+                    
                     if (taxRate.HasValue)
                     {
                         var rateValue = taxRate.Value;
-                        if (rateValue > 0 && rateValue < 1)
-                        {
-                            rateValue *= 100;
-                        }
+                        if (rateValue > 0 && rateValue < 1) rateValue *= 100;
                         existingTaxLine["taxRate"] = Math.Round(rateValue, 0);
                     }
                 }
-                // 如果有嵌套 tax，不需要额外处理，FinanceService 会自动展开
 
                 expectedTotalAmount = Math.Round(totalAmount.Value, 2);
+                _logger.LogInformation("[AgentKit] 已完成价税分离: 费用={Net}, 税金={Tax}", netAmount, finalTaxAmount);
             }
-            else if (totalAmount.HasValue && existingTaxLine is not null && existingTaxAmount > 0.0001m && existingExpenseLine is not null)
+            else if (totalAmount.HasValue && existingTaxLine is not null && detectedTaxAmount > 0.0001m && existingExpenseLine is not null)
             {
-                // taxAmount 为空，但 LLM 已经生成了税金分录（1410）
+                // taxAmount 为空，但 LLM 已经生成了税金分录
                 // 需要调整费用分录金额 = totalAmount - 已有税金金额
                 // 这样可以避免税额被重复计算导致借贷不平衡
                 var currentExpenseAmount = ReadAmount(existingExpenseLine);
-                var expectedExpenseAmount = Math.Max(0m, totalAmount.Value - existingTaxAmount);
+                var expectedExpenseAmount = Math.Max(0m, totalAmount.Value - detectedTaxAmount);
                 
                 // 只有当费用分录金额等于含税总额时才调整（说明 LLM 误用了含税金额）
                 if (Math.Abs(currentExpenseAmount - totalAmount.Value) < 0.01m)
                 {
                     WriteAmount(existingExpenseLine, Math.Round(expectedExpenseAmount, 2));
                     _logger.LogInformation("[AgentKit] 自动调整费用分录金额: {Original} -> {Adjusted} (扣除税金 {Tax})", 
-                        currentExpenseAmount, expectedExpenseAmount, existingTaxAmount);
+                        currentExpenseAmount, expectedExpenseAmount, detectedTaxAmount);
                 }
 
                 expectedTotalAmount = Math.Round(totalAmount.Value, 2);
@@ -3891,74 +3934,53 @@ public sealed class AgentKitService
             }
         }
 
-        if (expectedTotalAmount.HasValue && firstCredit is not null)
+        // 5. 最终平衡校验：计算当前所有行的借贷总计
+        RecalculateTotals();
+        
+        // 如果借贷不平衡，尝试自动修复
+        if (Math.Abs(debitTotal - creditTotal) >= 0.01m)
         {
-            WriteAmount(firstCredit, expectedTotalAmount.Value);
-            creditAdjusted = true;
-        }
-
-        if (creditAdjusted)
-        {
+            _logger.LogInformation("[AgentKit] 借贷不平衡，尝试修复: DR={Debit} CR={Credit}, 预期总额={Expected}", debitTotal, creditTotal, expectedTotalAmount);
+            
+            if (creditTotal <= Epsilon && debitTotal > Epsilon)
+            {
+                // 情况 A: 完全没有贷方，添加默认现金科目
+                var cashAccount = !string.IsNullOrWhiteSpace(defaultCashAccount) ? defaultCashAccount : "1000";
+                var creditLine = new JsonObject
+                {
+                    ["accountCode"] = cashAccount,
+                    ["drcr"] = "CR",
+                    ["amount"] = Math.Round(debitTotal, 2),
+                    ["note"] = "現金支出"
+                };
+                linesNode.Add(creditLine);
+            }
+            else if (debitTotal > Epsilon && creditTotal > Epsilon)
+            {
+                // 情况 B: 借贷都有金额但不相等（这是最常见的情况，如 30371 vs 27610）
+                // 计算差额并补在第一个贷方行上
+                var diff = debitTotal - creditTotal;
+                if (firstCredit is not null)
+                {
+                    var currentAmt = ReadAmount(firstCredit);
+                    WriteAmount(firstCredit, Math.Round(currentAmt + diff, 2));
+                    _logger.LogInformation("[AgentKit] 补齐贷方差额: {Diff}，更新后金额: {NewAmt}", diff, currentAmt + diff);
+                }
+                else if (firstDebit is not null)
+                {
+                    // 万一只有贷方没有借方（极少见）
+                    var diffRev = creditTotal - debitTotal;
+                    var currentAmt = ReadAmount(firstDebit);
+                    WriteAmount(firstDebit, Math.Round(currentAmt + diffRev, 2));
+                }
+            }
+            
+            // 修复后最后一次重计
             RecalculateTotals();
         }
 
-        if (Math.Abs(debitTotal - creditTotal) >= 0.01m)
-        {
-            if (creditTotal <= Epsilon && debitTotal > Epsilon)
-            {
-                if (firstCredit is null && !string.IsNullOrWhiteSpace(defaultCashAccount))
-                {
-                    var creditLine = new JsonObject
-                    {
-                        ["accountCode"] = defaultCashAccount,
-                        ["drcr"] = "CR",
-                        ["amount"] = Math.Round(debitTotal, 2)
-                    };
-                    linesNode.Add(creditLine);
-                    firstCredit = creditLine;
-                }
-                else if (firstCredit is not null)
-                {
-                    WriteAmount(firstCredit, Math.Round(debitTotal, 2));
-                }
-                creditTotal = debitTotal;
-            }
-            else if (Math.Abs(creditTotal) > Epsilon && debitTotal <= Epsilon)
-            {
-                if (firstDebit is null)
-                {
-                    var debitLine = new JsonObject
-                    {
-                        ["accountCode"] = "9999",
-                        ["drcr"] = "DR",
-                        ["amount"] = Math.Round(creditTotal, 2)
-                    };
-                    linesNode.Add(debitLine);
-                    firstDebit = debitLine;
-                }
-                else
-                {
-                    WriteAmount(firstDebit, Math.Round(creditTotal, 2));
-                }
-                debitTotal = creditTotal;
-            }
-            else
-            {
-                var diff = debitTotal - creditTotal;
-                if (diff > 0.01m && firstCredit is not null)
-                {
-                    var current = ReadAmount(firstCredit);
-                    WriteAmount(firstCredit, Math.Round(current + diff, 2));
-                    creditTotal += diff;
-                }
-                else if (diff < -0.01m && firstDebit is not null)
-                {
-                    var current = ReadAmount(firstDebit);
-                    WriteAmount(firstDebit, Math.Round(current + Math.Abs(diff), 2));
-                    debitTotal += Math.Abs(diff);
-                }
-            }
-        }
+        // 移除多余的旧覆盖逻辑，全部交由上面的差额补齐逻辑处理
+
 
         var attachmentIds = new List<string>();
         if (args.TryGetProperty("attachments", out var attachEl))
@@ -4142,14 +4164,61 @@ public sealed class AgentKitService
     private async Task<string?> GetDefaultCashAccountCodeAsync(string companyCode, CancellationToken ct)
     {
         await using var conn = await _ds.OpenConnectionAsync(ct);
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = @"SELECT account_code FROM accounts 
-                            WHERE company_code = $1 
-                              AND COALESCE((payload->>'isCash')::boolean, false) = true 
-                            ORDER BY account_code LIMIT 1";
-        cmd.Parameters.AddWithValue(companyCode);
-        var result = await cmd.ExecuteScalarAsync(ct);
-        return result is string s && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;
+        
+        // 1. 优先查找标记为 isCash 的科目
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"SELECT account_code FROM accounts 
+                                WHERE company_code = $1 
+                                  AND COALESCE((payload->>'isCash')::boolean, false) = true 
+                                ORDER BY account_code LIMIT 1";
+            cmd.Parameters.AddWithValue(companyCode);
+            var result = await cmd.ExecuteScalarAsync(ct);
+            if (result is string s && !string.IsNullOrWhiteSpace(s)) return s.Trim();
+        }
+
+        // 2. 如果没找到，尝试按名称模糊查找
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"SELECT account_code FROM accounts 
+                                WHERE company_code = $1 
+                                  AND (payload->>'name' LIKE '%現金%' OR payload->>'name' ILIKE '%cash%')
+                                ORDER BY account_code LIMIT 1";
+            cmd.Parameters.AddWithValue(companyCode);
+            var result = await cmd.ExecuteScalarAsync(ct);
+            if (result is string s && !string.IsNullOrWhiteSpace(s)) return s.Trim();
+        }
+
+        return null;
+    }
+
+    private async Task<string?> GetInputTaxAccountCodeAsync(string companyCode, CancellationToken ct)
+    {
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        
+        // 1. 尝试从公司设置中获取
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT payload->>'inputTaxAccountCode' FROM company_settings WHERE company_code=$1 LIMIT 1";
+            cmd.Parameters.AddWithValue(companyCode);
+            var result = await cmd.ExecuteScalarAsync(ct);
+            if (result is string s && !string.IsNullOrWhiteSpace(s)) return s.Trim();
+        }
+
+        // 2. 如果设置中没有，通过 taxType 或名称查找科目
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"SELECT account_code FROM accounts 
+                                WHERE company_code = $1 
+                                  AND (payload->>'taxType' = 'INPUT_TAX' 
+                                       OR payload->>'name' LIKE '%仮払消費税%')
+                                ORDER BY account_code LIMIT 1";
+            cmd.Parameters.AddWithValue(companyCode);
+            var result = await cmd.ExecuteScalarAsync(ct);
+            if (result is string s && !string.IsNullOrWhiteSpace(s)) return s.Trim();
+        }
+
+        return null;
     }
 
     private async Task<JsonObject?> ExtractInvoiceDataAsync(string fileId, UploadedFileRecord file, AgentExecutionContext context, CancellationToken ct)

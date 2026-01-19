@@ -6059,39 +6059,46 @@ app.MapDelete("/ai/tasks/{taskId:guid}", async (Guid taskId, HttpRequest req, In
     }
 
     var cancelResult = await taskService.CancelAsync(taskId, sessionId, companyCode, userCtx.UserId, req.HttpContext.RequestAborted);
-    if (cancelResult is null)
+    if (cancelResult is not null)
     {
-        return Results.BadRequest(new { error = "タスクをキャンセルできないか、すでに処理済みです" });
-    }
-
-    if (!string.IsNullOrWhiteSpace(cancelResult.StoredPath))
-    {
-        try
+        if (!string.IsNullOrWhiteSpace(cancelResult.StoredPath))
         {
-            if (System.IO.File.Exists(cancelResult.StoredPath))
+            try
             {
-                System.IO.File.Delete(cancelResult.StoredPath);
+                if (System.IO.File.Exists(cancelResult.StoredPath))
+                {
+                    System.IO.File.Delete(cancelResult.StoredPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                app.Logger.LogWarning(ex, "[InvoiceTask] 删除本地文件失败 taskId={TaskId} path={Path}", taskId, cancelResult.StoredPath);
             }
         }
-        catch (Exception ex)
+
+        if (blobService.IsConfigured)
         {
-            app.Logger.LogWarning(ex, "[InvoiceTask] 删除本地文件失败 taskId={TaskId} path={Path}", taskId, cancelResult.StoredPath);
+            try
+            {
+                await blobService.DeleteAsync(cancelResult.BlobName, req.HttpContext.RequestAborted);
+            }
+            catch (Exception ex)
+            {
+                app.Logger.LogWarning(ex, "[InvoiceTask] 删除 Azure Blob 失败 taskId={TaskId} blob={Blob}", taskId, cancelResult.BlobName);
+            }
         }
+
+        return Results.Ok(new { id = taskId, status = "cancelled" });
     }
 
-    if (blobService.IsConfigured)
+    // 如果 CancelAsync 返回 null，可能是已完成的任务，尝试强制删除数据库记录
+    var deleted = await taskService.DeleteAsync(taskId, sessionId, companyCode, req.HttpContext.RequestAborted);
+    if (deleted)
     {
-        try
-        {
-            await blobService.DeleteAsync(cancelResult.BlobName, req.HttpContext.RequestAborted);
-        }
-        catch (Exception ex)
-        {
-            app.Logger.LogWarning(ex, "[InvoiceTask] 删除 Azure Blob 失败 taskId={TaskId} blob={Blob}", taskId, cancelResult.BlobName);
-        }
+        return Results.Ok(new { id = taskId, status = "deleted" });
     }
 
-    return Results.Ok(new { id = taskId, status = "cancelled" });
+    return Results.BadRequest(new { error = "タスクを削除できません（権限がないか、存在しません）" });
 }).RequireAuthorization();
 
 app.MapGet("/ai/tasks/{taskId:guid}", async (Guid taskId, HttpRequest req, InvoiceTaskService invoiceTasks, SalesOrderTaskService salesOrderTasks, NpgsqlDataSource ds) =>

@@ -28,7 +28,7 @@ public sealed class MoneytreeDownloadService
     private const string SettingsTemplate =
     "{\"value\":\"{\\\"showUnverifiedSmartTags\\\":true,\\\"refreshDataOnLogin\\\":true,\\\"accountsGroupsDisplay\\\":[],\\\"accountsGroupsDisplayChange\\\":{\\\"count\\\":0,\\\"lastUpdated\\\":0},\\\"accountGroupAndAccountsOrder\\\":[],\\\"viewSettings\\\":{\\\"selectedCustomDates\\\":{\\\"type\\\":\\\"custom\\\",\\\"startDate\\\":\\\"START_DATE\\\",\\\"endDate\\\":\\\"END_DATE\\\"},\\\"aiEnhancedForecast\\\":false},\\\"onboardingSteps\\\":{\\\"completed\\\":false,\\\"lastDisplayed\\\":0},\\\"cashFlowQuickInsight\\\":{\\\"hasShownCongratulationBanner\\\":false},\\\"accountGroupHiddenStatus\\\":{},\\\"showedOnboardingTutorial\\\":false,\\\"showedInvoiceSettingsMessage\\\":false,\\\"showedPaymentCycleModal\\\":false,\\\"forecastSettings\\\":{}}\"}";
     public sealed record MoneytreeDownloadRequest(string Email, string Password, string? OtpSecret, DateTimeOffset StartDate, DateTimeOffset EndDate);
-    public sealed record MoneytreeDownloadResult(byte[] Content, string FileName, string ContentType);
+    public sealed record MoneytreeDownloadResult(byte[] Content, string FileName, string ContentType, bool IsEmpty = false);
 
     public async Task<MoneytreeDownloadResult> DownloadCsvAsync(MoneytreeDownloadRequest request, CancellationToken ct = default)
     {
@@ -254,6 +254,18 @@ public sealed class MoneytreeDownloadService
             
             // 选择残高データ
             await page.ClickAsync("//button[contains(text(), '残高データ')]");
+            await Task.Delay(1000);
+
+            // 检查下载按钮状态 - 如果显示"（0件）"则表示没有数据
+            var downloadButton = page.Locator(DownloadButtonXPath);
+            var buttonText = await downloadButton.TextContentAsync();
+            _logger.LogInformation("[Moneytree] 下载按钮文本: {Text}", buttonText);
+            
+            if (!string.IsNullOrWhiteSpace(buttonText) && buttonText.Contains("（0件）"))
+            {
+                _logger.LogInformation("[Moneytree] 指定日期范围内没有新的银行明细（0件），无需下载");
+                return new MoneytreeDownloadResult(Array.Empty<byte>(), "empty.csv", "text/csv", IsEmpty: true);
+            }
 
             // 等待下载
             var download = await page.RunAndWaitForDownloadAsync(async () =>

@@ -225,20 +225,6 @@
                   <span class="task-badge" v-if="task.label">{{ task.label }}</span>
                   <span class="task-name">{{ task.title }}</span>
                 </div>
-                <div
-                  class="task-item-actions"
-                  v-if="task.kind === 'invoice' && task.invoiceTask && canCancelTask(task.invoiceTask)"
-                >
-                  <el-button
-                    link
-                    size="small"
-                    type="danger"
-                    :icon="Delete"
-                    @click.stop="confirmCancelTask(task.invoiceTask)"
-                  >
-                    {{ text.common.delete }}
-                  </el-button>
-                </div>
               </div>
               <div class="task-item-meta">
                 <el-tag size="small" :type="taskStatusType(task.status)">{{ taskStatusLabel(task.status) }}</el-tag>
@@ -397,9 +383,22 @@
                 <div class="task-header-main">
                   <span class="task-badge" v-if="section.label">{{ section.label }}</span>
                   <span class="task-conversation-name">{{ section.title }}</span>
-            </div>
-                <el-tag size="small" :type="taskStatusType(section.status)">{{ taskStatusLabel(section.status) }}</el-tag>
-          </div>
+                </div>
+                <div class="task-header-actions">
+                  <el-tag size="small" :type="taskStatusType(section.status)">{{ taskStatusLabel(section.status) }}</el-tag>
+                  <el-button
+                    v-if="section.kind === 'invoice' && section.invoiceTask && canCancelTask(section.invoiceTask)"
+                    link
+                    size="small"
+                    type="danger"
+                    :icon="Delete"
+                    @click.stop="confirmCancelTask(section.invoiceTask)"
+                    class="task-delete-btn"
+                  >
+                    {{ text.common.delete }}
+                  </el-button>
+                </div>
+              </div>
 
               <template v-if="section.kind === 'invoice'">
                 <div class="task-conversation-summary" v-if="section.summary">{{ section.summary }}</div>
@@ -5370,12 +5369,21 @@ function onChatDragLeave(){
   min-width: 0;
 }
 
-.task-item-actions {
-  margin-left: auto;
+.task-header-actions {
   display: flex;
   align-items: center;
-  align-self: flex-start;
-  margin-top: -4px;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.task-delete-btn {
+  margin-left: 4px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.task-delete-btn:hover {
+  opacity: 1;
 }
 
 .task-badge {

@@ -585,6 +585,10 @@ WHERE u.company_code=$1";
                 ct);
 
             var finishedAt = DateTimeOffset.UtcNow;
+            
+            // 检查是否为空结果（指定日期范围内没有新数据）
+            var isEmpty = importResult.BatchId == Guid.Empty && importResult.TotalRows == 0;
+            
             var summary = new JsonObject
             {
                 ["startDate"] = startDate.ToString("yyyy-MM-dd"),
@@ -596,8 +600,14 @@ WHERE u.company_code=$1";
                 ["linkedRows"] = importResult.LinkedRows,
                 ["startedAt"] = startedAt.ToString("O"),
                 ["finishedAt"] = finishedAt.ToString("O"),
-                ["durationMs"] = (finishedAt - startedAt).TotalMilliseconds
+                ["durationMs"] = (finishedAt - startedAt).TotalMilliseconds,
+                ["isEmpty"] = isEmpty
             };
+            
+            if (isEmpty)
+            {
+                summary["message"] = "指定日期範囲内に新しい銀行明細がありません（0件）";
+            }
 
             var result = new JsonObject
             {
@@ -617,8 +627,16 @@ WHERE u.company_code=$1";
                 result["nextRunPreview"] = nextRun.Value.ToString("O");
             }
 
-            _logger?.LogInformation("[TaskScheduler] Moneytree sync completed for {Company}: inserted={Inserted}, skipped={Skipped}",
-                task.CompanyCode, importResult.InsertedRows, importResult.SkippedRows);
+            if (isEmpty)
+            {
+                _logger?.LogInformation("[TaskScheduler] Moneytree sync completed for {Company}: no new data in date range {Start} ~ {End}",
+                    task.CompanyCode, startDate.ToString("yyyy-MM-dd"), endDate.ToString("yyyy-MM-dd"));
+            }
+            else
+            {
+                _logger?.LogInformation("[TaskScheduler] Moneytree sync completed for {Company}: inserted={Inserted}, skipped={Skipped}",
+                    task.CompanyCode, importResult.InsertedRows, importResult.SkippedRows);
+            }
 
             return new TaskExecutionOutcome("pending", result, nextRun, false);
         }

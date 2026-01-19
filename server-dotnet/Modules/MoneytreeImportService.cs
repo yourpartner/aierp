@@ -76,6 +76,13 @@ public sealed class MoneytreeImportService
             throw new InvalidOperationException($"Moneytree import failed at download: {ex.Message}", ex);
         }
 
+        // 如果指定日期范围内没有数据（0件），直接返回空结果
+        if (downloadResult.IsEmpty)
+        {
+            _logger.LogInformation("[MoneytreeImport] 指定日期范围内没有新的银行明细（0件），跳过导入");
+            return new MoneytreeImportResult(Guid.Empty, 0, 0, 0);
+        }
+
         IReadOnlyList<MoneytreeCsvParser.MoneytreeRow> rows;
         try
         {

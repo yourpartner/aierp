@@ -28,6 +28,59 @@ public sealed class InvoiceTaskService
         _ds = ds;
     }
 
+    /// <summary>
+    /// Force deletes an invoice task regardless of its status.
+    /// Deletes associated AI messages and the task itself.
+    /// </summary>
+    public async Task<bool> DeleteAsync(Guid taskId, Guid sessionId, string companyCode, CancellationToken ct)
+    {
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        
+        // 1. 验证任务所属权
+        cmd.CommandText = "SELECT 1 FROM ai_tasks WHERE id = $1 AND session_id = $2 AND company_code = $3 FOR UPDATE";
+        cmd.Parameters.AddWithValue(taskId);
+        cmd.Parameters.AddWithValue(sessionId);
+        cmd.Parameters.AddWithValue(companyCode);
+        
+        var exists = await cmd.ExecuteScalarAsync(ct);
+        if (exists is null)
+        {
+            await tx.RollbackAsync(ct);
+            return false;
+        }
+
+        // 2. 删除关联的消息记录（当前对话和归档）
+        await using (var delMsgs = conn.CreateCommand())
+        {
+            delMsgs.Transaction = tx;
+            delMsgs.CommandText = "DELETE FROM ai_messages WHERE task_id = $1";
+            delMsgs.Parameters.AddWithValue(taskId);
+            await delMsgs.ExecuteNonQueryAsync(ct);
+        }
+        await using (var delArchive = conn.CreateCommand())
+        {
+            delArchive.Transaction = tx;
+            delArchive.CommandText = "DELETE FROM ai_messages_archive WHERE task_id = $1";
+            delArchive.Parameters.AddWithValue(taskId);
+            await delArchive.ExecuteNonQueryAsync(ct);
+        }
+
+        // 3. 删除任务本身
+        await using (var delTask = conn.CreateCommand())
+        {
+            delTask.Transaction = tx;
+            delTask.CommandText = "DELETE FROM ai_tasks WHERE id = $1";
+            delTask.Parameters.AddWithValue(taskId);
+            await delTask.ExecuteNonQueryAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
+        return true;
+    }
+
     public sealed record InvoiceTaskCancelResult(string? BlobName, string? StoredPath);
 
     /// <summary>
