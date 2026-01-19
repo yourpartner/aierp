@@ -2008,10 +2008,13 @@ async function confirmCancelTask(task: InvoiceTask){
     return
   }
   try{
-    await ElMessageBox.confirm('确定要删除该任务吗？', '提示', {
+    await ElMessageBox.confirm(
+      localize('このタスクを削除しますか？', '确定要删除该任务吗？', 'Delete this task?'),
+      localize('確認', '提示', 'Confirm'),
+      {
       type: 'warning',
-      confirmButtonText: '确定',
-      cancelButtonText: '取消'
+      confirmButtonText: localize('削除', '确定', 'Delete'),
+      cancelButtonText: localize('キャンセル', '取消', 'Cancel')
     })
   }catch{
     return

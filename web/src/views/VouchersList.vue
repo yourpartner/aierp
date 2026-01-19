@@ -144,7 +144,9 @@
                 v-if="detail && !getDeleteDisabledReason(detail)"
                 :title="`伝票を削除しますか？`"
                 confirm-button-text="削除"
+                confirm-button-type="danger"
                 cancel-button-text="キャンセル"
+                cancel-button-type="default"
                 @confirm="confirmDeleteInDetail"
               >
                 <template #reference>
@@ -228,7 +230,9 @@
                     v-if="detail && !getDeleteDisabledReason(detail)"
                     :title="`伝票を削除しますか？`"
                     confirm-button-text="削除"
+                    confirm-button-type="danger"
                     cancel-button-text="キャンセル"
+                    cancel-button-type="default"
                     @confirm="confirmDeleteInDetail"
                   >
                     <template #reference>
