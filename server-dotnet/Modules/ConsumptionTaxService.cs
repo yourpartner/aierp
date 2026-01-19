@@ -413,6 +413,9 @@ public class ConsumptionTaxService
                   AND (v.payload->'header'->>'postingDate')::date >= $2
                   AND (v.payload->'header'->>'postingDate')::date <= $3
                   AND a.payload->>'taxType' = ANY($4)
+                  -- 排除消費税科目本身（安全保障）
+                  AND a.payload->>'taxType' != 'TAX_ACCOUNT'
+                  AND COALESCE(a.payload->>'name', '') NOT LIKE '%消費税%'
             ),
             tax_lines AS (
                 SELECT 
