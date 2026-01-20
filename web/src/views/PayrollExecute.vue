@@ -38,10 +38,6 @@
           </el-select>
         <el-button type="primary" text size="small" @click="selectAllEmployees">全選択</el-button>
         
-        <el-select v-model="policyId" filterable clearable placeholder="給与ポリシー" class="payroll-filters__policy" @visible-change="handlePolicyVisible">
-            <el-option v-for="p in policies" :key="p.value" :label="p.label" :value="p.value" />
-          </el-select>
-        
         <el-date-picker v-model="month" type="month" value-format="YYYY-MM" placeholder="対象月" class="payroll-filters__month" />
         
         <div class="payroll-filters__switches">
@@ -52,6 +48,59 @@
       
       <!-- エラー・警告 -->
       <el-alert v-if="error" type="error" show-icon :title="error" style="margin-bottom:12px" closable @close="error=''" />
+      
+      <!-- 手動工時入力ダイアログ -->
+      <el-dialog
+        v-model="manualHoursDialog.visible"
+        title="工時を手動入力"
+        width="500px"
+        :close-on-click-modal="false"
+      >
+        <div class="manual-hours-dialog">
+          <el-alert type="info" :closable="false" style="margin-bottom: 16px">
+            <template #title>
+              <span>{{ manualHoursDialog.employeeName }} は時給制のため、工数データが必要です。</span>
+            </template>
+            <template #default>
+              <div style="margin-top: 8px; color: #666;">
+                手動で工時を入力するか、キャンセルして工数を登録してください。
+              </div>
+            </template>
+          </el-alert>
+          <el-form label-width="100px">
+            <el-form-item label="時給">
+              <el-input-number
+                v-model="manualHoursDialog.hourlyRate"
+                :min="0"
+                :precision="0"
+                :controls="false"
+                style="width: 150px"
+              />
+              <span style="margin-left: 8px">円</span>
+            </el-form-item>
+            <el-form-item label="総工時">
+              <el-input-number
+                v-model="manualHoursDialog.totalHours"
+                :min="0"
+                :max="744"
+                :precision="2"
+                :step="0.5"
+                style="width: 150px"
+              />
+              <span style="margin-left: 8px">時間</span>
+            </el-form-item>
+            <el-form-item label="計算結果">
+              <span class="manual-hours-result">¥{{ formatAmount(manualHoursDialog.hourlyRate * manualHoursDialog.totalHours) }}</span>
+            </el-form-item>
+          </el-form>
+        </div>
+        <template #footer>
+          <el-button @click="manualHoursDialog.visible = false">キャンセル</el-button>
+          <el-button type="primary" :loading="loading" @click="submitManualHours">
+            この工時で計算
+          </el-button>
+        </template>
+      </el-dialog>
       <el-alert
         v-if="runResult?.hasExisting && !overwrite"
         type="warning"
@@ -179,13 +228,11 @@ const employeeOptions = ref<any[]>([])
 const allEmployees = ref<any[]>([])
 const loadingEmployees = ref(false)
 const contractorTypeCodes = ref<Set<string>>(new Set()) // 个人事业主的雇用类型代码/名称集合
-const policyId = ref('')
 const month = ref(new Date().toISOString().slice(0,7))
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
 const runResult = ref<any | null>(null)
-const policies = ref<any[]>([])
 const debug = ref(true)
 const overwrite = ref(false)
 const activePanels = ref<string[]>([])
@@ -200,8 +247,19 @@ const workHourItems = [
   { key: 'absenceHours', label: '不足' }
 ]
 const warningDescriptions: Record<string, string> = {
-  workHoursMissing: '勤怠データが未登録のため、残業・控除は実績無しとして計算されています。'
+  workHoursMissing: '勤怠データが未登録のため、残業・控除は実績無しとして計算されています。',
+  usedStandardHours: '勤怠データが未登録のため、月標準工時で計算されています。'
 }
+
+// 手動工時入力ダイアログ
+const manualHoursDialog = ref({
+  visible: false,
+  employeeId: '',
+  employeeCode: '',
+  employeeName: '',
+  hourlyRate: 0,
+  totalHours: 0
+})
 
 function extractErrorMessage(err: any, fallback: string) {
   if (!err) return fallback
@@ -249,38 +307,11 @@ function formatDiff(diff:any){
   return `過去平均: ¥${formatAmount(avg)} / 差分: ¥${formatAmount(difference)}${pctText}`
 }
 
-function fmtDate(d:string){ try{ const t=new Date(d); if (isNaN(t.getTime())) return ''; const y=t.getFullYear(); const m=String(t.getMonth()+1).padStart(2,'0'); const dd=String(t.getDate()).padStart(2,'0'); const hh=String(t.getHours()).padStart(2,'0'); const mm=String(t.getMinutes()).padStart(2,'0'); return `${y}-${m}-${dd} ${hh}:${mm}` }catch{ return '' } }
-
-async function loadPolicies(){
-  if (policies.value.length>0) return
-  try{
-    const active = await api.post('/objects/payroll_policy/search', { page:1, pageSize:1, where:[{ json:'isActive', op:'eq', value:true }], orderBy:[{ field:'created_at', dir:'DESC' }] })
-    const arow = (active.data?.data||[])[0]
-    let all:any[]=[]
-    let page=1; const pageSize=100
-    while(true){
-      const r = await api.post('/objects/payroll_policy/search', { page, pageSize, where:[], orderBy:[{ field:'created_at', dir:'DESC'}] })
-      const list = (r.data?.data||[]) as any[]
-      all = all.concat(list)
-      if (list.length < pageSize) break
-      page++
-    }
-    policies.value = all.map(x=>{
-      const ver = x.payload?.version || x.version || ''
-      const ts = fmtDate(x.created_at)
-      const active = x.payload?.isActive===true
-      return { label: `${ver}  ${ts}${active?'  [有効]':''}`, value: x.id }
-    })
-    if (arow) policyId.value = arow.id
-    if (!policyId.value && policies.value.length>0) policyId.value = policies.value[0].value
-  }catch{}
-}
-
 async function run(){
   if (!employeeIds.value.length || !month.value){ error.value='社員と月を選択してください'; return }
   loading.value=true; error.value=''; runResult.value=null
   try{
-    const payload:any = { employeeIds: employeeIds.value, month: month.value, policyId: policyId.value || null, debug: debug.value }
+    const payload:any = { employeeIds: employeeIds.value, month: month.value, debug: debug.value }
     const r = await api.post('/payroll/manual/run', payload)
     runResult.value = {
       ...r.data,
@@ -308,9 +339,104 @@ async function run(){
     activePanels.value = panels
   }
   catch(e:any){
-    error.value = extractErrorMessage(e, '実行に失敗しました')
+    // 检查是否是时薪缺少工时的特殊错误
+    const resp = e?.response?.data
+    if (resp?.error === 'hourly_rate_missing_timesheet' || resp?.payload?.error === 'hourly_rate_missing_timesheet') {
+      const data = resp?.payload || resp
+      // 弹出手动输入工时对话框
+      manualHoursDialog.value = {
+        visible: true,
+        employeeId: data.employeeId || '',
+        employeeCode: data.employeeCode || '',
+        employeeName: data.employeeName || data.employeeCode || '',
+        hourlyRate: data.hourlyRate || 0,
+        totalHours: 160 // 默认按一个月标准工时
+      }
+    } else {
+      error.value = extractErrorMessage(e, '実行に失敗しました')
+    }
   }
   finally{ loading.value=false }
+}
+
+// 提交手动输入的工时
+async function submitManualHours() {
+  const dialog = manualHoursDialog.value
+  if (dialog.totalHours <= 0) {
+    ElMessage.warning('工時を入力してください')
+    return
+  }
+  
+  loading.value = true
+  error.value = ''
+  
+  try {
+    // 使用手动工时重新计算该员工的工资
+    const payload: any = {
+      employeeIds: [dialog.employeeId],
+      month: month.value,
+      debug: debug.value,
+      manualWorkHours: {
+        [dialog.employeeId]: {
+          totalHours: dialog.totalHours,
+          hourlyRate: dialog.hourlyRate
+        }
+      }
+    }
+    
+    const r = await api.post('/payroll/manual/run', payload)
+    
+    // 关闭对话框
+    manualHoursDialog.value.visible = false
+    
+    // 处理结果
+    const newEntries = Array.isArray(r.data?.entries)
+      ? r.data.entries.map((entry: any) => ({
+          ...entry,
+          departmentName: entry.departmentName || r.data.departmentName || '',
+          workHours: entry.workHours || null,
+          warnings: entry.warnings || [],
+          _rawPayrollSheet: entry.payrollSheet || [],
+          _rawAccountingDraft: entry.accountingDraft || [],
+          payrollSheet: (entry.payrollSheet || []).map((row: any) => ({
+            ...row,
+            displayName: row.itemName || row.displayName || row.itemCode,
+            displayAmount: formatAmount(row.amount)
+          })),
+          accountingDraft: (entry.accountingDraft || []).map((row: any) => ({
+            ...row,
+            displayAmount: formatAmount(row.amount)
+          }))
+        }))
+      : []
+    
+    // 如果已有结果，合并新结果；否则直接设置
+    if (runResult.value?.entries?.length) {
+      // 替换或添加该员工的结果
+      const existingIdx = runResult.value.entries.findIndex((e: any) => e.employeeId === dialog.employeeId)
+      if (existingIdx >= 0) {
+        runResult.value.entries[existingIdx] = newEntries[0]
+      } else {
+        runResult.value.entries.push(...newEntries)
+      }
+    } else {
+      runResult.value = {
+        ...r.data,
+        entries: newEntries
+      }
+    }
+    
+    // 展开该员工的面板
+    if (!activePanels.value.includes(dialog.employeeId)) {
+      activePanels.value.push(dialog.employeeId)
+    }
+    
+    ElMessage.success('計算完了')
+  } catch (e: any) {
+    error.value = extractErrorMessage(e, '計算に失敗しました')
+  } finally {
+    loading.value = false
+  }
 }
 
 async function saveResults(){
@@ -320,7 +446,7 @@ async function saveResults(){
   try{
     const body = {
       month: runResult.value.month || month.value,
-      policyId: runResult.value.policyId || policyId.value || null,
+      policyId: runResult.value.policyId || null,
       overwrite: overwrite.value,
       runType: 'manual',
       entries: runResult.value.entries.map((entry:any)=>{
@@ -426,12 +552,7 @@ watch(month, () => {
 
 onMounted(() => {
   loadEmployeesForMonth()
-  loadPolicies()
 })
-
-function handlePolicyVisible(visible: boolean) {
-  if (visible) loadPolicies()
-}
 </script>
 
 <style scoped>
@@ -486,10 +607,6 @@ function handlePolicyVisible(visible: boolean) {
 
 .payroll-filters__employee {
   width: 300px;
-}
-
-.payroll-filters__policy {
-  width: 220px;
 }
 
 .payroll-filters__month {
@@ -559,5 +676,16 @@ function handlePolicyVisible(visible: boolean) {
   font-weight: 600;
   color: #606266;
   border-bottom: 1px solid #ebeef5;
+}
+
+/* 手動工時入力ダイアログ */
+.manual-hours-dialog {
+  padding: 8px 0;
+}
+
+.manual-hours-result {
+  font-size: 18px;
+  font-weight: 600;
+  color: #67c23a;
 }
 </style>

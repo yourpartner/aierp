@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using NpgsqlTypes;
 using Server.Infrastructure;
 
 namespace Server.Modules;
@@ -68,6 +69,7 @@ public sealed class PayrollService
     /// <param name="month">Target month in yyyy-MM format.</param>
     /// <param name="policyId">Optional payroll policy override.</param>
     /// <param name="debug">Whether to capture rule trace info.</param>
+    /// <param name="manualWorkHours">Optional manual work hours for hourly-rate employees.</param>
     /// <param name="ct">Cancellation token propagated from HTTP pipeline.</param>
     public async Task<PayrollManualRunResult> ManualRunAsync(
         string companyCode,
@@ -75,12 +77,20 @@ public sealed class PayrollService
         string month,
         Guid? policyId,
         bool debug,
+        Dictionary<string, ManualWorkHoursInput>? manualWorkHours,
         CancellationToken ct)
     {
         var entries = new List<PayrollPreviewEntry>();
         foreach (var employeeId in employeeIds.Distinct())
         {
-            var exec = await HrPayrollModule.ExecutePayrollInternal(_ds, _law, companyCode, employeeId, month, policyId, debug, ct);
+            // 检查是否有该员工的手动工时输入
+            ManualWorkHoursInput? manualHours = null;
+            if (manualWorkHours != null)
+            {
+                manualWorkHours.TryGetValue(employeeId.ToString(), out manualHours);
+            }
+            
+            var exec = await HrPayrollModule.ExecutePayrollInternal(_ds, _law, companyCode, employeeId, month, policyId, debug, manualHours, ct);
             var diff = await BuildDiffSummaryAsync(companyCode, employeeId, policyId, month, exec.NetAmount, ct);
             var traceNode = exec.Trace is null ? null : exec.Trace.DeepClone().AsArray();
 
@@ -108,6 +118,18 @@ public sealed class PayrollService
             ExistingEmployeeIds: existingEmployeeIds,
             Entries: entries);
     }
+    
+    /// <summary>
+    /// Overload without manual work hours for backward compatibility.
+    /// </summary>
+    public Task<PayrollManualRunResult> ManualRunAsync(
+        string companyCode,
+        IReadOnlyCollection<Guid> employeeIds,
+        string month,
+        Guid? policyId,
+        bool debug,
+        CancellationToken ct)
+        => ManualRunAsync(companyCode, employeeIds, month, policyId, debug, null, ct);
 
     /// <summary>
     /// Resolves the list of employees that should be processed for an automatic payroll run.
@@ -479,7 +501,7 @@ public sealed class PayrollService
             """;
         cmd.Parameters.AddWithValue(companyCode);
         cmd.Parameters.AddWithValue(month);
-        cmd.Parameters.AddWithValue(policyId.HasValue ? policyId.Value : (object)DBNull.Value);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = policyId.HasValue ? policyId.Value : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
         cmd.Parameters.AddWithValue(idList);
         var list = new List<Guid>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -538,7 +560,7 @@ public sealed class PayrollService
             """;
         cmd.Parameters.AddWithValue(companyCode);
         cmd.Parameters.AddWithValue(employeeId);
-        cmd.Parameters.AddWithValue(policyId.HasValue ? policyId.Value : (object)DBNull.Value);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = policyId.HasValue ? policyId.Value : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
         cmd.Parameters.AddWithValue(month);
 
         var samples = new List<(string Month, decimal Amount, JsonDocument? Sheet)>();
@@ -775,7 +797,7 @@ public sealed class PayrollService
         cmd.Parameters.AddWithValue(companyCode);
         cmd.Parameters.AddWithValue(month);
         cmd.Parameters.AddWithValue(runType);
-        cmd.Parameters.AddWithValue(policyId.HasValue ? policyId.Value : (object)DBNull.Value);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = policyId.HasValue ? policyId.Value : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
         var exists = await cmd.ExecuteScalarAsync(ct);
         return exists is not null;
     }
@@ -947,7 +969,7 @@ public sealed class PayrollService
         cmd.Parameters.AddWithValue(companyCode);
         cmd.Parameters.AddWithValue(month);
         cmd.Parameters.AddWithValue(runType);
-        cmd.Parameters.AddWithValue(policyId.HasValue ? policyId.Value : (object)DBNull.Value);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = policyId.HasValue ? policyId.Value : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {

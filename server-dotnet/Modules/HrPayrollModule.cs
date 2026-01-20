@@ -22,7 +22,15 @@ public sealed class PayrollExecutionException : Exception
     }
 }
 
-internal sealed record PayrollManualRunRequest(IReadOnlyList<Guid> EmployeeIds, string Month, Guid? PolicyId, bool Debug);
+internal sealed record PayrollManualRunRequest(
+    IReadOnlyList<Guid> EmployeeIds, 
+    string Month, 
+    Guid? PolicyId, 
+    bool Debug,
+    Dictionary<string, ManualWorkHoursInput>? ManualWorkHours = null);
+
+/// <summary>手动输入的工时数据</summary>
+public sealed record ManualWorkHoursInput(decimal TotalHours, decimal HourlyRate);
 
 public sealed record PayrollExecutionResult(
     List<JsonObject> PayrollSheet,
@@ -40,6 +48,8 @@ public static class HrPayrollModule
 {
     private static readonly JsonSerializerOptions PayrollJsonSerializerOptions = new(JsonSerializerDefaults.Web);
     private static readonly string[] CommuteKeywords = new[] { "通勤", "通勤手当", "交通手当", "交通費", "交通费", "交通補助", "交通补贴" };
+    // 时薪关键词已移至 Policy 规则的 activation.salaryDescriptionContains 中定义
+    // 后端不再硬编码时薪判断逻辑
     private static readonly Dictionary<string, string> PayrollItemDisplayNames = new(StringComparer.OrdinalIgnoreCase)
     {
         ["BASE"] = "基本給",
@@ -61,7 +71,8 @@ public static class HrPayrollModule
         "commuteallowance",
         "salarytotal",
         "healthbase",
-        "pensionbase"
+        "pensionbase",
+        "hourlyrate"
     };
 
     private sealed record JournalAccountInstruction(string? DebitName, string? CreditName);
@@ -215,6 +226,52 @@ public static class HrPayrollModule
         }
 
         public static WorkHourSummary Empty => new(0, 0, 0, 0, 0, 0, 0, 8m, 60m, 0, 0);
+
+        /// <summary>
+        /// 生成月标准工时（无加班无欠勤），用于月薪人员缺少timesheet时按标准计算
+        /// </summary>
+        public static WorkHourSummary CreateStandardMonthly(CompanyWorkSettings settings, string month)
+        {
+            // 计算该月的工作日数（排除周末和日本法定节假日）
+            var workDays = CountWorkDaysInMonth(month);
+            var monthlyHours = workDays * settings.StandardDailyHours;
+            return new WorkHourSummary(
+                totalHours: monthlyHours,
+                regularHours: monthlyHours,
+                overtime125Hours: 0,
+                overtime150Hours: 0,
+                holidayHours: 0,
+                lateNightHours: 0,
+                absenceHours: 0,
+                standardDailyHours: settings.StandardDailyHours,
+                overtimeThresholdHours: settings.OvertimeThresholdHours,
+                sourceEntries: workDays, // 虚拟条目数等于工作日数
+                lockedEntries: workDays);
+        }
+
+        private static int CountWorkDaysInMonth(string month)
+        {
+            if (!DateTime.TryParse(month + "-01", out var firstDay))
+            {
+                // 默认按20个工作日计算
+                return 20;
+            }
+            var daysInMonth = DateTime.DaysInMonth(firstDay.Year, firstDay.Month);
+            int workDays = 0;
+            for (int d = 1; d <= daysInMonth; d++)
+            {
+                var date = new DateOnly(firstDay.Year, firstDay.Month, d);
+                if (!IsHoliday(date))
+                {
+                    workDays++;
+                }
+            }
+            return workDays > 0 ? workDays : 20;
+        }
+
+        private static bool IsHoliday(DateOnly date)
+            => date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday
+               || JapaneseHolidayService.Instance.IsNationalHoliday(date);
     }
 
     private readonly struct FormulaEvalResult
@@ -1131,7 +1188,7 @@ public static class HrPayrollModule
 
             try
             {
-                var result = await payroll.ManualRunAsync(cc.ToString(), body.EmployeeIds, body.Month, body.PolicyId, body.Debug, ct);
+                var result = await payroll.ManualRunAsync(cc.ToString(), body.EmployeeIds, body.Month, body.PolicyId, body.Debug, body.ManualWorkHours, ct);
                 return Results.Ok(result);
             }
             catch (PayrollExecutionException ex)
@@ -2011,7 +2068,7 @@ LIMIT @pageSize OFFSET @offset";
 
         try
         {
-            var result = await ExecutePayrollInternal(ds, law, cc.ToString(), employeeId, month, policyId, debug, ct);
+            var result = await ExecutePayrollInternal(ds, law, cc.ToString(), employeeId, month, policyId, debug, null, ct);
             if (debug)
             {
                 return Results.Ok(new
@@ -2048,7 +2105,7 @@ LIMIT @pageSize OFFSET @offset";
         }
     }
 
-    internal static async Task<PayrollExecutionResult> ExecutePayrollInternal(NpgsqlDataSource ds, LawDatasetService law, string companyCode, Guid employeeId, string month, Guid? policyId, bool debug, CancellationToken ct)
+    internal static async Task<PayrollExecutionResult> ExecutePayrollInternal(NpgsqlDataSource ds, LawDatasetService law, string companyCode, Guid employeeId, string month, Guid? policyId, bool debug, ManualWorkHoursInput? manualWorkHours, CancellationToken ct)
     {
         var trace = debug ? new List<object>() : null;
         string? employeeNameOut = null;
@@ -2221,32 +2278,14 @@ LIMIT @pageSize OFFSET @offset";
                 nlCommute = ParseAmountNearLocal(empNl, CommuteKeywords);
             }
         } catch {}
-        if (debug) trace?.Add(new { step="input.employee.nlParsed", baseAmount = nlBase, commuteAmount = nlCommute });
+        
+        // 时薪判断和金额解析已移至 Policy 规则中处理
+        // 后端不再硬编码时薪关键词，由 Policy 规则的 activation.salaryDescriptionContains 定义
+        decimal nlHourlyRate = 0m;
+        
+        if (debug) trace?.Add(new { step="input.employee.nlParsed", baseAmount = nlBase, commuteAmount = nlCommute, salaryDescription = empNlDescription });
 
-        var workSettings = await LoadCompanyWorkSettingsAsync(conn, companyCode, ct);
-        var workHourSummary = await LoadWorkHourSummaryAsync(conn, companyCode, employeeCodeOut, month, workSettings, ct);
-        JsonObject? workHoursJson = workHourSummary.HasData ? workHourSummary.ToJson() : null;
-        if (debug)
-        {
-            trace?.Add(new
-            {
-                step = "input.workHours",
-                total = workHourSummary.TotalHours,
-                regular = workHourSummary.RegularHours,
-                overtime = workHourSummary.Overtime125Hours,
-                overtime60 = workHourSummary.Overtime150Hours,
-                holiday = workHourSummary.HolidayHours,
-                lateNight = workHourSummary.LateNightHours,
-                absence = workHourSummary.AbsenceHours,
-                sourceEntries = workHourSummary.SourceEntries,
-                lockedEntries = workHourSummary.LockedEntries
-            });
-            if (!workHourSummary.HasData)
-            {
-                trace?.Add(new { step = "warning.workHoursMissing", message = "当月没有确认的工时记录" });
-            }
-        }
-
+        // 先加载 Policy，因为需要从 Policy 规则中判断时薪条件
         JsonElement? policy = null;
         JsonDocument? policyDoc = null;
         string policySource = "none";
@@ -2295,14 +2334,187 @@ LIMIT @pageSize OFFSET @offset";
             }
         }
         if (debug) trace?.Add(new { step="policy.select", source=policySource });
-        if (debug && policy is JsonElement policyEl)
+
+        // 从 Policy 规则中扫描时薪条件，判断员工是否匹配
+        bool isHourlyRateMode = false;
+        string[]? hourlyKeywords = null;
+        if (policy is JsonElement policyEl && policyEl.TryGetProperty("rules", out var rulesForScan) && rulesForScan.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var rule in rulesForScan.EnumerateArray())
+            {
+                if (rule.TryGetProperty("activation", out var activation) && activation.ValueKind == JsonValueKind.Object)
+                {
+                    // 检查 salaryDescriptionContains 条件
+                    if (activation.TryGetProperty("salaryDescriptionContains", out var containsArr) && containsArr.ValueKind == JsonValueKind.Array)
+                    {
+                        var keywords = new List<string>();
+                        foreach (var kw in containsArr.EnumerateArray())
+                        {
+                            if (kw.ValueKind == JsonValueKind.String)
+                            {
+                                var keyword = kw.GetString();
+                                if (!string.IsNullOrWhiteSpace(keyword))
+                                {
+                                    keywords.Add(keyword);
+                                }
+                            }
+                        }
+                        if (keywords.Count > 0 && !string.IsNullOrWhiteSpace(empNlDescription))
+                        {
+                            hourlyKeywords = keywords.ToArray();
+                            isHourlyRateMode = keywords.Any(kw => empNlDescription.Contains(kw, StringComparison.OrdinalIgnoreCase));
+                            if (isHourlyRateMode)
+                            {
+                                if (debug) trace?.Add(new { step = "policy.hourlyMode.detected", keywords = hourlyKeywords, salaryDescription = empNlDescription });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 如果是时薪模式，尝试从给与情报中解析时薪金额
+        if (isHourlyRateMode && hourlyKeywords != null && !string.IsNullOrWhiteSpace(empNlDescription))
+        {
+            try
+            {
+                var normalizedSrc = NormalizeNumberText(empNlDescription);
+                foreach (var kw in hourlyKeywords)
+                {
+                    var normalizedKw = NormalizeNumberText(kw);
+                    var idx = normalizedSrc.IndexOf(normalizedKw, StringComparison.OrdinalIgnoreCase);
+                    if (idx >= 0)
+                    {
+                        var seg = normalizedSrc.Substring(idx);
+                        // 尝试匹配 "時給1500円" 或 "時給1500" 格式
+                        var m1 = System.Text.RegularExpressions.Regex.Match(seg, @"(\d[\d,]*)\s*円");
+                        if (m1.Success) { nlHourlyRate = decimal.Parse(m1.Groups[1].Value.Replace(",", "")); break; }
+                        var m2 = System.Text.RegularExpressions.Regex.Match(seg, @"(\d[\d,]*)");
+                        if (m2.Success) { nlHourlyRate = decimal.Parse(m2.Groups[1].Value.Replace(",", "")); break; }
+                    }
+                }
+            }
+            catch { }
+
+            // 时薪模式但无法解析出时薪金额时，报错
+            if (nlHourlyRate <= 0)
+            {
+                var displayName = employeeNameOut ?? employeeCodeOut ?? employeeId.ToString();
+                throw new PayrollExecutionException(StatusCodes.Status400BadRequest, new
+                {
+                    error = "hourly_rate_parse_failed",
+                    employeeId,
+                    employeeCode = employeeCodeOut,
+                    employeeName = employeeNameOut,
+                    month,
+                    salaryDescription = empNlDescription,
+                    hourlyKeywords,
+                    message = $"{displayName} の給与情報に時給キーワードがありますが、時給金額を解析できません。給与情報を確認してください。"
+                }, $"{displayName} の時給金額を解析できません。");
+            }
+        }
+
+        if (debug) trace?.Add(new { step = "policy.hourlyMode.result", isHourlyRateMode, nlHourlyRate, hourlyKeywords });
+
+        var workSettings = await LoadCompanyWorkSettingsAsync(conn, companyCode, ct);
+        var workHourSummary = await LoadWorkHourSummaryAsync(conn, companyCode, employeeCodeOut, month, workSettings, ct);
+        
+        // 处理缺少timesheet的情况
+        bool usedStandardHours = false;
+        bool usedManualHours = false;
+        if (!workHourSummary.HasData)
+        {
+            if (isHourlyRateMode)
+            {
+                // 时薪模式：检查是否有手动输入的工时
+                if (manualWorkHours != null && manualWorkHours.TotalHours > 0)
+                {
+                    // 使用手动输入的工时创建虚拟工时数据
+                    workHourSummary = new WorkHourSummary(
+                        totalHours: manualWorkHours.TotalHours,
+                        regularHours: manualWorkHours.TotalHours, // 时薪模式下全部算作regular
+                        overtime125Hours: 0,
+                        overtime150Hours: 0,
+                        holidayHours: 0,
+                        lateNightHours: 0,
+                        absenceHours: 0,
+                        standardDailyHours: workSettings.StandardDailyHours,
+                        overtimeThresholdHours: workSettings.OvertimeThresholdHours,
+                        sourceEntries: 1, // 虚拟1条记录
+                        lockedEntries: 1);
+                    usedManualHours = true;
+                    // 如果手动输入了时薪，覆盖解析出的时薪
+                    if (manualWorkHours.HourlyRate > 0)
+                    {
+                        nlHourlyRate = manualWorkHours.HourlyRate;
+                    }
+                    if (debug)
+                    {
+                        trace?.Add(new { step = "info.usedManualHours", message = "使用手动输入的工时", totalHours = manualWorkHours.TotalHours, hourlyRate = nlHourlyRate });
+                    }
+                }
+                else
+                {
+                    // 没有手动工时，返回特殊错误让前端处理
+                    var displayName = employeeNameOut ?? employeeCodeOut ?? employeeId.ToString();
+                    throw new PayrollExecutionException(StatusCodes.Status400BadRequest, new
+                    {
+                        error = "hourly_rate_missing_timesheet",
+                        employeeId,
+                        employeeCode = employeeCodeOut,
+                        employeeName = employeeNameOut,
+                        month,
+                        hourlyRate = nlHourlyRate,
+                        requiresManualHours = true,
+                        message = $"{displayName} は時給制のため、工数データが必要です。手動で工時を入力するか、計算を中止してください。"
+                    }, $"{displayName} は時給制のため、工数データが必要です。");
+                }
+            }
+            else
+            {
+                // 月薪模式：缺少timesheet时，按标准工时计算（无加班无欠勤）
+                workHourSummary = WorkHourSummary.CreateStandardMonthly(workSettings, month);
+                usedStandardHours = true;
+                if (debug)
+                {
+                    trace?.Add(new { step = "info.usedStandardHours", message = "缺少timesheet，按月标准工时计算（无加班无欠勤）", workDays = workHourSummary.SourceEntries, totalHours = workHourSummary.TotalHours });
+                }
+            }
+        }
+        
+        JsonObject? workHoursJson = workHourSummary.HasData ? workHourSummary.ToJson() : null;
+        if (workHoursJson is not null)
+        {
+            if (usedStandardHours) workHoursJson["usedStandardHours"] = true;
+            if (usedManualHours) workHoursJson["usedManualHours"] = true;
+        }
+        
+        if (debug)
+        {
+            trace?.Add(new
+            {
+                step = "input.workHours",
+                total = workHourSummary.TotalHours,
+                regular = workHourSummary.RegularHours,
+                overtime = workHourSummary.Overtime125Hours,
+                overtime60 = workHourSummary.Overtime150Hours,
+                holiday = workHourSummary.HolidayHours,
+                lateNight = workHourSummary.LateNightHours,
+                absence = workHourSummary.AbsenceHours,
+                sourceEntries = workHourSummary.SourceEntries,
+                lockedEntries = workHourSummary.LockedEntries,
+                usedStandardHours
+            });
+        }
+        if (debug && policy is JsonElement policyElForDebug)
         {
             string? policyText = null;
             try
             {
-                if (policyEl.TryGetProperty("companyText", out var cte) && cte.ValueKind==JsonValueKind.String) policyText = cte.GetString();
-                else if (policyEl.TryGetProperty("nlText", out var nte) && nte.ValueKind==JsonValueKind.String) policyText = nte.GetString();
-                else if (policyEl.TryGetProperty("text", out var te) && te.ValueKind==JsonValueKind.String) policyText = te.GetString();
+                if (policyElForDebug.TryGetProperty("companyText", out var cte) && cte.ValueKind==JsonValueKind.String) policyText = cte.GetString();
+                else if (policyElForDebug.TryGetProperty("nlText", out var nte) && nte.ValueKind==JsonValueKind.String) policyText = nte.GetString();
+                else if (policyElForDebug.TryGetProperty("text", out var te) && te.ValueKind==JsonValueKind.String) policyText = te.GetString();
             } catch {}
             trace?.Add(new { step="input.policy", nl = policyText });
         }
@@ -2385,7 +2597,9 @@ LIMIT @pageSize OFFSET @offset";
                     description
                 });
             }
-            if (hasBaseEmp || hasBaseCompany)
+            // 时薪模式：由 policy 规则决定（例如时薪 × 工时），不在这里硬编码计算
+            // 月薪模式：BASE = 月薪固定金额
+            if (!isHourlyRateMode && (hasBaseEmp || hasBaseCompany))
             {
                 object fobj; if (nlBase>0) fobj = new { _const = nlBase }; else fobj = new { charRef = "employee.baseSalaryMonth" };
                 compiled.Add(new { item = "BASE", type = "earning", formula = fobj });
@@ -2419,27 +2633,34 @@ LIMIT @pageSize OFFSET @offset";
                 compiled.Add(new { item = "WHT", type = "deduction", formula = new { withholding = new { category = "monthly_ko" } } });
             }
 
-            decimal baseForHourly = nlBase;
-            if (baseForHourly <= 0m)
+            // 月薪模式下的时薪计算（用于加班/控除），时薪模式不需要
+            decimal effectiveHourlyRate = 0m;
+            if (!isHourlyRateMode)
             {
-                if (emp.TryGetProperty("baseSalaryMonth", out var bsm) && bsm.ValueKind == JsonValueKind.Number)
+                // 月薪模式：从月薪推算时薪
+                decimal baseForHourly = nlBase;
+                if (baseForHourly <= 0m)
                 {
-                    baseForHourly = bsm.TryGetDecimal(out var dec) ? dec : Convert.ToDecimal(bsm.GetDouble());
+                    if (emp.TryGetProperty("baseSalaryMonth", out var bsm) && bsm.ValueKind == JsonValueKind.Number)
+                    {
+                        baseForHourly = bsm.TryGetDecimal(out var dec) ? dec : Convert.ToDecimal(bsm.GetDouble());
+                    }
+                    else if (emp.TryGetProperty("salaryTotal", out var st) && st.ValueKind == JsonValueKind.Number)
+                    {
+                        baseForHourly = st.TryGetDecimal(out var dec) ? dec : Convert.ToDecimal(st.GetDouble());
+                    }
                 }
-                else if (emp.TryGetProperty("salaryTotal", out var st) && st.ValueKind == JsonValueKind.Number)
-                {
-                    baseForHourly = st.TryGetDecimal(out var dec) ? dec : Convert.ToDecimal(st.GetDouble());
-                }
+                effectiveHourlyRate = CalculateHourlyRate(workHourSummary, baseForHourly);
             }
-            var hourlyRate = CalculateHourlyRate(workHourSummary, baseForHourly);
-            if (hourlyRate > 0m && workHourSummary.HasData)
+            // 时薪模式下不计算加班/休日/深夜/欠勤，只有月薪模式才需要
+            if (!isHourlyRateMode && effectiveHourlyRate > 0m && workHourSummary.HasData)
             {
                 decimal multiplierOvertime = GetPolicyMultiplier(policyBody, "overtime", 1.25m);
                 decimal multiplierOvertime60 = GetPolicyMultiplier(policyBody, "overtime60", 1.5m);
                 decimal multiplierHoliday = GetPolicyMultiplier(policyBody, "holiday", 1.35m);
                 decimal multiplierLateNight = GetPolicyMultiplier(policyBody, "lateNight", 1.25m);
 
-                decimal Rate(decimal multiplier) => Math.Round(hourlyRate * multiplier, 6, MidpointRounding.AwayFromZero);
+                decimal Rate(decimal multiplier) => Math.Round(effectiveHourlyRate * multiplier, 6, MidpointRounding.AwayFromZero);
 
                 if (workHourSummary.Overtime125Hours > 0m)
                 {
@@ -2594,12 +2815,14 @@ LIMIT @pageSize OFFSET @offset";
                 whtBrackets,
                 nlBase,
                 nlCommute,
+                nlHourlyRate,
                 debug,
                 trace,
                 law,
                 monthDate,
                 workHourSummary,
-                policyBody);
+                policyBody,
+                empNlDescription);
         }
         var journal = new List<JournalLine>();
         JsonElement? activeJournalRules = null;
@@ -2718,12 +2941,12 @@ LIMIT @pageSize OFFSET @offset";
         policyDoc?.Dispose();
 
         var warnings = new JsonArray();
-        if (!workHourSummary.HasData)
+        if (usedStandardHours)
         {
             warnings.Add(new JsonObject
             {
-                ["code"] = "workHoursMissing",
-                ["message"] = $"{month} の勤怠データが確認できません。AI 判定による加班/控除は実績無しとして計算されます。"
+                ["code"] = "usedStandardHours",
+                ["message"] = $"{month} の勤怠データがないため、月標準工時（{workHourSummary.TotalHours}時間）で計算しました。加班・欠勤控除は発生しません。"
             });
         }
 
@@ -3110,13 +3333,70 @@ LIMIT @pageSize OFFSET @offset";
         IReadOnlyList<WithholdingBracket> whtBrackets,
         decimal nlBase,
         decimal nlCommute,
+        decimal nlHourlyRate,
         bool debug,
         List<object>? trace,
         LawDatasetService law,
         DateTime monthDate,
         WorkHourSummary workHours,
-        JsonElement? policyRoot)
+        JsonElement? policyRoot,
+        string? empSalaryDescription = null)
     {
+        // 辅助函数：检查员工是否匹配规则的 activation 条件
+        bool CheckActivation(JsonElement rule)
+        {
+            if (!rule.TryGetProperty("activation", out var activation) || activation.ValueKind != JsonValueKind.Object)
+            {
+                return true; // 没有 activation 条件，默认执行
+            }
+
+            // 检查 salaryDescriptionContains 条件
+            if (activation.TryGetProperty("salaryDescriptionContains", out var containsArr) && containsArr.ValueKind == JsonValueKind.Array)
+            {
+                if (string.IsNullOrWhiteSpace(empSalaryDescription))
+                {
+                    return false; // 员工没有给与情报，不匹配
+                }
+                bool matches = false;
+                foreach (var kw in containsArr.EnumerateArray())
+                {
+                    if (kw.ValueKind == JsonValueKind.String)
+                    {
+                        var keyword = kw.GetString();
+                        if (!string.IsNullOrWhiteSpace(keyword) && empSalaryDescription.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                        {
+                            matches = true;
+                            break;
+                        }
+                    }
+                }
+                if (!matches) return false;
+            }
+
+            // 检查 salaryDescriptionNotContains 条件（排除条件）
+            if (activation.TryGetProperty("salaryDescriptionNotContains", out var notContainsArr) && notContainsArr.ValueKind == JsonValueKind.Array)
+            {
+                if (!string.IsNullOrWhiteSpace(empSalaryDescription))
+                {
+                    foreach (var kw in notContainsArr.EnumerateArray())
+                    {
+                        if (kw.ValueKind == JsonValueKind.String)
+                        {
+                            var keyword = kw.GetString();
+                            if (!string.IsNullOrWhiteSpace(keyword) && empSalaryDescription.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                            {
+                                return false; // 匹配排除关键词，不执行
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 旧的 isHourlyRateMode 条件已废弃，保留向后兼容
+            // 建议使用 salaryDescriptionContains 替代
+
+            return true;
+        }
         decimal ReadWorkHoursValue(string key)
         {
             return workHours.GetScalar(string.IsNullOrWhiteSpace(key) ? "total" : key);
@@ -3200,6 +3480,7 @@ LIMIT @pageSize OFFSET @offset";
             if (key.Equals("salaryTotal", StringComparison.OrdinalIgnoreCase)) return (nlBase > 0 ? nlBase : 0m) + (nlCommute > 0 ? nlCommute : 0m);
             if (key.Equals("healthBase", StringComparison.OrdinalIgnoreCase)) return nlBase > 0 ? nlBase : 0m;
             if (key.Equals("pensionBase", StringComparison.OrdinalIgnoreCase)) return nlBase > 0 ? nlBase : 0m;
+            if (key.Equals("hourlyRate", StringComparison.OrdinalIgnoreCase)) return nlHourlyRate > 0 ? nlHourlyRate : 0m;
                     return 0m;
                 }
 
@@ -3228,27 +3509,59 @@ LIMIT @pageSize OFFSET @offset";
             }
             if (hours <= 0m) return new FormulaEvalResult(0m, null, hours, null, "hourlyPay:no_hours");
 
-            decimal baseAmount = 0m;
+            // 检查是否使用直接时薪模式（directRate: true 或 baseRef 指向 employee.hourlyRate）
+            bool useDirectRate = false;
+            if (hourlyNode.TryGetProperty("directRate", out var directRateNode) && directRateNode.ValueKind == JsonValueKind.True)
+            {
+                useDirectRate = true;
+            }
+            string? baseRefPath = null;
             if (hourlyNode.TryGetProperty("baseRef", out var baseRef) && baseRef.ValueKind == JsonValueKind.String)
             {
-                baseAmount = ReadFromPath(baseRef.GetString()!);
+                baseRefPath = baseRef.GetString();
+                // 如果 baseRef 指向 employee.hourlyRate，则使用直接时薪模式
+                if (baseRefPath != null && baseRefPath.Equals("employee.hourlyRate", StringComparison.OrdinalIgnoreCase))
+                {
+                    useDirectRate = true;
+                }
             }
-            if (baseAmount <= 0m)
-            {
-                baseAmount = ReadFromPath("employee.baseSalaryMonth");
-            }
-            if (baseAmount <= 0m)
-            {
-                baseAmount = ReadFromPath("employee.salaryTotal");
-            }
-            if (baseAmount <= 0m)
-            {
-                baseAmount = ReadEmployeeOverride("baseSalaryMonth");
-            }
-            if (baseAmount <= 0m) return new FormulaEvalResult(0m, null, hours, null, "hourlyPay:no_base");
 
-            var hourlyRate = CalculateHourlyRate(workHours, baseAmount);
-            if (hourlyRate <= 0m) return new FormulaEvalResult(0m, null, hours, null, "hourlyPay:no_rate");
+            decimal hourlyRate;
+            if (useDirectRate)
+            {
+                // 直接时薪模式：baseRef 的值就是时薪，不需要从月薪计算
+                hourlyRate = baseRefPath != null ? ReadFromPath(baseRefPath) : 0m;
+                if (hourlyRate <= 0m)
+                {
+                    hourlyRate = ReadEmployeeOverride("hourlyRate");
+                }
+                if (hourlyRate <= 0m) return new FormulaEvalResult(0m, null, hours, null, "hourlyPay:no_direct_rate");
+            }
+            else
+            {
+                // 传统模式：从月薪计算时薪
+                decimal baseAmount = 0m;
+                if (!string.IsNullOrWhiteSpace(baseRefPath))
+                {
+                    baseAmount = ReadFromPath(baseRefPath);
+                }
+                if (baseAmount <= 0m)
+                {
+                    baseAmount = ReadFromPath("employee.baseSalaryMonth");
+                }
+                if (baseAmount <= 0m)
+                {
+                    baseAmount = ReadFromPath("employee.salaryTotal");
+                }
+                if (baseAmount <= 0m)
+                {
+                    baseAmount = ReadEmployeeOverride("baseSalaryMonth");
+                }
+                if (baseAmount <= 0m) return new FormulaEvalResult(0m, null, hours, null, "hourlyPay:no_base");
+
+                hourlyRate = CalculateHourlyRate(workHours, baseAmount);
+                if (hourlyRate <= 0m) return new FormulaEvalResult(0m, null, hours, null, "hourlyPay:no_rate");
+            }
 
             decimal multiplier = 1m;
             if (hourlyNode.TryGetProperty("multiplierRef", out var multiplierRef) && multiplierRef.ValueKind == JsonValueKind.String)
@@ -3278,7 +3591,7 @@ LIMIT @pageSize OFFSET @offset";
                 amount = ApplyRounding(amount, method, precision);
             }
 
-            return new FormulaEvalResult(amount, rate, hours, null, "hourlyPay");
+            return new FormulaEvalResult(amount, rate, hours, null, useDirectRate ? "hourlyPay:direct" : "hourlyPay");
         }
 
         FormulaEvalResult evalFormula(JsonElement f, JsonElement? roundingOverride = null)
@@ -3477,6 +3790,14 @@ LIMIT @pageSize OFFSET @offset";
                 {
             var itemCode = rule.TryGetProperty("item", out var it) ? it.GetString() : (rule.TryGetProperty("itemCode", out var ic) ? ic.GetString() : null);
                     if (string.IsNullOrWhiteSpace(itemCode)) continue;
+
+            // 检查 activation 条件（全部在 Policy 中定义）
+            if (!CheckActivation(rule))
+            {
+                if (debug) trace?.Add(new { step = "rule.skip", item = itemCode, reason = "activation condition not met" });
+                continue;
+            }
+
             if (debug)
             {
                 try

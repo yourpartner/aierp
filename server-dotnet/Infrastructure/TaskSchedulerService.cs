@@ -311,7 +311,7 @@ RETURNING t.id, t.company_code, t.payload, t.next_run_at, t.last_run_at;";
             ct.ThrowIfCancellationRequested();
             try
             {
-                var exec = await HrPayrollModule.ExecutePayrollInternal(_ds, _law, task.CompanyCode, empId, month, policyId, false, ct);
+                var exec = await HrPayrollModule.ExecutePayrollInternal(_ds, _law, task.CompanyCode, empId, month, policyId, false, null, ct);
                 success++;
                 var total = SumAmounts(exec.PayrollSheet);
                 var empObj = new JsonObject

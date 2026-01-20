@@ -10,23 +10,24 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.1",
+    "pg": "^8.17.1",
     "typescript": "~5.9.3",
     "vite": "^7.1.7"
   },
   "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
     "axios": "^1.12.2",
     "dayjs": "^1.11.13",
+    "echarts": "^5.5.0",
     "element-plus": "^2.11.4",
     "jaconv": "^1.1.2",
+    "jsoneditor": "^10.4.1",
     "jspdf": "^2.5.1",
     "jspdf-autotable": "^3.7.0",
-    "jsoneditor": "^10.4.1",
     "vue": "^3.5.22",
     "vue-i18n": "^9.14.2",
     "vue-router": "^4.5.1",
     "xlsx": "^0.18.5",
-    "zengin-code": "^1.0.0-p20250929",
-    "@element-plus/icons-vue": "^2.3.1",
-    "echarts": "^5.5.0"
+    "zengin-code": "^1.0.0-p20250929"
   }
 }
