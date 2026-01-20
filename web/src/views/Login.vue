@@ -1,35 +1,46 @@
 <template>
   <div style="max-width: 380px; margin: 80px auto;">
-    <h3 style="margin-bottom:16px;">ログイン</h3>
-    <el-form :model="form" label-width="90px" @submit.native.prevent>
-      <el-form-item label="会社コード">
+    <h3 style="margin-bottom:16px;">{{ t('login.title') }}</h3>
+    <el-form :model="form" label-width="110px" @submit.native.prevent>
+      <el-form-item :label="t('login.companyCode')">
         <el-input v-model="form.companyCode" autofocus />
       </el-form-item>
-      <el-form-item label="社員コード">
+      <el-form-item :label="t('login.employeeCode')">
         <el-input v-model="form.employeeCode" />
       </el-form-item>
-      <el-form-item label="パスワード">
+      <el-form-item :label="t('login.password')">
         <el-input v-model="form.password" type="password" show-password @keyup.enter="login" />
       </el-form-item>
       <el-form-item>
-        <el-button type="primary" :loading="loading" @click="login">ログイン</el-button>
+        <el-button type="primary" :loading="loading" @click="login">{{ t('login.submit') }}</el-button>
       </el-form-item>
     </el-form>
   </div>
 </template>
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { useI18n } from '../i18n'
 import api from '../api'
 import store from '../utils/storage'
 
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
 const form = reactive({ companyCode: 'JP01', employeeCode: '', password: '' })
 
+onMounted(() => {
+  const savedCompany = localStorage.getItem('company_code')
+  if (savedCompany) form.companyCode = savedCompany
+})
+
 async function login(){
-  if (!form.companyCode || !form.employeeCode || !form.password) return
+  if (!form.companyCode || !form.employeeCode || !form.password) {
+    ElMessage.warning(t('login.required'))
+    return
+  }
   try{
     loading.value = true
     const r = await api.post('/auth/login', {
@@ -68,8 +79,21 @@ async function login(){
         // 若因路由守卫或其它原因失败，退回硬跳转
         location.href = redirect
       }
+    } else {
+      ElMessage.error(t('login.failed'))
     }
-  }finally{
+  } catch (e: any) {
+    console.error('Login error:', e)
+    let msg = t('login.failed')
+    if (e.response?.status === 401) {
+      msg = t('login.invalid')
+    } else if (e.response?.data?.error) {
+      msg = e.response.data.error
+    } else if (e.message) {
+      msg = e.message
+    }
+    ElMessage.error(msg)
+  } finally {
     loading.value = false
   }
 }

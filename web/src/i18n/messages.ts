@@ -120,6 +120,16 @@ export interface Messages {
     portalInvoices: string
     portalPayments: string
   }
+  login: {
+    title: string
+    companyCode: string
+    employeeCode: string
+    password: string
+    submit: string
+    required: string
+    failed: string
+    invalid: string
+  }
   chat: {
     aiTitle: string
     empty: string
@@ -850,6 +860,16 @@ export const ja: Messages = {
     portalOrders: '案件',
     portalInvoices: '請求書',
     portalPayments: '入金'
+  },
+  login: {
+    title: 'ログイン',
+    companyCode: '会社コード',
+    employeeCode: '社員コード',
+    password: 'パスワード',
+    submit: 'ログイン',
+    required: '会社コード、社員コード、パスワードを入力してください',
+    failed: 'ログインに失敗しました',
+    invalid: '会社コード、社員コード、またはパスワードが正しくありません'
   },
   chat: {
     aiTitle: 'AI チャット',
@@ -1831,6 +1851,16 @@ export const en: Messages = {
     portalOrders: 'Orders',
     portalInvoices: 'Invoices',
     portalPayments: 'Payments'
+  },
+  login: {
+    title: 'Login',
+    companyCode: 'Company Code',
+    employeeCode: 'Employee Code',
+    password: 'Password',
+    submit: 'Login',
+    required: 'Please enter company code, employee code and password',
+    failed: 'Login failed',
+    invalid: 'Invalid company code, employee code or password'
   },
   chat: {
     aiTitle: 'AI Conversation',
@@ -2818,6 +2848,16 @@ zh.nav = {
   portalOrders: '订单',
   portalInvoices: '账单',
   portalPayments: '付款'
+}
+zh.login = {
+  title: '登录',
+  companyCode: '公司代码',
+  employeeCode: '员工编号',
+  password: '密码',
+  submit: '登录',
+  required: '请输入公司代码、员工编号和密码',
+  failed: '登录失败',
+  invalid: '公司代码、员工编号或密码不正确'
 }
 zh.chat = {
   aiTitle: 'AI 聊天',
