@@ -6988,7 +6988,7 @@ sealed class SearchQueryBuilder
             "eq_user" => BuildEqualsUser(expr, kind, clause),
             "contains" => BuildContains(expr, kind, clause),
             "in" => BuildIn(expr, kind, clause),
-            "gt" or "gte" or "lt" or "lte" => BuildComparison(expr, kind, clause, op),
+            "gt" or "gte" or "ge" or "lt" or "lte" or "le" => BuildComparison(expr, kind, clause, op),
             "between" => BuildBetween(expr, kind, clause),
             _ => null
         };
@@ -7066,9 +7066,9 @@ sealed class SearchQueryBuilder
         var sqlOp = op switch
         {
             "gt" => ">",
-            "gte" => ">=",
+            "gte" or "ge" => ">=",
             "lt" => "<",
-            "lte" => "<=",
+            "lte" or "le" => "<=",
             _ => ">"
         };
         return $"{expression} {sqlOp} {AddParam(value, type)}";

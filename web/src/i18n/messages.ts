@@ -209,6 +209,10 @@ export interface Messages {
       openItem: string
       bankCash: string
       detail: string
+      detailDialog: string
+      deleteConfirm: string
+      deleteSuccess: string
+      deleteFailed: string
       open: string
       close: string
       bank: string
@@ -222,6 +226,45 @@ export interface Messages {
       branchDialog: string
       fsBalanceGroup: string
       fsProfitGroup: string
+      fsGroupSection: string
+      openItemBaseline: string
+      fieldRuleSection: string
+      bankCashSection: string
+      customerRule: string
+      vendorRule: string
+      employeeRule: string
+      departmentRule: string
+      paymentDateRule: string
+      assetRule: string
+      fieldRuleRequired: string
+      fieldRuleOptional: string
+      fieldRuleHidden: string
+      baselineNone: string
+      baselineCustomer: string
+      baselineVendor: string
+      baselineEmployee: string
+      taxOptionNonTax: string
+      taxOptionInput: string
+      taxOptionOutput: string
+      taxOptionAccount: string
+      bankAccountFlag: string
+      cashAccountFlag: string
+      selectBankButton: string
+      selectBranchButton: string
+      bankName: string
+      branchName: string
+      accountType: string
+      accountTypeOrdinary: string
+      accountTypeChecking: string
+      accountNo: string
+      holder: string
+      currency: string
+      currencyJpy: string
+      currencyUsd: string
+      currencyCny: string
+      cashCurrency: string
+      taxMap: Record<string, string>
+      categoryMap: Record<string, string>
     }
     voucherDetail: {
       title: string
@@ -977,6 +1020,9 @@ export const ja: Messages = {
       fsGroupSection: '財務諸表グループ',
       detail: '詳細',
       detailDialog: '勘定科目詳細',
+      deleteConfirm: 'この勘定科目を削除しますか？',
+      deleteSuccess: '削除しました',
+      deleteFailed: '削除に失敗しました',
       open: '有効',
       close: '無効',
       bank: '銀行',
@@ -1968,6 +2014,9 @@ export const en: Messages = {
       fsGroupSection: 'FS Group',
       detail: 'Details',
       detailDialog: 'Account Detail',
+      deleteConfirm: 'Are you sure you want to delete this account?',
+      deleteSuccess: 'Account deleted successfully',
+      deleteFailed: 'Failed to delete account',
       open: 'Enabled',
       close: 'Disabled',
       bank: 'Bank',
@@ -3134,6 +3183,82 @@ zh.tables.agentRules = {
   deleteConfirm: '确定删除该规则吗？',
   titleRequired: '标题必填',
   optionsInvalid: '附加设置 JSON 格式无效'
+}
+
+zh.tables.accounts = {
+  title: '科目列表',
+  new: '新增科目',
+  code: '科目编码',
+  name: '科目名称',
+  bspl: 'BS/PL类别',
+  tax: '税金类别',
+  openItem: '清账管理',
+  bankCash: '银行/现金',
+  detail: '详情',
+  detailDialog: '勘定科目详情',
+  deleteConfirm: '确定要删除该会计科目吗？',
+  deleteSuccess: '已成功删除科目',
+  deleteFailed: '删除科目失败',
+  open: '启用',
+  close: '停用',
+  bank: '银行',
+  cash: '现金',
+  none: '无',
+  listEmpty: '暂无数据',
+  save: '保存',
+  saved: '已保存',
+  failed: '保存失败',
+  bankDialog: '选择银行',
+  branchDialog: '选择支店',
+  fsBalanceGroup: 'BS组',
+  fsProfitGroup: 'PL组',
+  fsGroupSection: '财务报表组',
+  openItemBaseline: '清账基准',
+  fieldRuleSection: '输入字段控制',
+  bankCashSection: '银行 / 现金',
+  customerRule: '客户输入控制',
+  vendorRule: '供应商输入控制',
+  employeeRule: '员工输入控制',
+  departmentRule: '部门输入控制',
+  paymentDateRule: '付款日期控制',
+  assetRule: '资产输入控制',
+  fieldRuleRequired: '必填',
+  fieldRuleOptional: '选填',
+  fieldRuleHidden: '隐藏',
+  baselineNone: '无基准',
+  baselineCustomer: '客户',
+  baselineVendor: '供应商',
+  baselineEmployee: '员工',
+  taxOptionNonTax: '非课税',
+  taxOptionInput: '进项税',
+  taxOptionOutput: '销项税',
+  taxOptionAccount: '税金科目',
+  bankAccountFlag: '银行科目',
+  cashAccountFlag: '现金科目',
+  selectBankButton: '选择银行',
+  selectBranchButton: '选择支店',
+  bankName: '银行名称',
+  branchName: '支店名称',
+  accountType: '账户类型',
+  accountTypeOrdinary: '普通',
+  accountTypeChecking: '支票',
+  accountNo: '账号',
+  holder: '持有人',
+  currency: '币种',
+  currencyJpy: '日元',
+  currencyUsd: '美元',
+  currencyCny: '人民币',
+  cashCurrency: '现金币种',
+  taxMap: {
+    NON_TAX: '非课税',
+    INPUT_TAX: '进项税',
+    OUTPUT_TAX: '销项税',
+    TAX_ACCOUNT: '税金科目'
+  },
+  categoryMap: {
+    BS: '资产负债表科目',
+    PL: '损益表科目'
+  }
 }
 
 zh.tables.monthlyClosing = {

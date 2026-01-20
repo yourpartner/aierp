@@ -8,14 +8,28 @@
       <div v-if="!uiLoading && ui" class="account-editor-body">
         <DynamicForm :ui="ui" :model="model" @action="onAction" />
 
+        <div v-if="msg || err" class="editor-messages">
+          <el-alert v-if="msg" :title="msg" type="success" show-icon :closable="false" />
+          <el-alert v-if="err" :title="err" type="error" show-icon :closable="false" />
+        </div>
+
         <div class="editor-actions" v-if="showActions">
-          <div class="editor-buttons">
-            <el-button type="primary" :loading="saving" @click="save">{{ commonText.save }}</el-button>
-            <el-button @click="cancel">{{ commonText.close }}</el-button>
+          <div class="footer-left">
+            <el-popconfirm
+              v-if="accountId"
+              :title="commonText.deleteConfirm"
+              :confirm-button-text="commonText.delete"
+              confirm-button-type="danger"
+              @confirm="deleteAccount"
+            >
+              <template #reference>
+                <el-button type="danger" plain>{{ commonText.delete }}</el-button>
+              </template>
+            </el-popconfirm>
           </div>
-          <div class="editor-messages">
-            <span v-if="msg" class="text-success">{{ msg }}</span>
-            <span v-if="err" class="text-error">{{ err }}</span>
+          <div class="footer-right">
+            <el-button @click="cancel">{{ commonText.close }}</el-button>
+            <el-button type="primary" :loading="saving" @click="save">{{ commonText.save }}</el-button>
           </div>
         </div>
       </div>
@@ -56,6 +70,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'saved', value: any): void
+  (e: 'deleted', id: string): void
   (e: 'cancel'): void
 }>()
 
@@ -113,10 +128,19 @@ const accountsText = section({
 const commonText = section({
   save: '',
   close: '',
+  delete: '',
   saved: '',
   saveFailed: '',
-  loadFailed: ''
-}, (msg) => msg.common)
+  loadFailed: '',
+  deleteConfirm: '',
+  deleteSuccess: '',
+  deleteFailed: ''
+}, (msg) => ({
+  ...msg.common,
+  deleteConfirm: msg.tables.accounts?.deleteConfirm || 'この勘定科目を削除しますか？',
+  deleteSuccess: msg.tables.accounts?.deleteSuccess || '削除しました',
+  deleteFailed: msg.tables.accounts?.deleteFailed || '削除に失敗しました'
+}))
 
 const categoryMapText = section({ bs: '', pl: '' }, (msg) => msg.tables.accounts?.categoryMap)
 const categoryMap = computed(() => ({
@@ -659,9 +683,21 @@ async function save() {
   }
 }
 
+async function deleteAccount() {
+  if (!props.accountId) return
+  try {
+    await api.delete(`/objects/account/${props.accountId}`)
+    emit('deleted', props.accountId)
+  } catch (e: any) {
+    err.value = e?.response?.data?.error || e?.message || commonText.value.deleteFailed
+  }
+}
+
 function cancel() {
   emit('cancel')
 }
+
+defineExpose({ save, deleteAccount })
 
 onMounted(async () => {
   await loadUi()
@@ -670,26 +706,36 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.account-editor-body {
-  padding: 4px 0;
+.account-editor {
+  /* 与凭证详情保持一致的间距 */
 }
+
+.account-editor-body {
+  padding: 0;
+}
+
+.editor-messages {
+  margin-top: 16px;
+}
+
 .editor-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding-top: 10px;
+  padding-top: 20px;
+  border-top: 1px solid #f0f2f5;
+  margin-top: 20px;
 }
-.editor-buttons {
+
+.footer-left {
   display: flex;
-  gap: 10px;
+  gap: 12px;
 }
-.editor-messages {
-  flex: 1;
-  text-align: left;
+
+.footer-right {
+  display: flex;
+  gap: 12px;
 }
-.text-success { color: #2e7d32; }
-.text-error { color: #d32f2f; white-space: pre-wrap; }
 </style>
 
 

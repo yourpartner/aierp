@@ -42,15 +42,49 @@
       </el-table>
     </el-card>
   </div>
-  <el-dialog v-model="show" :title="accountsText.detailDialog" width="860px" append-to-body destroy-on-close>
-    <AccountEditor
-      v-if="show"
-      mode="edit"
-      :account-id="currentId"
-      :initial="editForm"
-      @saved="onSaved"
-      @cancel="show=false"
-    />
+  <el-dialog
+    v-model="show"
+    width="860px"
+    :show-close="false"
+    append-to-body
+    destroy-on-close
+    class="account-detail-dialog"
+  >
+    <template #header></template>
+    <div class="account-dialog-card-wrap">
+      <el-card class="account-detail-card">
+        <template #header>
+          <div class="account-detail-header">
+            <span class="account-detail-title">{{ accountsText.detailDialog }}</span>
+            <div class="header-actions">
+              <el-button type="primary" size="small" :loading="saving" @click="triggerSave">{{ commonText.save }}</el-button>
+              <el-popconfirm
+                v-if="currentId"
+                :title="commonText.deleteConfirm || 'この勘定科目を削除しますか？'"
+                :confirm-button-text="commonText.delete || '削除'"
+                confirm-button-type="danger"
+                @confirm="confirmDelete"
+              >
+                <template #reference>
+                  <el-button type="danger" size="small">{{ commonText.delete }}</el-button>
+                </template>
+              </el-popconfirm>
+            </div>
+          </div>
+        </template>
+        <AccountEditor
+          v-if="show"
+          ref="editorRef"
+          mode="edit"
+          :account-id="currentId"
+          :initial="editForm"
+          :show-actions="false"
+          @saved="onSaved"
+          @deleted="onDeleted"
+          @cancel="show=false"
+        />
+      </el-card>
+    </div>
   </el-dialog>
   <el-empty v-if="!loading && rows.length===0" :description="accountsText.listEmpty" />
 </template>
@@ -135,12 +169,19 @@ const commonText = section({
   disabled: '',
   view: '',
   save: '',
+  delete: '',
   saved: '',
   saveFailed: '',
   close: '',
   loadFailed: '',
-  backList: ''
-}, (msg) => msg.common)
+  backList: '',
+  deleteConfirm: '',
+  deleteSuccess: ''
+}, (msg) => ({
+  ...msg.common,
+  deleteConfirm: msg.tables.accounts?.deleteConfirm || 'この勘定科目を削除しますか？',
+  deleteSuccess: msg.tables.accounts?.deleteSuccess || '削除しました'
+}))
 const schemaText = section({ create: '', refresh: '', createTitle: '', loadFailed: '', layoutMissing: '' }, (msg) => msg.schemaList)
 const taxMapText = section({ nonTax: '', input: '', output: '', account: '' }, (msg) => msg.tables.accounts?.taxMap)
 const categoryMapText = section({ bs: '', pl: '' }, (msg) => msg.tables.accounts?.categoryMap)
@@ -156,6 +197,7 @@ const uiSource = ref<any>(null)
 const uiLoading = ref(false)
 const uiError = ref('')
 const currentId = ref<string>('')
+const editorRef = ref<any>(null)
 const editForm = reactive<any>({})
 const showBank = ref(false)
 const showBranch = ref(false)
@@ -586,7 +628,30 @@ function onSaved(updated: any) {
   // keep list row in sync after edit
   const idx = rows.value.findIndex(x => x.id === updated?.id)
   if (idx >= 0) rows.value[idx] = updated
-  // keep dialog open so user can see success/failure messages (AccountEditor handles messaging)
+  // keep dialog open so user can see success/failure messages
+}
+
+async function triggerSave() {
+  if (editorRef.value) {
+    saving.value = true
+    try {
+      await editorRef.value.save()
+    } finally {
+      saving.value = false
+    }
+  }
+}
+
+async function confirmDelete() {
+  if (editorRef.value) {
+    await editorRef.value.deleteAccount()
+  }
+}
+
+function onDeleted(id: string) {
+  const idx = rows.value.findIndex(x => x.id === id)
+  if (idx >= 0) rows.value.splice(idx, 1)
+  show.value = false
 }
 
 // Allow ChatKit modal payload to open an account by code.
@@ -752,5 +817,66 @@ watch(() => lang.value, () => {
 :deep(.el-card) {
   border-radius: 12px;
   overflow: hidden;
+}
+
+/* 科目详情弹窗样式 - 与凭证详情保持一致 */
+.account-dialog-card-wrap {
+  padding: 0;
+  margin: 0;
+}
+
+.account-detail-card {
+  max-width: 100%;
+  margin: 0;
+  border: none;
+  box-shadow: none;
+}
+
+.account-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--color-divider, #ebeef5);
+}
+
+.account-detail-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+</style>
+
+<style>
+/* 科目详情弹窗 - 与凭证详情弹窗保持一致 */
+.el-dialog.account-detail-dialog {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+.el-dialog.account-detail-dialog .el-dialog__header {
+  display: none !important;
+}
+
+.el-dialog.account-detail-dialog .el-dialog__body {
+  padding: 0 !important;
+  background: transparent !important;
+}
+
+/* 覆盖全局 el-card__header 的 padding，让分隔线延伸到边缘 */
+.account-detail-card.el-card .el-card__header {
+  padding: 0 !important;
+}
+
+.account-detail-card.el-card .el-card__body {
+  padding: 20px !important;
 }
 </style>
