@@ -9,7 +9,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # 安装依赖
-RUN npm install
+RUN npm ci || npm install
 
 # 复制源代码
 COPY . .
@@ -18,8 +18,11 @@ COPY . .
 ARG VITE_API_BASE_URL=/api
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 
+# 调试信息
+RUN echo "Node version: $(node --version)" && echo "NPM version: $(npm --version)" && ls -la
+
 # 构建
-RUN npm run build
+RUN npm run build || (echo "Build failed, showing vite version:" && npx vite --version && exit 1)
 
 # ===========================================
 # 生产阶段 - 使用 Nginx
