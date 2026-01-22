@@ -8,8 +8,8 @@ WORKDIR /app
 # 复制依赖文件
 COPY package*.json ./
 
-# 安装依赖
-RUN npm ci || npm install
+# 安装依赖（Windows 生成的 lock 可能缺少 Linux 可选依赖，导致 rollup 原生模块缺失）
+RUN rm -f package-lock.json && npm install --include=optional --no-audit --no-fund
 
 # 复制源代码
 COPY . .
