@@ -8,7 +8,7 @@ param(
     [string]$ResourceGroup = "yanxia-rg",
     [string]$Location = "japaneast",
     [string]$AcrName = "yanxiaacr",
-    [string]$DbServerName = "yanxia-db-server",
+    [string]$DbServerName = "aimate-db-server",
     [string]$DbAdminPassword = "",  # 必填
     [string]$AppServicePlan = "yanxia-plan"
 )

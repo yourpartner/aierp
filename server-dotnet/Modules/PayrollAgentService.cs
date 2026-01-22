@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using Server.Infrastructure;
 
 namespace Server.Modules;
 
@@ -248,53 +249,132 @@ public sealed class PayrollAgentService : BackgroundService
     }
 
     /// <summary>
-    /// Triggers the actual payroll calculation by creating an AI task.
+    /// Triggers the actual payroll calculation and creates review tasks.
     /// </summary>
     private async Task TriggerPayrollCalculationAsync(string companyCode, PayrollDecision decision, CancellationToken ct)
     {
-        // Create an AI task for review
-        var taskId = Guid.NewGuid();
         var sessionId = Guid.NewGuid();
-
-        await using var conn = await _ds.OpenConnectionAsync(ct);
         
-        // Record the agent's decision
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO ai_payroll_tasks (
-                id, company_code, session_id, task_type, status, 
-                period_month, summary, metadata, created_at, updated_at
-            ) VALUES (
-                $1, $2, $3, 'agent_triggered', 'pending',
-                $4, $5, $6::jsonb, now(), now()
-            );
-            """;
-        cmd.Parameters.AddWithValue(taskId);
-        cmd.Parameters.AddWithValue(companyCode);
-        cmd.Parameters.AddWithValue(sessionId);
-        cmd.Parameters.AddWithValue(decision.Month);
-        cmd.Parameters.AddWithValue($"[Agent] {decision.Reason}");
-        
-        var metadata = new JsonObject
-        {
-            ["triggeredBy"] = "PayrollAgent",
-            ["reason"] = decision.Reason,
-            ["warnings"] = decision.Warnings.Count > 0 
-                ? new JsonArray(decision.Warnings.Select(w => JsonValue.Create(w)).ToArray())
-                : null,
-            ["forcedDueToDeadline"] = decision.ForcedDueToDeadline,
-            ["triggeredAt"] = DateTimeOffset.UtcNow.ToString("O")
-        };
-        cmd.Parameters.AddWithValue(metadata.ToJsonString());
-
-        await cmd.ExecuteNonQueryAsync(ct);
-
         _logger?.LogInformation(
-            "[PayrollAgent] Created payroll task {TaskId} for {Company} month {Month}. SessionId: {SessionId}",
-            taskId, companyCode, decision.Month, sessionId);
+            "[PayrollAgent] Starting payroll calculation for {Company} month {Month}. SessionId: {SessionId}",
+            companyCode, decision.Month, sessionId);
 
-        // Optionally: trigger immediate calculation here if needed
-        // For now, the task will be picked up by the task processor or manual trigger
+        try
+        {
+            // Create a scope to get scoped services
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var payrollService = scope.ServiceProvider.GetRequiredService<PayrollService>();
+            var payrollTaskService = scope.ServiceProvider.GetRequiredService<PayrollTaskService>();
+
+            // 1. Get all employees that need payroll calculation
+            var employeeIds = await payrollService.ResolveEmployeeIdsAsync(companyCode, null, ct);
+            if (employeeIds.Count == 0)
+            {
+                _logger?.LogWarning("[PayrollAgent] No employees found for {Company}, skipping", companyCode);
+                return;
+            }
+
+            _logger?.LogInformation("[PayrollAgent] Found {Count} employees for {Company}", employeeIds.Count, companyCode);
+
+            // 2. Execute payroll calculation (preview)
+            var preview = await payrollService.ManualRunAsync(
+                companyCode,
+                employeeIds.ToList(),
+                decision.Month,
+                policyId: null,  // Use the active policy
+                debug: false,
+                ct);
+
+            if (preview.Entries.Count == 0)
+            {
+                _logger?.LogWarning("[PayrollAgent] No payroll entries generated for {Company}", companyCode);
+                return;
+            }
+
+            _logger?.LogInformation("[PayrollAgent] Calculated {Count} entries for {Company}", preview.Entries.Count, companyCode);
+
+            // 3. Convert preview entries to save entries
+            var saveEntries = preview.Entries.Select(e => new PayrollService.PayrollManualSaveEntry
+            {
+                EmployeeId = e.EmployeeId,
+                EmployeeCode = e.EmployeeCode,
+                EmployeeName = e.EmployeeName,
+                DepartmentCode = e.DepartmentCode,
+                TotalAmount = e.TotalAmount,
+                PayrollSheet = JsonDocument.Parse(e.PayrollSheet.ToJsonString()).RootElement,
+                AccountingDraft = JsonDocument.Parse(e.AccountingDraft.ToJsonString()).RootElement,
+                DiffSummary = e.DiffSummary is null ? null : JsonDocument.Parse(e.DiffSummary.ToJsonString()).RootElement,
+                Trace = e.Trace is null ? null : JsonDocument.Parse(e.Trace.ToJsonString()).RootElement,
+                Metadata = JsonDocument.Parse(new JsonObject
+                {
+                    ["triggeredBy"] = "PayrollAgent",
+                    ["reason"] = decision.Reason,
+                    ["forcedDueToDeadline"] = decision.ForcedDueToDeadline
+                }.ToJsonString()).RootElement
+            }).ToList();
+
+            // 4. Create system user context for saving
+            var systemUser = new Auth.UserCtx(
+                UserId: "system-payroll-agent",
+                Roles: new[] { "admin" },
+                Caps: new[] { "payroll:write" },
+                DeptId: null,
+                EmployeeCode: null,
+                UserName: "Payroll Agent",
+                CompanyCode: companyCode);
+
+            // 5. Save payroll results
+            var saveRequest = new PayrollService.PayrollManualSaveRequest
+            {
+                Month = decision.Month,
+                PolicyId = preview.PolicyId,
+                Overwrite = false,
+                RunType = "agent",
+                Entries = saveEntries
+            };
+
+            var saveResult = await payrollService.SaveManualAsync(companyCode, systemUser, saveRequest, ct);
+
+            _logger?.LogInformation("[PayrollAgent] Saved payroll run {RunId} with {Count} entries for {Company}",
+                saveResult.RunId, saveResult.EntryCount, companyCode);
+
+            // 6. Create review tasks
+            var taskCandidates = preview.Entries.Select(e =>
+            {
+                saveResult.EntryIdsByEmployeeId.TryGetValue(e.EmployeeId, out var entryId);
+                return new PayrollTaskService.PayrollTaskCandidate(
+                    EntryId: entryId,
+                    EmployeeId: e.EmployeeId,
+                    EmployeeCode: e.EmployeeCode,
+                    EmployeeName: e.EmployeeName,
+                    PeriodMonth: decision.Month,
+                    TotalAmount: e.TotalAmount,
+                    DiffSummary: e.DiffSummary,
+                    Summary: $"[Agent] {decision.Reason}",
+                    NeedsConfirmation: true,
+                    IsAnomaly: false,
+                    IsCritical: false,
+                    AnomalyReason: null);
+            }).ToList();
+
+            var tasksCreated = await payrollTaskService.CreateTasksAsync(
+                sessionId,
+                companyCode,
+                saveResult.RunId,
+                targetUserId: null, // Will be assigned to appropriate reviewer
+                taskCandidates,
+                ct);
+
+            _logger?.LogInformation(
+                "[PayrollAgent] Completed payroll for {Company} month {Month}. RunId: {RunId}, Tasks created: {TaskCount}",
+                companyCode, decision.Month, saveResult.RunId, tasksCreated);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "[PayrollAgent] Failed to execute payroll for {Company} month {Month}",
+                companyCode, decision.Month);
+            throw;
+        }
     }
 
     /// <summary>

@@ -31,7 +31,7 @@
             :disabled="loading"
             :active-text="text.tables.accountingPeriods.open"
             :inactive-text="text.tables.accountingPeriods.closed"
-            @change="val => onToggleMonth(entry, val as boolean)"
+          @change="onToggleMonthChange(entry, $event)"
           />
         </div>
       </div>
@@ -199,6 +199,10 @@ async function onToggleMonth(entry: MonthEntry, value: boolean) {
   } finally {
     entry.loading = false
   }
+}
+
+function onToggleMonthChange(entry: MonthEntry, value: unknown) {
+  onToggleMonth(entry, Boolean(value))
 }
 
 function reload() {
