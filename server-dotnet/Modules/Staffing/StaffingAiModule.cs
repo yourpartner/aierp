@@ -134,7 +134,7 @@ JSON形式のみで回答してください。";
                 ? rs.EnumerateArray().Select(x => x.GetString()!).ToList() 
                 : new List<string>();
             var experienceYears = body.TryGetProperty("experienceYears", out var ey) ? ey.GetInt32() : 0;
-            var projectDescription = body.TryGetProperty("description", out var desc) ? desc.GetString() : "";
+            var projectDescription = (body.TryGetProperty("description", out var desc) ? desc.GetString() : null) ?? "";
             var budgetMax = body.TryGetProperty("budgetMax", out var bm) ? bm.GetDecimal() : 0m;
             var limit = body.TryGetProperty("limit", out var lim) ? lim.GetInt32() : 10;
 

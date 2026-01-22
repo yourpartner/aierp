@@ -2325,7 +2325,7 @@ public sealed class AgentKitService
             }
         }
 
-        if (TryForceSalesOrderScenario(message, scenarios, out var forcedScenario))
+        if (TryForceSalesOrderScenario(message, scenarios, out var forcedScenario) && forcedScenario is not null)
         {
             return forcedScenario;
         }
@@ -3944,7 +3944,7 @@ public sealed class AgentKitService
                     WriteAmount(existingTaxLine, Math.Round(finalTaxAmount, 2));
                     existingTaxLine["isTaxLine"] = true;
 
-                    if (existingExpenseLine is not null && existingExpenseLine.TryGetPropertyValue("lineNo", out var baseLineNoNode))
+                    if (existingExpenseLine is not null && existingExpenseLine.TryGetPropertyValue("lineNo", out var baseLineNoNode) && baseLineNoNode is not null)
                     {
                         existingTaxLine["baseLineNo"] = baseLineNoNode.DeepClone();
                     }
@@ -3991,7 +3991,7 @@ public sealed class AgentKitService
         // 查询系统中默认的现金科目（不再硬编码 1000）
         var defaultCashAccount = await GetDefaultCashAccountCodeAsync(context.CompanyCode, ct);
         
-        var creditAdjusted = false;
+        // var creditAdjusted = false;
 
         if (firstCredit is null)
         {
@@ -4005,7 +4005,7 @@ public sealed class AgentKitService
                     ["note"] = "現金支出"
                 };
                 linesNode.Add(creditLine);
-                creditAdjusted = true;
+                // creditAdjusted = true;
                 RecalculateTotals();
             }
             // 如果没有默认现金科目，让 LLM 处理（不自动创建）
@@ -4018,7 +4018,7 @@ public sealed class AgentKitService
             if (string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(defaultCashAccount))
             {
                 firstCredit["accountCode"] = defaultCashAccount;
-                creditAdjusted = true;
+                // creditAdjusted = true;
             }
             if (!firstCredit.ContainsKey("note"))
             {

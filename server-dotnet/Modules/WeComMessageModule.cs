@@ -141,9 +141,9 @@ public static class WeComMessageModule
             
             var message = new WeComMessage
             {
-                MsgId = root.TryGetProperty("msgId", out var mid) ? mid.GetString() : Guid.NewGuid().ToString(),
-                MsgType = root.TryGetProperty("msgType", out var mt) ? mt.GetString() ?? "text" : "text",
-                FromUser = root.TryGetProperty("fromUser", out var fu) ? fu.GetString() ?? "" : "",
+                MsgId = (root.TryGetProperty("msgId", out var mid) ? mid.GetString() : null) ?? Guid.NewGuid().ToString(),
+                MsgType = (root.TryGetProperty("msgType", out var mt) ? mt.GetString() : null) ?? "text",
+                FromUser = (root.TryGetProperty("fromUser", out var fu) ? fu.GetString() : null) ?? "",
                 FromUserName = root.TryGetProperty("fromUserName", out var fn) ? fn.GetString() : null,
                 ChatId = root.TryGetProperty("chatId", out var ci) ? ci.GetString() : null,
                 Content = root.TryGetProperty("content", out var ct) ? ct.GetString() : null,

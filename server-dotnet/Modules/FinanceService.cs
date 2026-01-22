@@ -315,7 +315,7 @@ public class FinanceService
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         await EnsureAccountCodesExistAsync(conn, tx, companyCode, accountCodeSet, CancellationToken.None);
 
-        var numbering = await VoucherNumberingService.NextAsync(conn, tx, companyCode, postingDate);
+        var numbering = await VoucherNumberingService.NextAsync(conn, tx!, companyCode, postingDate);
         var no = numbering.voucherNo;
 
         string json;

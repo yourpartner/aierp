@@ -140,7 +140,7 @@ public sealed class PayrollDeadlineService : BackgroundService
                 await _email.SendPayrollNotificationAsync(contact.Email, "payroll_deadline_missed", variables, ct);
             }
 
-            if (_apns is not null && !string.IsNullOrWhiteSpace(contact.PushToken))
+            if (_apns is not null && !string.IsNullOrWhiteSpace(contact.PushToken) && !string.IsNullOrWhiteSpace(contact.BundleId))
             {
                 await _apns.SendAsync(contact.BundleId, contact.PushToken,
                     "給与計算期限超過",
@@ -184,7 +184,7 @@ public sealed class PayrollDeadlineService : BackgroundService
                 await _email.SendPayrollNotificationAsync(contact.Email, "payroll_deadline_warning", variables, ct);
             }
 
-            if (_apns is not null && !string.IsNullOrWhiteSpace(contact.PushToken))
+            if (_apns is not null && !string.IsNullOrWhiteSpace(contact.PushToken) && !string.IsNullOrWhiteSpace(contact.BundleId))
             {
                 await _apns.SendAsync(contact.BundleId, contact.PushToken,
                     "給与計算期限のお知らせ",

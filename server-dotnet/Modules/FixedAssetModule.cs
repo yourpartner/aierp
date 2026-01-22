@@ -1827,12 +1827,12 @@ public static class FixedAssetModule
             // 通常の定率法：期首帳簿価額 × 償却率
             var annualAmount = Math.Floor(item.BookValue * rate);
             decimal yearDepreciation;
-            bool useRevisedMethod = false;
+            // bool useRevisedMethod = false;
             
             // 判断是否应该使用改定償却法
             if (annualAmount < guaranteedAmount && guaranteeRate > 0)
             {
-                useRevisedMethod = true;
+                // useRevisedMethod = true;
                 // 改定償却法：改定取得価額 × 改定償却率
                 // 改定取得価額は切替時の期首残高（ここでは現在の帳簿価額を使用）
                 yearDepreciation = Math.Floor(item.BookValue * revisedRate);

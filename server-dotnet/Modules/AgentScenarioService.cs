@@ -163,7 +163,7 @@ public sealed class AgentScenarioService
                                is_active = EXCLUDED.is_active,
                                updated_at = now()
                               RETURNING id, scenario_key, title, description, instructions, metadata, tool_hints, context, priority, is_active, updated_at";
-        cmd.Parameters.AddWithValue(payload.Id ?? (object?)DBNull.Value ?? DBNull.Value);
+        cmd.Parameters.AddWithValue(payload.Id as object ?? DBNull.Value);
         cmd.Parameters.AddWithValue(companyCode);
         cmd.Parameters.AddWithValue(payload.ScenarioKey);
         cmd.Parameters.AddWithValue(payload.Title ?? payload.ScenarioKey);
