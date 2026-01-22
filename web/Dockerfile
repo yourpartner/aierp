@@ -1,7 +1,7 @@
 # ===========================================
 # Vue 3 前端 Dockerfile (Nginx 静态托管)
 # ===========================================
-FROM node:20-alpine AS build
+FROM node:20-slim AS build
 
 WORKDIR /app
 
@@ -19,10 +19,11 @@ ARG VITE_API_BASE_URL=/api
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 
 # 调试信息
-RUN echo "Node version: $(node --version)" && echo "NPM version: $(npm --version)" && ls -la
+RUN echo "Node version: $(node --version)" && echo "NPM version: $(npm --version)"
 
-# 构建
-RUN npm run build || (echo "Build failed, showing vite version:" && npx vite --version && exit 1)
+# 增加 Node 内存限制并构建
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+RUN npm run build
 
 # ===========================================
 # 生产阶段 - 使用 Nginx
