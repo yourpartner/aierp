@@ -23,7 +23,7 @@ public static class WeComMessageModule
         var config = app.Services.GetRequiredService<IConfiguration>();
         
         // 企业微信回调验证（GET请求）
-        app.MapGet("/wecom/callback", async (HttpRequest req) =>
+        app.MapGet("/wecom/callback", (HttpRequest req) =>
         {
             var section = config.GetSection("WeComCallback");
             var token = section["Token"] ?? "";

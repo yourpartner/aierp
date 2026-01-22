@@ -133,14 +133,14 @@ public class FinanceExtStandardModule : ModuleBase
     private static void MapCashEndpoints(WebApplication app)
     {
         // These endpoints are used by CashLedger.vue.
-        app.MapGet("/cash/expense-categories", async (HttpRequest req) =>
+        app.MapGet("/cash/expense-categories", (HttpRequest req) =>
         {
             // If categories are not persisted, return a minimal default list.
             return Results.Ok(new[]
             {
                 new { code = "misc", name = "雑費" },
                 new { code = "transportation", name = "交通費" },
-                new { code = "dining", name = "会食費" }
+                new { code = "dining", name = "会食费" }
             });
         }).RequireAuthorization();
 
@@ -204,17 +204,17 @@ public class FinanceExtStandardModule : ModuleBase
             return Results.Ok(new { transactions, openingBalance });
         }).RequireAuthorization();
 
-        app.MapPost("/cash-accounts/{cashCode}/transactions", async (string cashCode, HttpRequest req) =>
+        app.MapPost("/cash-accounts/{cashCode}/transactions", (string cashCode, HttpRequest req) =>
         {
             return Results.StatusCode(501);
         }).RequireAuthorization();
 
-        app.MapPost("/cash-accounts/{cashCode}/replenish", async (string cashCode, HttpRequest req) =>
+        app.MapPost("/cash-accounts/{cashCode}/replenish", (string cashCode, HttpRequest req) =>
         {
             return Results.StatusCode(501);
         }).RequireAuthorization();
 
-        app.MapPost("/cash-accounts/{cashCode}/counts", async (string cashCode, HttpRequest req) =>
+        app.MapPost("/cash-accounts/{cashCode}/counts", (string cashCode, HttpRequest req) =>
         {
             return Results.StatusCode(501);
         }).RequireAuthorization();

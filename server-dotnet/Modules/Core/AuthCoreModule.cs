@@ -557,22 +557,22 @@ public class AuthCoreModule : ModuleBase
         }).RequireAuthorization();
 
         // ====== AI role endpoints (front-end expects these; if AI backend isn't wired, return 501 instead of 405) ======
-        app.MapPost("/roles/ai-generate", async (HttpRequest req) =>
+        app.MapPost("/roles/ai-generate", (HttpRequest req) =>
         {
             return Results.StatusCode(501);
         }).RequireAuthorization();
 
-        app.MapPost("/roles/ai-apply", async (HttpRequest req) =>
+        app.MapPost("/roles/ai-apply", (HttpRequest req) =>
         {
             return Results.StatusCode(501);
         }).RequireAuthorization();
 
-        app.MapPost("/roles/ai-check", async (HttpRequest req) =>
+        app.MapPost("/roles/ai-check", (HttpRequest req) =>
         {
             return Results.StatusCode(501);
         }).RequireAuthorization();
 
-        app.MapGet("/roles/ai-audit", async () =>
+        app.MapGet("/roles/ai-audit", () =>
         {
             return Results.StatusCode(501);
         }).RequireAuthorization();

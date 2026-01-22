@@ -711,12 +711,12 @@ public class AiChatbotService
     /// <summary>
     /// 获取商品价格
     /// </summary>
-    private async Task<decimal> GetProductPriceAsync(
+    private Task<decimal> GetProductPriceAsync(
         NpgsqlConnection conn, string companyCode, string materialCode, string? customerCode, CancellationToken ct)
     {
         // 简化实现：返回0，实际应该查询价格表
         // TODO: 实现价格查询逻辑
-        return 0;
+        return Task.FromResult(0m);
     }
 
     /// <summary>

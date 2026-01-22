@@ -4,7 +4,6 @@ using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 using Npgsql;
 using Server.Infrastructure;
-using Server.Infrastructure;
 using Server.Infrastructure.Modules;
 
 namespace Server.Modules.Core;
