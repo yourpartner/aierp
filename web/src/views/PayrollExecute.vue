@@ -299,7 +299,19 @@
                   </el-descriptions>
                   </div>
                   <div class="section-card">
-                    <div class="section-card__header">仕訳ドラフト</div>
+                    <div class="section-card__header">
+                      <span>仕訳ドラフト</span>
+                      <el-button 
+                        v-if="entry._journalStale || hasAnyAdjustment(entry)"
+                        type="warning" 
+                        size="small" 
+                        :loading="entry._regenerating"
+                        @click="regenerateJournal(entry)"
+                      >
+                        <el-icon><Refresh /></el-icon>
+                        <span>分録を再生成</span>
+                      </el-button>
+                    </div>
                     <el-alert
                       v-if="entry._journalStale || hasAnyAdjustment(entry)"
                       type="warning"
@@ -308,7 +320,7 @@
                       style="margin: 8px; border-radius: 4px;"
                     >
                       <template #title>
-                        <span>給与項目に調整があります。仕訳は調整前の金額で表示されています。</span>
+                        <span>給与項目に調整があります。「分録を再生成」をクリックして仕訳を更新してください。</span>
                       </template>
                     </el-alert>
                     <el-table :data="entry.accountingDraft || []" size="small" border>
@@ -355,7 +367,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Wallet, CaretRight, FolderChecked, Plus, Delete } from '@element-plus/icons-vue'
+import { Wallet, CaretRight, FolderChecked, Plus, Delete, Refresh } from '@element-plus/icons-vue'
 import api from '../api'
 
 const employeeIds = ref<string[]>([])
@@ -520,6 +532,41 @@ function validateAdjustmentReasons(entry: any): boolean {
     }
   }
   return true
+}
+
+// 仕訳を再生成
+async function regenerateJournal(entry: any) {
+  entry._regenerating = true
+  try {
+    const payload = {
+      payrollSheet: entry.payrollSheet.map((row: any) => ({
+        itemCode: row.itemCode,
+        amount: row.finalAmount,
+        finalAmount: row.finalAmount
+      })),
+      employeeCode: entry.employeeCode,
+      departmentCode: entry.departmentCode,
+      departmentName: entry.departmentName
+    }
+    
+    const r = await api.post('/payroll/regenerate-journal', payload)
+    
+    // 更新会计分录
+    entry.accountingDraft = (r.data?.accountingDraft || []).map((row: any) => ({
+      ...row,
+      displayAmount: formatAmount(row.amount)
+    }))
+    entry._rawAccountingDraft = r.data?.accountingDraft || []
+    
+    // 清除过期标记
+    entry._journalStale = false
+    
+    ElMessage.success('仕訳を再生成しました')
+  } catch (e: any) {
+    ElMessage.error(extractErrorMessage(e, '仕訳の再生成に失敗しました'))
+  } finally {
+    entry._regenerating = false
+  }
 }
 
 function extractErrorMessage(err: any, fallback: string) {

@@ -937,6 +937,189 @@ public static class HrPayrollModule
         {
             return await ExecutePayrollEndpoint(req, ds, law, ct);
         }).RequireAuthorization();
+        
+        // POST /payroll/regenerate-journal
+        // Regenerates accounting journal entries from an adjusted payroll sheet.
+        // Body: { payrollSheet: [...], employeeCode?, departmentCode?, departmentName? }
+        // Returns: { accountingDraft: [...] }
+        app.MapPost("/payroll/regenerate-journal", async (HttpRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+        {
+            var companyCode = req.HttpContext.User.FindFirst("company")?.Value ?? "default";
+            using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
+            var root = doc.RootElement;
+            
+            // 获取 payrollSheet
+            if (!root.TryGetProperty("payrollSheet", out var sheetEl) || sheetEl.ValueKind != JsonValueKind.Array)
+            {
+                return Results.BadRequest(new { error = "payrollSheet is required" });
+            }
+            
+            // 转换为 List<JsonObject>
+            var sheetOut = new List<JsonObject>();
+            foreach (var item in sheetEl.EnumerateArray())
+            {
+                var itemCode = item.TryGetProperty("itemCode", out var ic) && ic.ValueKind == JsonValueKind.String ? ic.GetString() : null;
+                var amount = item.TryGetProperty("amount", out var am) ? 
+                    (am.ValueKind == JsonValueKind.Number ? am.GetDecimal() : 0m) : 0m;
+                // 如果有 finalAmount 字段，使用它（这是调整后的金额）
+                if (item.TryGetProperty("finalAmount", out var fa) && fa.ValueKind == JsonValueKind.Number)
+                {
+                    amount = fa.GetDecimal();
+                }
+                if (string.IsNullOrWhiteSpace(itemCode)) continue;
+                sheetOut.Add(new JsonObject
+                {
+                    ["itemCode"] = itemCode,
+                    ["amount"] = JsonValue.Create(amount)
+                });
+            }
+            
+            // 获取活跃的 Policy 的 journalRules
+            await using var conn = await ds.OpenConnectionAsync(ct);
+            string? policyJson = null;
+            await using (var q = conn.CreateCommand())
+            {
+                q.CommandText = "SELECT payload FROM payroll_policies WHERE company_code=$1 AND is_active=true LIMIT 1";
+                q.Parameters.AddWithValue(companyCode);
+                policyJson = (string?)await q.ExecuteScalarAsync(ct);
+            }
+            
+            JsonElement? journalRulesEl = null;
+            if (!string.IsNullOrEmpty(policyJson))
+            {
+                using var policyDoc = JsonDocument.Parse(policyJson);
+                var policyRoot = policyDoc.RootElement;
+                
+                // 尝试获取 journalRules
+                if (policyRoot.TryGetProperty("journalRules", out var jr) && jr.ValueKind == JsonValueKind.Array && jr.GetArrayLength() > 0)
+                {
+                    journalRulesEl = jr.Clone();
+                }
+                else
+                {
+                    // 如果没有 journalRules，基于 DSL rules 自动生成
+                    if (policyRoot.TryGetProperty("rules", out var rulesEl) && rulesEl.ValueKind == JsonValueKind.Array)
+                    {
+                        var dslItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var rule in rulesEl.EnumerateArray())
+                        {
+                            if (rule.TryGetProperty("item", out var itemProp) && itemProp.ValueKind == JsonValueKind.String)
+                            {
+                                var code = itemProp.GetString();
+                                if (!string.IsNullOrWhiteSpace(code)) dslItems.Add(code);
+                            }
+                        }
+                        
+                        // 同时检查 payrollSheet 中的手动添加项目
+                        foreach (var item in sheetOut)
+                        {
+                            var code = ReadJsonString(item, "itemCode");
+                            if (!string.IsNullOrWhiteSpace(code)) dslItems.Add(code);
+                        }
+                        
+                        var autoJournalRules = new List<object>();
+                        object BuildJI(string code, decimal? sign = null) => sign.HasValue ? new { code, sign } : new { code };
+                        
+                        // 基本給/各種手当 → 給与手当/未払費用
+                        var wageItems = new List<object>();
+                        if (dslItems.Contains("BASE")) wageItems.Add(BuildJI("BASE"));
+                        if (dslItems.Contains("COMMUTE")) wageItems.Add(BuildJI("COMMUTE"));
+                        if (dslItems.Contains("OVERTIME_STD")) wageItems.Add(BuildJI("OVERTIME_STD"));
+                        if (dslItems.Contains("OVERTIME_60")) wageItems.Add(BuildJI("OVERTIME_60"));
+                        if (dslItems.Contains("HOLIDAY_PAY")) wageItems.Add(BuildJI("HOLIDAY_PAY"));
+                        if (dslItems.Contains("LATE_NIGHT_PAY")) wageItems.Add(BuildJI("LATE_NIGHT_PAY"));
+                        if (dslItems.Contains("ABSENCE_DEDUCT")) wageItems.Add(BuildJI("ABSENCE_DEDUCT", -1m));
+                        // 手动添加的收入项目
+                        foreach (var code in new[] { "BONUS", "ALLOWANCE_SPECIAL", "ALLOWANCE_HOUSING", "ALLOWANCE_FAMILY", "ALLOWANCE_POSITION", "NENMATSU_KANPU", "ADJUST_OTHER" })
+                        {
+                            if (dslItems.Contains(code)) wageItems.Add(BuildJI(code));
+                        }
+                        if (wageItems.Count > 0)
+                            autoJournalRules.Add(new { name = "wages", debitAccount = "832", creditAccount = "315", items = wageItems.ToArray() });
+                        
+                        // 社会保険
+                        if (dslItems.Contains("HEALTH_INS"))
+                            autoJournalRules.Add(new { name = "health", debitAccount = "3181", creditAccount = "315", items = new[] { BuildJI("HEALTH_INS") } });
+                        
+                        // 厚生年金
+                        if (dslItems.Contains("PENSION"))
+                            autoJournalRules.Add(new { name = "pension", debitAccount = "3182", creditAccount = "315", items = new[] { BuildJI("PENSION") } });
+                        
+                        // 雇用保険
+                        if (dslItems.Contains("EMP_INS"))
+                            autoJournalRules.Add(new { name = "employment", debitAccount = "3183", creditAccount = "315", items = new[] { BuildJI("EMP_INS") } });
+                        
+                        // 源泉徴収税
+                        if (dslItems.Contains("WHT"))
+                            autoJournalRules.Add(new { name = "withholding", debitAccount = "3184", creditAccount = "315", items = new[] { BuildJI("WHT") } });
+                        
+                        // 年末調整徴収
+                        if (dslItems.Contains("NENMATSU_CHOSHU"))
+                            autoJournalRules.Add(new { name = "nenmatsu_choshu", debitAccount = "315", creditAccount = "3184", items = new[] { BuildJI("NENMATSU_CHOSHU") } });
+                        
+                        // 手动控除项目
+                        var deductItems = new List<object>();
+                        foreach (var code in new[] { "DEDUCT_LOAN", "DEDUCT_ADVANCE", "DEDUCT_OTHER" })
+                        {
+                            if (dslItems.Contains(code)) deductItems.Add(BuildJI(code));
+                        }
+                        if (deductItems.Count > 0)
+                            autoJournalRules.Add(new { name = "deductions", debitAccount = "315", creditAccount = "318", items = deductItems.ToArray() });
+                        
+                        if (autoJournalRules.Count > 0)
+                        {
+                            var jrArray = new System.Text.Json.Nodes.JsonArray(autoJournalRules.Select(o => JsonSerializer.SerializeToNode(o)!).ToArray());
+                            using var jrDoc = JsonDocument.Parse(jrArray.ToJsonString());
+                            journalRulesEl = jrDoc.RootElement.Clone();
+                        }
+                    }
+                }
+            }
+            
+            if (!journalRulesEl.HasValue)
+            {
+                return Results.BadRequest(new { error = "No journal rules found in active policy" });
+            }
+            
+            // 生成会计分录
+            var journal = BuildJournalLinesFromDsl(journalRulesEl.Value, sheetOut);
+            
+            // 获取科目名称
+            var codes = journal.Select(j => j.AccountCode).Distinct().ToArray();
+            var accountNameByCode = new Dictionary<string, string?>();
+            foreach (var code in codes)
+            {
+                await using var qa = conn.CreateCommand();
+                qa.CommandText = "SELECT name FROM accounts WHERE company_code=$1 AND account_code=$2 LIMIT 1";
+                qa.Parameters.AddWithValue(companyCode);
+                qa.Parameters.AddWithValue(code);
+                var name = (string?)await qa.ExecuteScalarAsync(ct);
+                accountNameByCode[code] = name;
+            }
+            
+            // 构建返回结果
+            var employeeCode = root.TryGetProperty("employeeCode", out var ec) && ec.ValueKind == JsonValueKind.String ? ec.GetString() : null;
+            var departmentCode = root.TryGetProperty("departmentCode", out var dc) && dc.ValueKind == JsonValueKind.String ? dc.GetString() : null;
+            var departmentName = root.TryGetProperty("departmentName", out var dn) && dn.ValueKind == JsonValueKind.String ? dn.GetString() : null;
+            
+            var accountingDraft = journal.Select(entry =>
+            {
+                accountNameByCode.TryGetValue(entry.AccountCode, out var an);
+                return new JsonObject
+                {
+                    ["lineNo"] = entry.LineNo,
+                    ["accountCode"] = entry.AccountCode,
+                    ["accountName"] = an,
+                    ["drcr"] = entry.DrCr,
+                    ["amount"] = JsonValue.Create(entry.Amount),
+                    ["employeeCode"] = employeeCode,
+                    ["departmentCode"] = departmentCode,
+                    ["departmentName"] = departmentName
+                };
+            }).ToList();
+            
+            return Results.Ok(new { accountingDraft });
+        }).RequireAuthorization();
 
         // POST /payroll/preflight
         // Runs preflight checks to determine if payroll calculation can proceed for the given month.
