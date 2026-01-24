@@ -468,8 +468,8 @@ function confirmAddItem() {
     return
   }
   
-  // 控除項目は負数、収入項目は正数で保存
-  const finalAmount = dialog.kind === 'deduction' ? -Math.abs(dialog.amount) : Math.abs(dialog.amount)
+  // 控除項目は正数で保持（ネット計算時に控除扱い）
+  const finalAmount = Math.abs(dialog.amount)
   
   dialog.targetEntry.payrollSheet.push({
     itemCode: dialog.itemCode || `MANUAL_${Date.now()}`,
@@ -497,6 +497,10 @@ const requestVersions = new Map<string, number>()
 // 調整額が変更された時
 function onAdjustmentChange(entry: any, row: any) {
   row.finalAmount = (row.calculatedAmount || 0) + (row.adjustment || 0)
+  // 控除項目はマイナスにならないように丸める
+  if (isDeductionItem(row) && row.finalAmount < 0) {
+    row.finalAmount = 0
+  }
   // 自動で分録を再計算（防抖）
   triggerJournalRegeneration(entry)
 }
@@ -529,16 +533,34 @@ function triggerJournalRegeneration(entry: any) {
   debounceTimers.set(key, timer)
 }
 
+// 控除項目かどうか
+function isDeductionItem(row: any): boolean {
+  if (row?.kind) return row.kind === 'deduction'
+  const code = (row?.itemCode || '').toString().toUpperCase()
+  return code === 'HEALTH_INS'
+    || code === 'PENSION'
+    || code === 'EMP_INS'
+    || code === 'WHT'
+    || code === 'ABSENCE_DEDUCT'
+    || code === 'DEDUCT_LOAN'
+    || code === 'DEDUCT_ADVANCE'
+    || code === 'DEDUCT_OTHER'
+    || code === 'NENMATSU_CHOSHU'
+}
+
 // 調整があるかどうかをチェック
 function hasAnyAdjustment(entry: any) {
   if (!entry?.payrollSheet?.length) return false
   return entry.payrollSheet.some((row: any) => row.adjustment !== 0 || row.isManuallyAdded)
 }
 
-// 差引支給額を計算
+// 差引支給額を計算（控除はマイナス扱い）
 function calculateNetAmount(entry: any) {
   if (!entry?.payrollSheet?.length) return 0
-  return entry.payrollSheet.reduce((sum: number, row: any) => sum + (row.finalAmount || 0), 0)
+  return entry.payrollSheet.reduce((sum: number, row: any) => {
+    const amount = Math.abs(row.finalAmount || 0)
+    return isDeductionItem(row) ? sum - amount : sum + amount
+  }, 0)
 }
 
 // 調整理由が必要な項目に理由が入っているかチェック
@@ -565,7 +587,7 @@ async function regenerateJournal(entry: any) {
     const payload = {
       payrollSheet: entry.payrollSheet.map((row: any) => ({
         itemCode: row.itemCode,
-        amount: row.finalAmount,
+        amount: isDeductionItem(row) ? Math.abs(row.finalAmount || 0) : (row.finalAmount || 0),
         finalAmount: row.finalAmount
       })),
       employeeCode: entry.employeeCode,
@@ -833,11 +855,12 @@ async function saveResults(){
         const cleanPayrollSheet = currentPayrollSheet.map((row: any) => ({
           itemCode: row.itemCode,
           itemName: row.itemName || row.displayName,
-          amount: row.finalAmount, // 使用最终金额
+          amount: isDeductionItem(row) ? Math.abs(row.finalAmount || 0) : (row.finalAmount || 0), // 使用最终金额
           calculatedAmount: row.calculatedAmount,
           adjustment: row.adjustment || 0,
           adjustmentReason: row.adjustmentReason || '',
-          isManuallyAdded: row.isManuallyAdded || false
+          isManuallyAdded: row.isManuallyAdded || false,
+          kind: row.kind
         }))
         
         const cleanAccountingDraft = rawAccountingDraft.map((row: any) => {
