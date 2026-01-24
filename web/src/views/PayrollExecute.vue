@@ -137,7 +137,7 @@
             <el-alert
               v-for="warn in entry.warnings || []"
               :key="warn.code || warn.message"
-              type="warning"
+              :type="warn.severity === 'error' ? 'error' : 'warning'"
               show-icon
               :title="warningDescriptions[warn.code] || warn.message || '注意事項'"
                 style="margin-bottom:12px"

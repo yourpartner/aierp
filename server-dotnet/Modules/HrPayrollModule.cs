@@ -3036,6 +3036,39 @@ LIMIT @pageSize OFFSET @offset";
                 ["message"] = $"{month} の勤怠データがないため、月標準工時（{workHourSummary.TotalHours}時間）で計算しました。加班・欠勤控除は発生しません。"
             });
         }
+        
+        // 检查员工是否缺少工资信息
+        bool hasNoSalaryInfo = string.IsNullOrWhiteSpace(empNlDescription) && nlBase <= 0;
+        bool hasEmptySheet = sheetOut.Count == 0 || sheetOut.All(item => 
+        {
+            var amt = ReadJsonDecimal(item, "amount");
+            return amt == 0m;
+        });
+        
+        if (hasNoSalaryInfo)
+        {
+            var displayName = employeeNameOut ?? employeeCodeOut ?? employeeId.ToString();
+            if (hasEmptySheet)
+            {
+                // 没有工资信息且没有计算结果 - 这是一个错误
+                warnings.Add(new JsonObject
+                {
+                    ["code"] = "noSalaryInfo",
+                    ["severity"] = "error",
+                    ["message"] = $"{displayName} の従業員マスタに給与情報（基本給・時給など）が登録されていないため、給与を計算できません。従業員マスタの「給与情報」を設定してください。"
+                });
+            }
+            else
+            {
+                // 没有工资信息但有计算结果（可能来自 Policy 默认值）- 这是一个警告
+                warnings.Add(new JsonObject
+                {
+                    ["code"] = "noSalaryInfo",
+                    ["severity"] = "warning",
+                    ["message"] = $"{displayName} の従業員マスタに給与情報が登録されていません。計算結果はポリシーのデフォルト値を使用しています。"
+                });
+            }
+        }
 
         return new PayrollExecutionResult(sheetOut, enriched, traceJson, employeeCodeOut, employeeNameOut, departmentCodeOut, departmentNameOut, netAmount, workHoursJson, warnings);
     }
