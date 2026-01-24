@@ -2533,9 +2533,66 @@ LIMIT @pageSize OFFSET @offset";
             policyBody = pBody;
             policyTextCombined = ExtractPolicyText(pBody);
 
-            if (pBody.TryGetProperty("rules", out var explicitRules) && explicitRules.ValueKind == JsonValueKind.Array && explicitRules.GetArrayLength() > 0)
+            // 检查是否有显式的 DSL rules
+            bool hasExplicitRules = pBody.TryGetProperty("rules", out var explicitRules) && explicitRules.ValueKind == JsonValueKind.Array && explicitRules.GetArrayLength() > 0;
+            
+            if (hasExplicitRules)
             {
                 rulesElement = explicitRules;
+                
+                // 即使有显式 rules，也需要生成会计凭证规则（如果 Policy 没有 journalRules）
+                if (!pBody.TryGetProperty("journalRules", out var existingJR) || existingJR.ValueKind != JsonValueKind.Array || existingJR.GetArrayLength() == 0)
+                {
+                    // 基于 DSL rules 中的项目自动生成会计凭证规则
+                    var dslItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var rule in explicitRules.EnumerateArray())
+                    {
+                        if (rule.TryGetProperty("item", out var itemProp) && itemProp.ValueKind == JsonValueKind.String)
+                        {
+                            var itemCode = itemProp.GetString();
+                            if (!string.IsNullOrWhiteSpace(itemCode)) dslItems.Add(itemCode);
+                        }
+                    }
+                    
+                    var autoJournalRules = new List<object>();
+                    object BuildJI(string code, decimal? sign = null) => sign.HasValue ? new { code, sign } : new { code };
+                    
+                    // 基本給/各種手当 → 給与手当/未払費用
+                    var wageItems = new List<object>();
+                    if (dslItems.Contains("BASE")) wageItems.Add(BuildJI("BASE"));
+                    if (dslItems.Contains("COMMUTE")) wageItems.Add(BuildJI("COMMUTE"));
+                    if (dslItems.Contains("OVERTIME_STD")) wageItems.Add(BuildJI("OVERTIME_STD"));
+                    if (dslItems.Contains("OVERTIME_60")) wageItems.Add(BuildJI("OVERTIME_60"));
+                    if (dslItems.Contains("HOLIDAY_PAY")) wageItems.Add(BuildJI("HOLIDAY_PAY"));
+                    if (dslItems.Contains("LATE_NIGHT_PAY")) wageItems.Add(BuildJI("LATE_NIGHT_PAY"));
+                    if (dslItems.Contains("ABSENCE_DEDUCT")) wageItems.Add(BuildJI("ABSENCE_DEDUCT", -1m));
+                    if (wageItems.Count > 0)
+                        autoJournalRules.Add(new { name = "wages", debitAccount = "832", creditAccount = "315", items = wageItems.ToArray(), description = "基本給および各種手当を給与手当／未払費用で仕訳" });
+                    
+                    // 社会保険
+                    if (dslItems.Contains("HEALTH_INS"))
+                        autoJournalRules.Add(new { name = "health", debitAccount = "3181", creditAccount = "315", items = new[] { BuildJI("HEALTH_INS") }, description = "社会保険預り金／未払費用" });
+                    
+                    // 厚生年金
+                    if (dslItems.Contains("PENSION"))
+                        autoJournalRules.Add(new { name = "pension", debitAccount = "3182", creditAccount = "315", items = new[] { BuildJI("PENSION") }, description = "厚生年金預り金／未払費用" });
+                    
+                    // 雇用保険
+                    if (dslItems.Contains("EMP_INS"))
+                        autoJournalRules.Add(new { name = "employment", debitAccount = "3183", creditAccount = "315", items = new[] { BuildJI("EMP_INS") }, description = "雇用保険預り金／未払費用" });
+                    
+                    // 源泉徴収税
+                    if (dslItems.Contains("WHT"))
+                        autoJournalRules.Add(new { name = "withholding", debitAccount = "3184", creditAccount = "315", items = new[] { BuildJI("WHT") }, description = "源泉所得税預り金／未払費用" });
+                    
+                    if (autoJournalRules.Count > 0)
+                    {
+                        var jrArray = new System.Text.Json.Nodes.JsonArray(autoJournalRules.Select(o => System.Text.Json.JsonSerializer.SerializeToNode(o)!).ToArray());
+                        compiledJournalRulesDoc = JsonDocument.Parse(jrArray.ToJsonString());
+                        compiledJournalRulesElement = compiledJournalRulesDoc.RootElement;
+                        if (debug) trace?.Add(new { step = "journal.rules.auto", source = "dsl-items", count = autoJournalRules.Count, items = dslItems.ToArray() });
+                    }
+                }
             }
             else
         {
