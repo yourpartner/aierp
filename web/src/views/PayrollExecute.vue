@@ -55,18 +55,18 @@
         title="工時を手動入力"
         width="500px"
         :close-on-click-modal="false"
+        class="manual-hours-dialog-wrapper"
+        append-to-body
       >
         <div class="manual-hours-dialog">
-          <el-alert type="info" :closable="false" style="margin-bottom: 16px">
-            <template #title>
-              <span>{{ manualHoursDialog.employeeName }} は時給制のため、工数データが必要です。</span>
-            </template>
-            <template #default>
-              <div style="margin-top: 8px; color: #666;">
-                手動で工時を入力するか、キャンセルして工数を登録してください。
-              </div>
-            </template>
-          </el-alert>
+          <div class="manual-hours-tip">
+            <div class="manual-hours-tip__title">
+              {{ manualHoursDialog.employeeName }} は時給制のため、工数データが必要です。
+            </div>
+            <div class="manual-hours-tip__desc">
+              手動で工時を入力するか、キャンセルして工数を登録してください。
+            </div>
+          </div>
           <el-form label-width="100px">
             <el-form-item label="時給">
               <el-input-number
@@ -687,5 +687,43 @@ onMounted(() => {
   font-size: 18px;
   font-weight: 600;
   color: #67c23a;
+}
+</style>
+
+<style>
+/* el-dialog は append-to-body のため、scoped 外で当てる */
+.manual-hours-dialog-wrapper.el-dialog {
+  width: 500px !important;
+  max-width: calc(100vw - 32px) !important;
+  box-sizing: border-box !important;
+}
+
+.manual-hours-dialog-wrapper .el-dialog__body {
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.manual-hours-dialog-wrapper .manual-hours-tip {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  background: #f4f4f5;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  color: #606266;
+}
+
+.manual-hours-dialog-wrapper .manual-hours-tip__title {
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+
+.manual-hours-dialog-wrapper .manual-hours-tip__desc {
+  color: #606266;
+  word-break: break-word;
 }
 </style>
