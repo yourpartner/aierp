@@ -2730,7 +2730,8 @@ LIMIT @pageSize OFFSET @offset";
             }
 
             var wageJournalItems = new List<object>();
-            if (hasBaseEmp || hasBaseCompany) wageJournalItems.Add(BuildJournalItem("BASE"));
+            // 时薪制员工也需要 BASE 会计分录（时薪 × 工时 = 基本给）
+            if (hasBaseEmp || hasBaseCompany || isHourlyRateMode) wageJournalItems.Add(BuildJournalItem("BASE"));
             if (commuteEmp) wageJournalItems.Add(BuildJournalItem("COMMUTE"));
             if (wantsOvertime) wageJournalItems.Add(BuildJournalItem("OVERTIME_STD"));
             if (wantsOvertime && wantsOvertime60) wageJournalItems.Add(BuildJournalItem("OVERTIME_60"));
