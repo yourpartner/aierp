@@ -301,28 +301,21 @@
                   <div class="section-card">
                     <div class="section-card__header">
                       <span>仕訳ドラフト</span>
+                      <span v-if="entry._regenerating" class="journal-status">
+                        <el-icon class="is-loading"><Refresh /></el-icon>
+                        <span>更新中...</span>
+                      </span>
                       <el-button 
-                        v-if="entry._journalStale || hasAnyAdjustment(entry)"
+                        v-else-if="entry._journalStale"
                         type="warning" 
                         size="small" 
-                        :loading="entry._regenerating"
+                        text
                         @click="regenerateJournal(entry)"
                       >
                         <el-icon><Refresh /></el-icon>
-                        <span>分録を再生成</span>
+                        <span>再計算</span>
                       </el-button>
                     </div>
-                    <el-alert
-                      v-if="entry._journalStale || hasAnyAdjustment(entry)"
-                      type="warning"
-                      :closable="false"
-                      show-icon
-                      style="margin: 8px; border-radius: 4px;"
-                    >
-                      <template #title>
-                        <span>給与項目に調整があります。「分録を再生成」をクリックして仕訳を更新してください。</span>
-                      </template>
-                    </el-alert>
                     <el-table :data="entry.accountingDraft || []" size="small" border>
                       <el-table-column prop="accountCode" label="科目コード" width="100" />
                       <el-table-column prop="accountName" label="科目名" min-width="120" />
@@ -487,28 +480,48 @@ function confirmAddItem() {
     kind: dialog.kind
   })
   
-  // 調整があったので分録を再計算必要とマーク
-  markJournalStale(dialog.targetEntry)
+  // 自動で分録を再計算
+  triggerJournalRegeneration(dialog.targetEntry)
   
   dialog.visible = false
 }
 
+// 防抖用のタイマーMap
+const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
 // 調整額が変更された時
 function onAdjustmentChange(entry: any, row: any) {
   row.finalAmount = (row.calculatedAmount || 0) + (row.adjustment || 0)
-  // 調整があったので分録を再計算必要とマーク
-  markJournalStale(entry)
+  // 自動で分録を再計算（防抖）
+  triggerJournalRegeneration(entry)
 }
 
 // 手動追加項目を削除
 function removeManualItem(entry: any, index: number) {
   entry.payrollSheet.splice(index, 1)
-  markJournalStale(entry)
+  // 自動で分録を再計算
+  triggerJournalRegeneration(entry)
 }
 
-// 分録が古くなったことをマーク
-function markJournalStale(entry: any) {
+// 防抖付きで分録再計算をトリガー
+function triggerJournalRegeneration(entry: any) {
+  const key = entry.employeeId
+  
+  // 既存のタイマーをキャンセル
+  if (debounceTimers.has(key)) {
+    clearTimeout(debounceTimers.get(key))
+  }
+  
+  // 一時的に「計算中」マークを付ける
   entry._journalStale = true
+  
+  // 500ms後に再計算を実行
+  const timer = setTimeout(() => {
+    debounceTimers.delete(key)
+    regenerateJournal(entry)
+  }, 500)
+  
+  debounceTimers.set(key, timer)
 }
 
 // 調整があるかどうかをチェック
@@ -1088,6 +1101,16 @@ onMounted(() => {
   font-size: 18px;
   font-weight: 600;
   color: #67c23a;
+}
+
+/* 仕訳更新中状態 */
+.journal-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #e6a23c;
+  font-weight: normal;
 }
 </style>
 
