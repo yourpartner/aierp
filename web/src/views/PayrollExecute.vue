@@ -445,6 +445,9 @@ function onItemCodeChange(code: string) {
   const item = standardPayrollItems.find(i => i.code === code)
   if (item) {
     addItemDialog.value.kind = item.kind as 'earning' | 'deduction'
+  } else {
+    // カスタム項目の場合はデフォルトに戻す（ユーザーに選択させる）
+    addItemDialog.value.kind = 'earning'
   }
 }
 
@@ -488,6 +491,8 @@ function confirmAddItem() {
 
 // 防抖用のタイマーMap
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+// 競合防止用のリクエストバージョン
+const requestVersions = new Map<string, number>()
 
 // 調整額が変更された時
 function onAdjustmentChange(entry: any, row: any) {
@@ -549,6 +554,12 @@ function validateAdjustmentReasons(entry: any): boolean {
 
 // 仕訳を再生成
 async function regenerateJournal(entry: any) {
+  const key = entry.employeeId
+  
+  // バージョン番号をインクリメント
+  const currentVersion = (requestVersions.get(key) || 0) + 1
+  requestVersions.set(key, currentVersion)
+  
   entry._regenerating = true
   try {
     const payload = {
@@ -564,6 +575,11 @@ async function regenerateJournal(entry: any) {
     
     const r = await api.post('/payroll/regenerate-journal', payload)
     
+    // 競合チェック：このリクエストが最新でなければ無視
+    if (requestVersions.get(key) !== currentVersion) {
+      return // 新しいリクエストが発行されたので、この結果は破棄
+    }
+    
     // 更新会计分录
     entry.accountingDraft = (r.data?.accountingDraft || []).map((row: any) => ({
       ...row,
@@ -574,11 +590,17 @@ async function regenerateJournal(entry: any) {
     // 清除过期标记
     entry._journalStale = false
     
-    ElMessage.success('仕訳を再生成しました')
   } catch (e: any) {
+    // 競合チェック
+    if (requestVersions.get(key) !== currentVersion) {
+      return
+    }
     ElMessage.error(extractErrorMessage(e, '仕訳の再生成に失敗しました'))
   } finally {
-    entry._regenerating = false
+    // 競合チェック：最新リクエストの場合のみフラグをクリア
+    if (requestVersions.get(key) === currentVersion) {
+      entry._regenerating = false
+    }
   }
 }
 
@@ -770,6 +792,20 @@ async function submitManualHours() {
 
 async function saveResults(){
   if (!runResult.value || !Array.isArray(runResult.value.entries) || runResult.value.entries.length === 0){ return }
+  
+  // 仕訳更新中・未更新チェック
+  for (const entry of runResult.value.entries) {
+    if (entry._regenerating) {
+      const name = entry.employeeName || entry.employeeCode || entry.employeeId
+      ElMessage.warning(`${name} の仕訳を更新中です。完了までお待ちください。`)
+      return
+    }
+    if (entry._journalStale) {
+      const name = entry.employeeName || entry.employeeCode || entry.employeeId
+      ElMessage.warning(`${name} の仕訳が未更新です。しばらく待ってから再度保存してください。`)
+      return
+    }
+  }
   
   // 調整理由の必須チェック
   for (const entry of runResult.value.entries) {
