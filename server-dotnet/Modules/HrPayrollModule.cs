@@ -2729,9 +2729,34 @@ LIMIT @pageSize OFFSET @offset";
                 }
             }
 
+            // 如果 Policy 有 DSL rules，默认生成所有标准会计凭证（不再依赖自然语言描述）
+            bool hasDslRules = pBody.TryGetProperty("rules", out var dslRulesCheck) && dslRulesCheck.ValueKind == JsonValueKind.Array && dslRulesCheck.GetArrayLength() > 0;
+            
+            // 检查 DSL rules 中定义了哪些项目
+            var dslItemCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (hasDslRules)
+            {
+                foreach (var rule in dslRulesCheck.EnumerateArray())
+                {
+                    if (rule.TryGetProperty("item", out var itemProp) && itemProp.ValueKind == JsonValueKind.String)
+                    {
+                        var itemCode = itemProp.GetString();
+                        if (!string.IsNullOrWhiteSpace(itemCode)) dslItemCodes.Add(itemCode);
+                    }
+                }
+            }
+            
+            // 如果有 DSL rules，根据 DSL 中定义的项目来决定生成哪些会计凭证
+            bool useDefaultJournal = hasDslRules || hasBaseEmp || hasBaseCompany || isHourlyRateMode;
+            bool dslHasHealth = dslItemCodes.Contains("HEALTH_INS");
+            bool dslHasPension = dslItemCodes.Contains("PENSION");
+            bool dslHasEmployment = dslItemCodes.Contains("EMP_INS");
+            bool dslHasWithholding = dslItemCodes.Contains("WHT");
+            bool dslHasBase = dslItemCodes.Contains("BASE");
+            
             var wageJournalItems = new List<object>();
-            // 时薪制员工也需要 BASE 会计分录（时薪 × 工时 = 基本给）
-            if (hasBaseEmp || hasBaseCompany || isHourlyRateMode) wageJournalItems.Add(BuildJournalItem("BASE"));
+            // 如果 DSL 有 BASE 规则，或者自然语言描述中有基本给关键字，或者是时薪制
+            if (dslHasBase || hasBaseEmp || hasBaseCompany || isHourlyRateMode) wageJournalItems.Add(BuildJournalItem("BASE"));
             if (commuteEmp) wageJournalItems.Add(BuildJournalItem("COMMUTE"));
             if (wantsOvertime) wageJournalItems.Add(BuildJournalItem("OVERTIME_STD"));
             if (wantsOvertime && wantsOvertime60) wageJournalItems.Add(BuildJournalItem("OVERTIME_60"));
@@ -2743,22 +2768,26 @@ LIMIT @pageSize OFFSET @offset";
                 AddJournalRuleLocal("wages", ResolveJournalDebitLocal("wages", "832"), ResolveJournalCreditLocal("wages", "315"), wageJournalItems, "基本給および各種手当を給与手当／未払費用で仕訳");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "wages", items = wageJournalItems.Select(i => i.ToString()).ToArray() });
             }
-            if (wantsHealth)
+            // 社会保険：DSL 有定义，或自然语言描述中有关键字
+            if (dslHasHealth || wantsHealth)
             {
                 AddJournalRuleLocal("health", ResolveJournalDebitLocal("health", "3181"), ResolveJournalCreditLocal("health", "315"), new[] { BuildJournalItem("HEALTH_INS") }, "社会保険預り金／未払費用");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "health" });
             }
-            if (wantsPension)
+            // 厚生年金：DSL 有定义，或自然语言描述中有关键字
+            if (dslHasPension || wantsPension)
             {
                 AddJournalRuleLocal("pension", ResolveJournalDebitLocal("pension", "3182"), ResolveJournalCreditLocal("pension", "315"), new[] { BuildJournalItem("PENSION") }, "厚生年金預り金／未払費用");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "pension" });
             }
-            if (wantsEmployment)
+            // 雇用保険：DSL 有定义，或自然语言描述中有关键字
+            if (dslHasEmployment || wantsEmployment)
             {
                 AddJournalRuleLocal("employment", ResolveJournalDebitLocal("employment", "3183"), ResolveJournalCreditLocal("employment", "315"), new[] { BuildJournalItem("EMP_INS") }, "雇用保険預り金／未払費用");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "employment" });
             }
-            if (wantsWithholding)
+            // 源泉徴収税：DSL 有定义，或自然语言描述中有关键字
+            if (dslHasWithholding || wantsWithholding)
             {
                 AddJournalRuleLocal("withholding", ResolveJournalDebitLocal("withholding", "3184"), ResolveJournalCreditLocal("withholding", "315"), new[] { BuildJournalItem("WHT") }, "源泉所得税預り金／未払費用");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "withholding" });
