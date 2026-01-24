@@ -101,6 +101,42 @@
           </el-button>
         </template>
       </el-dialog>
+      
+      <!-- 項目追加ダイアログ -->
+      <el-dialog
+        v-model="addItemDialog.visible"
+        title="給与項目を追加"
+        width="480px"
+        :close-on-click-modal="false"
+        append-to-body
+      >
+        <el-form label-width="100px">
+          <el-form-item label="項目種類">
+            <el-select v-model="addItemDialog.itemCode" placeholder="選択または入力" filterable allow-create clearable style="width: 100%">
+              <el-option v-for="item in standardPayrollItems" :key="item.code" :label="item.name" :value="item.code" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="項目名">
+            <el-input v-model="addItemDialog.itemName" placeholder="カスタム項目名（省略可）" />
+          </el-form-item>
+          <el-form-item label="金額">
+            <el-input-number
+              v-model="addItemDialog.amount"
+              :controls="false"
+              style="width: 180px"
+            />
+            <span style="margin-left: 8px; color: #909399">円（マイナスは控除）</span>
+          </el-form-item>
+          <el-form-item label="理由">
+            <el-input v-model="addItemDialog.adjustmentReason" placeholder="追加理由を入力" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="addItemDialog.visible = false">キャンセル</el-button>
+          <el-button type="primary" @click="confirmAddItem">追加</el-button>
+        </template>
+      </el-dialog>
+      
       <el-alert
         v-if="runResult?.hasExisting && !overwrite"
         type="warning"
@@ -144,24 +180,79 @@
             />
               
               <el-row :gutter="16">
-              <el-col :span="8">
+              <el-col :span="12">
                   <div class="section-card">
-                    <div class="section-card__header">給与項目</div>
+                    <div class="section-card__header">
+                      <span>給与項目</span>
+                      <el-button type="primary" size="small" text @click="openAddItemDialog(entry)">
+                        <el-icon><Plus /></el-icon>
+                        <span>項目追加</span>
+                      </el-button>
+                    </div>
                     <el-table :data="entry.payrollSheet || []" size="small" border>
-                      <el-table-column label="項目" min-width="100">
-                      <template #default="{ row }">
-                        {{ row.displayName || row.itemCode || row.itemName }}
-                      </template>
-                    </el-table-column>
-                    <el-table-column label="金額" width="100" align="right">
-                      <template #default="{ row }">
-                        {{ formatAmount(row.amount) }}
-                      </template>
-                    </el-table-column>
-                  </el-table>
+                      <el-table-column label="項目" min-width="90">
+                        <template #default="{ row }">
+                          <span :class="{ 'manual-item': row.isManuallyAdded }">
+                            {{ row.displayName || row.itemCode || row.itemName }}
+                          </span>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="計算額" width="90" align="right">
+                        <template #default="{ row }">
+                          <span class="calculated-amount">{{ formatAmount(row.calculatedAmount) }}</span>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="調整額" width="100" align="right">
+                        <template #default="{ row }">
+                          <el-input-number
+                            v-model="row.adjustment"
+                            :controls="false"
+                            size="small"
+                            class="adjustment-input"
+                            @change="onAdjustmentChange(entry, row)"
+                          />
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="最終額" width="90" align="right">
+                        <template #default="{ row }">
+                          <span class="final-amount" :class="{ 'has-adjustment': row.adjustment !== 0 }">
+                            {{ formatAmount(row.finalAmount) }}
+                          </span>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="調整理由" min-width="120">
+                        <template #default="{ row }">
+                          <el-input
+                            v-if="row.adjustment !== 0 || row.isManuallyAdded"
+                            v-model="row.adjustmentReason"
+                            size="small"
+                            placeholder="理由を入力"
+                          />
+                          <span v-else class="no-reason">—</span>
+                        </template>
+                      </el-table-column>
+                      <el-table-column width="40" align="center">
+                        <template #default="{ row, $index }">
+                          <el-button
+                            v-if="row.isManuallyAdded"
+                            type="danger"
+                            size="small"
+                            text
+                            circle
+                            @click="removeManualItem(entry, $index)"
+                          >
+                            <el-icon><Delete /></el-icon>
+                          </el-button>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                    <div class="payroll-summary">
+                      <span class="payroll-summary__label">差引支給額:</span>
+                      <span class="payroll-summary__value">{{ formatAmount(calculateNetAmount(entry)) }}</span>
+                    </div>
                   </div>
               </el-col>
-                <el-col :span="16">
+                <el-col :span="12">
                   <div v-if="entry.workHours" class="section-card" style="margin-bottom:12px">
                     <div class="section-card__header">勤怠サマリー</div>
                     <el-descriptions :column="4" size="small" border>
@@ -220,7 +311,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Wallet, CaretRight, FolderChecked } from '@element-plus/icons-vue'
+import { Wallet, CaretRight, FolderChecked, Plus, Delete } from '@element-plus/icons-vue'
 import api from '../api'
 
 const employeeIds = ref<string[]>([])
@@ -260,6 +351,82 @@ const manualHoursDialog = ref({
   hourlyRate: 0,
   totalHours: 0
 })
+
+// 項目追加ダイアログ
+const addItemDialog = ref({
+  visible: false,
+  targetEntry: null as any,
+  itemCode: '',
+  itemName: '',
+  amount: 0,
+  adjustmentReason: ''
+})
+
+// 標準給与項目リスト
+const standardPayrollItems = [
+  { code: 'BONUS', name: '賞与' },
+  { code: 'ALLOWANCE_SPECIAL', name: '特別手当' },
+  { code: 'ALLOWANCE_HOUSING', name: '住宅手当' },
+  { code: 'ALLOWANCE_FAMILY', name: '家族手当' },
+  { code: 'ALLOWANCE_POSITION', name: '役職手当' },
+  { code: 'DEDUCT_LOAN', name: '貸付金返済' },
+  { code: 'DEDUCT_ADVANCE', name: '前払金精算' },
+  { code: 'DEDUCT_OTHER', name: 'その他控除' },
+  { code: 'ADJUST_OTHER', name: 'その他調整' }
+]
+
+// 項目追加ダイアログを開く
+function openAddItemDialog(entry: any) {
+  addItemDialog.value = {
+    visible: true,
+    targetEntry: entry,
+    itemCode: '',
+    itemName: '',
+    amount: 0,
+    adjustmentReason: ''
+  }
+}
+
+// 項目を追加
+function confirmAddItem() {
+  const dialog = addItemDialog.value
+  if (!dialog.targetEntry) return
+  
+  const itemName = dialog.itemName || standardPayrollItems.find(i => i.code === dialog.itemCode)?.name || dialog.itemCode
+  if (!itemName) {
+    ElMessage.warning('項目名を入力してください')
+    return
+  }
+  
+  dialog.targetEntry.payrollSheet.push({
+    itemCode: dialog.itemCode || `MANUAL_${Date.now()}`,
+    itemName: itemName,
+    displayName: itemName,
+    calculatedAmount: 0,
+    adjustment: dialog.amount,
+    finalAmount: dialog.amount,
+    adjustmentReason: dialog.adjustmentReason || '手動追加',
+    isManuallyAdded: true
+  })
+  
+  dialog.visible = false
+}
+
+// 調整額が変更された時
+function onAdjustmentChange(entry: any, row: any) {
+  row.finalAmount = (row.calculatedAmount || 0) + (row.adjustment || 0)
+}
+
+// 手動追加項目を削除
+function removeManualItem(entry: any, index: number) {
+  entry.payrollSheet.splice(index, 1)
+}
+
+// 差引支給額を計算
+function calculateNetAmount(entry: any) {
+  if (!entry?.payrollSheet?.length) return 0
+  return entry.payrollSheet.reduce((sum: number, row: any) => sum + (row.finalAmount || 0), 0)
+}
 
 function extractErrorMessage(err: any, fallback: string) {
   if (!err) return fallback
@@ -326,7 +493,11 @@ async function run(){
             payrollSheet: (entry.payrollSheet || []).map((row: any) => ({
               ...row,
               displayName: row.itemName || row.displayName || row.itemCode,
-              displayAmount: formatAmount(row.amount)
+              calculatedAmount: row.amount,
+              adjustment: 0,
+              finalAmount: row.amount,
+              adjustmentReason: '',
+              isManuallyAdded: false
             })),
             accountingDraft: (entry.accountingDraft || []).map((row: any) => ({
               ...row,
@@ -401,7 +572,11 @@ async function submitManualHours() {
           payrollSheet: (entry.payrollSheet || []).map((row: any) => ({
             ...row,
             displayName: row.itemName || row.displayName || row.itemCode,
-            displayAmount: formatAmount(row.amount)
+            calculatedAmount: row.amount,
+            adjustment: 0,
+            finalAmount: row.amount,
+            adjustmentReason: '',
+            isManuallyAdded: false
           })),
           accountingDraft: (entry.accountingDraft || []).map((row: any) => ({
             ...row,
@@ -450,22 +625,35 @@ async function saveResults(){
       overwrite: overwrite.value,
       runType: 'manual',
       entries: runResult.value.entries.map((entry:any)=>{
-        const rawPayrollSheet = entry._rawPayrollSheet || entry.payrollSheet || []
+        // 使用当前显示的 payrollSheet（可能包含调整）
+        const currentPayrollSheet = entry.payrollSheet || []
         const rawAccountingDraft = entry._rawAccountingDraft || entry.accountingDraft || []
-        const cleanPayrollSheet = rawPayrollSheet.map((row: any) => {
-          const { displayName, displayAmount, ...rest } = row
-          return rest
-        })
+        
+        // 清理 payrollSheet，保留调整信息
+        const cleanPayrollSheet = currentPayrollSheet.map((row: any) => ({
+          itemCode: row.itemCode,
+          itemName: row.itemName || row.displayName,
+          amount: row.finalAmount, // 使用最终金额
+          calculatedAmount: row.calculatedAmount,
+          adjustment: row.adjustment || 0,
+          adjustmentReason: row.adjustmentReason || '',
+          isManuallyAdded: row.isManuallyAdded || false
+        }))
+        
         const cleanAccountingDraft = rawAccountingDraft.map((row: any) => {
           const { displayAmount, ...rest } = row
           return rest
         })
+        
+        // 重新计算 totalAmount（基于最终金额）
+        const totalAmount = cleanPayrollSheet.reduce((sum: number, row: any) => sum + (row.amount || 0), 0)
+        
         const payload:any = {
           employeeId: entry.employeeId,
           employeeCode: entry.employeeCode,
           employeeName: entry.employeeName,
           departmentCode: entry.departmentCode,
-          totalAmount: entry.totalAmount,
+          totalAmount: totalAmount,
           payrollSheet: cleanPayrollSheet,
           accountingDraft: cleanAccountingDraft,
           diffSummary: entry.diffSummary,
@@ -670,12 +858,68 @@ onMounted(() => {
 }
 
 .section-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   padding: 10px 12px;
   background: #f5f7fa;
   font-size: 13px;
   font-weight: 600;
   color: #606266;
   border-bottom: 1px solid #ebeef5;
+}
+
+/* 給与項目テーブル */
+.calculated-amount {
+  color: #909399;
+}
+
+.final-amount {
+  font-weight: 600;
+  color: #303133;
+}
+
+.final-amount.has-adjustment {
+  color: #e6a23c;
+}
+
+.manual-item {
+  color: #409eff;
+  font-style: italic;
+}
+
+.no-reason {
+  color: #c0c4cc;
+}
+
+.adjustment-input {
+  width: 80px !important;
+}
+
+.adjustment-input :deep(.el-input__inner) {
+  text-align: right;
+}
+
+/* 差引支給額 */
+.payroll-summary {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #f0f9eb;
+  border-top: 1px solid #e1f3d8;
+}
+
+.payroll-summary__label {
+  font-size: 14px;
+  color: #606266;
+}
+
+.payroll-summary__value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #67c23a;
 }
 
 /* 手動工時入力ダイアログ */
