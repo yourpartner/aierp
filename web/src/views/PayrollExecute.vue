@@ -106,29 +106,59 @@
       <el-dialog
         v-model="addItemDialog.visible"
         title="給与項目を追加"
-        width="480px"
+        width="500px"
         :close-on-click-modal="false"
         append-to-body
       >
         <el-form label-width="100px">
           <el-form-item label="項目種類">
-            <el-select v-model="addItemDialog.itemCode" placeholder="選択または入力" filterable allow-create clearable style="width: 100%">
-              <el-option v-for="item in standardPayrollItems" :key="item.code" :label="item.name" :value="item.code" />
+            <el-select 
+              v-model="addItemDialog.itemCode" 
+              placeholder="選択または入力" 
+              filterable 
+              allow-create 
+              clearable 
+              style="width: 100%"
+              @change="onItemCodeChange"
+            >
+              <el-option-group label="収入項目">
+                <el-option 
+                  v-for="item in standardPayrollItems.filter(i => i.kind === 'earning')" 
+                  :key="item.code" 
+                  :label="item.name" 
+                  :value="item.code" 
+                />
+              </el-option-group>
+              <el-option-group label="控除項目">
+                <el-option 
+                  v-for="item in standardPayrollItems.filter(i => i.kind === 'deduction')" 
+                  :key="item.code" 
+                  :label="item.name" 
+                  :value="item.code" 
+                />
+              </el-option-group>
             </el-select>
           </el-form-item>
           <el-form-item label="項目名">
             <el-input v-model="addItemDialog.itemName" placeholder="カスタム項目名（省略可）" />
           </el-form-item>
+          <el-form-item label="区分">
+            <el-radio-group v-model="addItemDialog.kind">
+              <el-radio value="earning">収入（支給）</el-radio>
+              <el-radio value="deduction">控除</el-radio>
+            </el-radio-group>
+          </el-form-item>
           <el-form-item label="金額">
             <el-input-number
               v-model="addItemDialog.amount"
+              :min="0"
               :controls="false"
               style="width: 180px"
             />
-            <span style="margin-left: 8px; color: #909399">円（マイナスは控除）</span>
+            <span style="margin-left: 8px; color: #909399">円</span>
           </el-form-item>
-          <el-form-item label="理由">
-            <el-input v-model="addItemDialog.adjustmentReason" placeholder="追加理由を入力" />
+          <el-form-item label="理由" required>
+            <el-input v-model="addItemDialog.adjustmentReason" placeholder="追加理由を入力（必須）" />
           </el-form-item>
         </el-form>
         <template #footer>
@@ -158,7 +188,10 @@
               <div class="entry-title">
                 <span class="entry-name">{{ entry.employeeName || entry.employeeCode || entry.employeeId }}</span>
                 <span class="entry-dept">{{ formatDepartment(entry) }}</span>
-                <span class="entry-amount">¥{{ formatAmount(entry.totalAmount) }}</span>
+                <span class="entry-amount" :class="{ 'has-adjustment': hasAnyAdjustment(entry) }">
+                  ¥{{ formatAmount(calculateNetAmount(entry)) }}
+                  <el-tag v-if="hasAnyAdjustment(entry)" size="small" type="warning" style="margin-left: 6px">調整あり</el-tag>
+                </span>
             </div>
             </template>
             
@@ -267,6 +300,17 @@
                   </div>
                   <div class="section-card">
                     <div class="section-card__header">仕訳ドラフト</div>
+                    <el-alert
+                      v-if="entry._journalStale || hasAnyAdjustment(entry)"
+                      type="warning"
+                      :closable="false"
+                      show-icon
+                      style="margin: 8px; border-radius: 4px;"
+                    >
+                      <template #title>
+                        <span>給与項目に調整があります。仕訳は調整前の金額で表示されています。</span>
+                      </template>
+                    </el-alert>
                     <el-table :data="entry.accountingDraft || []" size="small" border>
                       <el-table-column prop="accountCode" label="科目コード" width="100" />
                       <el-table-column prop="accountName" label="科目名" min-width="120" />
@@ -359,20 +403,23 @@ const addItemDialog = ref({
   itemCode: '',
   itemName: '',
   amount: 0,
+  kind: 'earning' as 'earning' | 'deduction',
   adjustmentReason: ''
 })
 
-// 標準給与項目リスト
+// 標準給与項目リスト（kind: earning=収入, deduction=控除）
 const standardPayrollItems = [
-  { code: 'BONUS', name: '賞与' },
-  { code: 'ALLOWANCE_SPECIAL', name: '特別手当' },
-  { code: 'ALLOWANCE_HOUSING', name: '住宅手当' },
-  { code: 'ALLOWANCE_FAMILY', name: '家族手当' },
-  { code: 'ALLOWANCE_POSITION', name: '役職手当' },
-  { code: 'DEDUCT_LOAN', name: '貸付金返済' },
-  { code: 'DEDUCT_ADVANCE', name: '前払金精算' },
-  { code: 'DEDUCT_OTHER', name: 'その他控除' },
-  { code: 'ADJUST_OTHER', name: 'その他調整' }
+  { code: 'BONUS', name: '賞与', kind: 'earning' },
+  { code: 'ALLOWANCE_SPECIAL', name: '特別手当', kind: 'earning' },
+  { code: 'ALLOWANCE_HOUSING', name: '住宅手当', kind: 'earning' },
+  { code: 'ALLOWANCE_FAMILY', name: '家族手当', kind: 'earning' },
+  { code: 'ALLOWANCE_POSITION', name: '役職手当', kind: 'earning' },
+  { code: 'NENMATSU_KANPU', name: '年末調整還付', kind: 'earning' },
+  { code: 'DEDUCT_LOAN', name: '貸付金返済', kind: 'deduction' },
+  { code: 'DEDUCT_ADVANCE', name: '前払金精算', kind: 'deduction' },
+  { code: 'DEDUCT_OTHER', name: 'その他控除', kind: 'deduction' },
+  { code: 'NENMATSU_CHOSHU', name: '年末調整徴収', kind: 'deduction' },
+  { code: 'ADJUST_OTHER', name: 'その他調整', kind: 'earning' }
 ]
 
 // 項目追加ダイアログを開く
@@ -383,7 +430,16 @@ function openAddItemDialog(entry: any) {
     itemCode: '',
     itemName: '',
     amount: 0,
+    kind: 'earning',
     adjustmentReason: ''
+  }
+}
+
+// 項目種類が変更された時、kindを自動設定
+function onItemCodeChange(code: string) {
+  const item = standardPayrollItems.find(i => i.code === code)
+  if (item) {
+    addItemDialog.value.kind = item.kind as 'earning' | 'deduction'
   }
 }
 
@@ -392,22 +448,35 @@ function confirmAddItem() {
   const dialog = addItemDialog.value
   if (!dialog.targetEntry) return
   
-  const itemName = dialog.itemName || standardPayrollItems.find(i => i.code === dialog.itemCode)?.name || dialog.itemCode
+  const itemDef = standardPayrollItems.find(i => i.code === dialog.itemCode)
+  const itemName = dialog.itemName || itemDef?.name || dialog.itemCode
   if (!itemName) {
     ElMessage.warning('項目名を入力してください')
     return
   }
+  
+  if (!dialog.adjustmentReason) {
+    ElMessage.warning('追加理由を入力してください')
+    return
+  }
+  
+  // 控除項目は負数、収入項目は正数で保存
+  const finalAmount = dialog.kind === 'deduction' ? -Math.abs(dialog.amount) : Math.abs(dialog.amount)
   
   dialog.targetEntry.payrollSheet.push({
     itemCode: dialog.itemCode || `MANUAL_${Date.now()}`,
     itemName: itemName,
     displayName: itemName,
     calculatedAmount: 0,
-    adjustment: dialog.amount,
-    finalAmount: dialog.amount,
-    adjustmentReason: dialog.adjustmentReason || '手動追加',
-    isManuallyAdded: true
+    adjustment: finalAmount,
+    finalAmount: finalAmount,
+    adjustmentReason: dialog.adjustmentReason,
+    isManuallyAdded: true,
+    kind: dialog.kind
   })
+  
+  // 調整があったので分録を再計算必要とマーク
+  markJournalStale(dialog.targetEntry)
   
   dialog.visible = false
 }
@@ -415,17 +484,42 @@ function confirmAddItem() {
 // 調整額が変更された時
 function onAdjustmentChange(entry: any, row: any) {
   row.finalAmount = (row.calculatedAmount || 0) + (row.adjustment || 0)
+  // 調整があったので分録を再計算必要とマーク
+  markJournalStale(entry)
 }
 
 // 手動追加項目を削除
 function removeManualItem(entry: any, index: number) {
   entry.payrollSheet.splice(index, 1)
+  markJournalStale(entry)
+}
+
+// 分録が古くなったことをマーク
+function markJournalStale(entry: any) {
+  entry._journalStale = true
+}
+
+// 調整があるかどうかをチェック
+function hasAnyAdjustment(entry: any) {
+  if (!entry?.payrollSheet?.length) return false
+  return entry.payrollSheet.some((row: any) => row.adjustment !== 0 || row.isManuallyAdded)
 }
 
 // 差引支給額を計算
 function calculateNetAmount(entry: any) {
   if (!entry?.payrollSheet?.length) return 0
   return entry.payrollSheet.reduce((sum: number, row: any) => sum + (row.finalAmount || 0), 0)
+}
+
+// 調整理由が必要な項目に理由が入っているかチェック
+function validateAdjustmentReasons(entry: any): boolean {
+  if (!entry?.payrollSheet?.length) return true
+  for (const row of entry.payrollSheet) {
+    if ((row.adjustment !== 0 || row.isManuallyAdded) && !row.adjustmentReason?.trim()) {
+      return false
+    }
+  }
+  return true
 }
 
 function extractErrorMessage(err: any, fallback: string) {
@@ -616,6 +710,16 @@ async function submitManualHours() {
 
 async function saveResults(){
   if (!runResult.value || !Array.isArray(runResult.value.entries) || runResult.value.entries.length === 0){ return }
+  
+  // 調整理由の必須チェック
+  for (const entry of runResult.value.entries) {
+    if (!validateAdjustmentReasons(entry)) {
+      const name = entry.employeeName || entry.employeeCode || entry.employeeId
+      ElMessage.warning(`${name} の調整項目に理由が入力されていません。調整理由は必須です。`)
+      return
+    }
+  }
+  
   saving.value = true
   error.value = ''
   try{
@@ -842,6 +946,12 @@ onMounted(() => {
   margin-left: auto;
   font-weight: 600;
   color: #67c23a;
+  display: flex;
+  align-items: center;
+}
+
+.entry-amount.has-adjustment {
+  color: #e6a23c;
 }
 
 .entry-content {
