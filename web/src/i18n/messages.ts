@@ -907,7 +907,7 @@ export const ja: Messages = {
   login: {
     title: 'ログイン',
     companyCode: '会社コード',
-    employeeCode: '社員コード',
+    employeeCode: 'アカウント',
     password: 'パスワード',
     submit: 'ログイン',
     required: '会社コード、社員コード、パスワードを入力してください',

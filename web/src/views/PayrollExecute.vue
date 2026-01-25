@@ -41,8 +41,7 @@
         <el-date-picker v-model="month" type="month" value-format="YYYY-MM" placeholder="対象月" class="payroll-filters__month" />
         
         <div class="payroll-filters__switches">
-          <el-checkbox v-model="overwrite">上書き</el-checkbox>
-          <el-checkbox v-model="debug">デバッグ</el-checkbox>
+          <el-checkbox v-model="debug">トレース</el-checkbox>
         </div>
       </div>
       
@@ -167,13 +166,6 @@
         </template>
       </el-dialog>
       
-      <el-alert
-        v-if="runResult?.hasExisting && !overwrite"
-        type="warning"
-        show-icon
-        title="同じ月の給与結果が既に保存されています。上書きする場合は「上書き」をオンにしてください。"
-        style="margin-bottom:12px"
-      />
       
       <!-- 結果表示 -->
       <div v-if="runResult?.entries?.length" class="results-section">
@@ -336,7 +328,7 @@
             </el-row>
               
               <div v-if="debug && entry.trace" class="section-card" style="margin-top:12px">
-                <div class="section-card__header">デバッグトレース</div>
+                <div class="section-card__header">計算トレース</div>
                 <el-table :data="entry.trace" size="small" border max-height="280">
                   <el-table-column prop="step" label="ステップ" width="140" />
                   <el-table-column prop="source" label="ソース" width="80" />
@@ -359,7 +351,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Wallet, CaretRight, FolderChecked, Plus, Delete, Refresh } from '@element-plus/icons-vue'
 import api from '../api'
 
@@ -374,7 +366,6 @@ const saving = ref(false)
 const error = ref('')
 const runResult = ref<any | null>(null)
 const debug = ref(true)
-const overwrite = ref(false)
 const activePanels = ref<string[]>([])
 const canSave = computed(() => !!(runResult.value && Array.isArray(runResult.value.entries) && runResult.value.entries.length > 0))
 const workHourItems = [
@@ -676,6 +667,7 @@ function formatDiff(diff:any){
 async function run(){
   if (!employeeIds.value.length || !month.value){ error.value='社員と月を選択してください'; return }
   loading.value=true; error.value=''; runResult.value=null
+  manualWorkHoursMap.value = {} // 清空手动工时记录
   try{
     const payload:any = { employeeIds: employeeIds.value, month: month.value, debug: debug.value }
     const r = await api.post('/payroll/manual/run', payload)
@@ -729,6 +721,9 @@ async function run(){
   finally{ loading.value=false }
 }
 
+// 手动工时记录（用于重新计算时保留）
+const manualWorkHoursMap = ref<Record<string, { totalHours: number; hourlyRate: number }>>({})
+
 // 提交手动输入的工时
 async function submitManualHours() {
   const dialog = manualHoursDialog.value
@@ -737,77 +732,78 @@ async function submitManualHours() {
     return
   }
   
+  // 保存手动工时到 map
+  manualWorkHoursMap.value[dialog.employeeId] = {
+    totalHours: dialog.totalHours,
+    hourlyRate: dialog.hourlyRate
+  }
+  
+  // 关闭对话框
+  manualHoursDialog.value.visible = false
+  
   loading.value = true
   error.value = ''
   
   try {
-    // 使用手动工时重新计算该员工的工资
+    // 重新计算所有选中的员工，带上已输入的手动工时
     const payload: any = {
-      employeeIds: [dialog.employeeId],
+      employeeIds: employeeIds.value,
       month: month.value,
       debug: debug.value,
-      manualWorkHours: {
-        [dialog.employeeId]: {
-          totalHours: dialog.totalHours,
-          hourlyRate: dialog.hourlyRate
-        }
-      }
+      manualWorkHours: manualWorkHoursMap.value
     }
     
     const r = await api.post('/payroll/manual/run', payload)
     
-    // 关闭对话框
-    manualHoursDialog.value.visible = false
-    
     // 处理结果
-    const newEntries = Array.isArray(r.data?.entries)
-      ? r.data.entries.map((entry: any) => ({
-          ...entry,
-          departmentName: entry.departmentName || r.data.departmentName || '',
-          workHours: entry.workHours || null,
-          warnings: entry.warnings || [],
-          _rawPayrollSheet: entry.payrollSheet || [],
-          _rawAccountingDraft: entry.accountingDraft || [],
-          payrollSheet: (entry.payrollSheet || []).map((row: any) => ({
-            ...row,
-            displayName: row.itemName || row.displayName || row.itemCode,
-            calculatedAmount: row.amount,
-            adjustment: 0,
-            finalAmount: row.amount,
-            adjustmentReason: '',
-            isManuallyAdded: false
-          })),
-          accountingDraft: (entry.accountingDraft || []).map((row: any) => ({
-            ...row,
-            displayAmount: formatAmount(row.amount)
+    runResult.value = {
+      ...r.data,
+      entries: Array.isArray(r.data?.entries)
+        ? r.data.entries.map((entry: any) => ({
+            ...entry,
+            departmentName: entry.departmentName || r.data.departmentName || '',
+            workHours: entry.workHours || null,
+            warnings: entry.warnings || [],
+            _rawPayrollSheet: entry.payrollSheet || [],
+            _rawAccountingDraft: entry.accountingDraft || [],
+            payrollSheet: (entry.payrollSheet || []).map((row: any) => ({
+              ...row,
+              displayName: row.itemName || row.displayName || row.itemCode,
+              calculatedAmount: row.amount,
+              adjustment: 0,
+              finalAmount: row.amount,
+              adjustmentReason: '',
+              isManuallyAdded: false
+            })),
+            accountingDraft: (entry.accountingDraft || []).map((row: any) => ({
+              ...row,
+              displayAmount: formatAmount(row.amount)
+            }))
           }))
-        }))
-      : []
+        : []
+    }
     
-    // 如果已有结果，合并新结果；否则直接设置
-    if (runResult.value?.entries?.length) {
-      // 替换或添加该员工的结果
-      const existingIdx = runResult.value.entries.findIndex((e: any) => e.employeeId === dialog.employeeId)
-      if (existingIdx >= 0) {
-        runResult.value.entries[existingIdx] = newEntries[0]
-      } else {
-        runResult.value.entries.push(...newEntries)
+    // 展开所有员工的面板
+    const panels = Array.isArray(r.data?.entries) ? r.data.entries.map((entry: any) => entry.employeeId) : []
+    activePanels.value = panels
+    
+    ElMessage.success(`${runResult.value.entries.length}名の給与を計算しました`)
+  } catch (e: any) {
+    // 如果还有其他时薪员工需要输入工时，继续弹窗
+    const resp = e?.response?.data
+    if (resp?.error === 'hourly_rate_missing_timesheet' || resp?.payload?.error === 'hourly_rate_missing_timesheet') {
+      const data = resp?.payload || resp
+      manualHoursDialog.value = {
+        visible: true,
+        employeeId: data.employeeId || '',
+        employeeCode: data.employeeCode || '',
+        employeeName: data.employeeName || data.employeeCode || '',
+        hourlyRate: data.hourlyRate || 0,
+        totalHours: 160
       }
     } else {
-      runResult.value = {
-        ...r.data,
-        entries: newEntries
-      }
+      error.value = extractErrorMessage(e, '計算に失敗しました')
     }
-    
-    // 展开该员工的面板
-    if (!activePanels.value.includes(dialog.employeeId)) {
-      activePanels.value.push(dialog.employeeId)
-    }
-    
-    ElMessage.success('計算完了')
-  } catch (e: any) {
-    error.value = extractErrorMessage(e, '計算に失敗しました')
   } finally {
     loading.value = false
   }
@@ -839,13 +835,20 @@ async function saveResults(){
     }
   }
   
+  await doSave(false)
+}
+
+// 実際の保存処理
+async function doSave(overwrite: boolean) {
+  if (!runResult.value) return
+  
   saving.value = true
   error.value = ''
   try{
     const body = {
       month: runResult.value.month || month.value,
       policyId: runResult.value.policyId || null,
-      overwrite: overwrite.value,
+      overwrite: overwrite,
       runType: 'manual',
       entries: runResult.value.entries.map((entry:any)=>{
         // 使用当前显示的 payrollSheet（可能包含调整）
@@ -869,8 +872,11 @@ async function saveResults(){
           return rest
         })
         
-        // 重新计算 totalAmount（基于最终金额）
-        const totalAmount = cleanPayrollSheet.reduce((sum: number, row: any) => sum + (row.amount || 0), 0)
+        // 重新计算 totalAmount（基于最终金额，控除为负）
+        const totalAmount = cleanPayrollSheet.reduce((sum: number, row: any) => {
+          const amount = Math.abs(row.amount || 0)
+          return isDeductionItem(row) ? sum - amount : sum + amount
+        }, 0)
         
         const payload:any = {
           employeeId: entry.employeeId,
@@ -889,14 +895,45 @@ async function saveResults(){
         return payload
       })
     }
-    await api.post('/payroll/manual/save', body)
-    ElMessage.success('保存しました')
-    overwrite.value = false
+    const saveResp = await api.post('/payroll/manual/save', body)
+    const entryCount = saveResp.data?.entryCount || body.entries.length
+    const voucherCount = saveResp.data?.voucherCount ?? 0
+    if (voucherCount < entryCount) {
+      ElMessage.warning(`保存しました（${entryCount}名中${voucherCount}名の仕訳を生成）`)
+    } else {
+      ElMessage.success(`保存しました（${entryCount}名、仕訳${voucherCount}件）`)
+    }
     if (runResult.value){
       runResult.value.hasExisting = true
     }
   }catch(e:any){
-    error.value = extractErrorMessage(e, '保存に失敗しました')
+    // 409 冲突：询问用户是否覆盖
+    if (e?.response?.status === 409 && !overwrite) {
+      saving.value = false
+      try {
+        await ElMessageBox.confirm(
+          '該当月の給与データが既に保存されています。上書きしますか？',
+          '確認',
+          {
+            confirmButtonText: '上書きする',
+            cancelButtonText: 'キャンセル',
+            type: 'warning'
+          }
+        )
+        // 用户确认覆盖
+        await doSave(true)
+      } catch {
+        // 用户取消
+      }
+      return
+    }
+    const resp = e?.response?.data
+    const errMsg = resp?.error || resp?.payload?.error
+    if (typeof errMsg === 'string' && errMsg.includes('会計仕訳に有効な行')) {
+      error.value = '会計仕訳に有効な行がありません。科目コード/金額を確認し、仕訳ドラフトを再計算してから保存してください。'
+    } else {
+      error.value = extractErrorMessage(e, '保存に失敗しました')
+    }
   } finally {
     saving.value = false
   }

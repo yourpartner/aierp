@@ -253,6 +253,7 @@ public sealed class PayrollAgentService : BackgroundService
 
     /// <summary>
     /// Triggers the actual payroll calculation and creates review tasks.
+    /// Uses fault-tolerant approach: skips employees with errors and continues with others.
     /// </summary>
     private async Task TriggerPayrollCalculationAsync(string companyCode, PayrollDecision decision, CancellationToken ct)
     {
@@ -270,34 +271,92 @@ public sealed class PayrollAgentService : BackgroundService
             var payrollTaskService = scope.ServiceProvider.GetRequiredService<PayrollTaskService>();
 
             // 1. Get all employees that need payroll calculation
-            var employeeIds = await payrollService.ResolveEmployeeIdsAsync(companyCode, null, ct);
-            if (employeeIds.Count == 0)
+            var allEmployeeIds = await payrollService.ResolveEmployeeIdsAsync(companyCode, null, ct);
+            if (allEmployeeIds.Count == 0)
             {
                 _logger?.LogWarning("[PayrollAgent] No employees found for {Company}, skipping", companyCode);
                 return;
             }
 
-            _logger?.LogInformation("[PayrollAgent] Found {Count} employees for {Company}", employeeIds.Count, companyCode);
+            _logger?.LogInformation("[PayrollAgent] Found {Count} employees for {Company}", allEmployeeIds.Count, companyCode);
 
-            // 2. Execute payroll calculation (preview)
-            var preview = await payrollService.ManualRunAsync(
-                companyCode,
-                employeeIds.ToList(),
-                decision.Month,
-                policyId: null,  // Use the active policy
-                debug: false,
-                ct);
+            // 2. Execute payroll calculation per employee (fault-tolerant)
+            var successfulEntries = new List<PayrollService.PayrollPreviewEntry>();
+            var failedEmployees = new List<(Guid EmployeeId, string? EmployeeCode, string Reason)>();
+            Guid? policyId = null;
 
-            if (preview.Entries.Count == 0)
+            foreach (var employeeId in allEmployeeIds)
             {
-                _logger?.LogWarning("[PayrollAgent] No payroll entries generated for {Company}", companyCode);
+                try
+                {
+                    var preview = await payrollService.ManualRunAsync(
+                        companyCode,
+                        new List<Guid> { employeeId },
+                        decision.Month,
+                        policyId: policyId,
+                        debug: false,
+                        ct);
+
+                    policyId ??= preview.PolicyId;
+
+                    if (preview.Entries.Count > 0)
+                    {
+                        successfulEntries.AddRange(preview.Entries);
+                    }
+                }
+                catch (PayrollExecutionException pex)
+                {
+                    // Record specific payroll errors (e.g., missing timesheet for hourly workers)
+                    string? empCode = null;
+                    string reason = pex.Message;
+                    
+                    if (pex.Payload is JsonDocument jdoc)
+                    {
+                        if (jdoc.RootElement.TryGetProperty("employeeCode", out var ec))
+                            empCode = ec.GetString();
+                        if (jdoc.RootElement.TryGetProperty("error", out var err))
+                            reason = err.GetString() ?? pex.Message;
+                    }
+                    else if (pex.Payload is { } payload)
+                    {
+                        // Try to extract from anonymous object
+                        var payloadJson = JsonSerializer.Serialize(payload);
+                        using var doc = JsonDocument.Parse(payloadJson);
+                        if (doc.RootElement.TryGetProperty("employeeCode", out var ec))
+                            empCode = ec.GetString();
+                        if (doc.RootElement.TryGetProperty("error", out var err))
+                            reason = err.GetString() ?? pex.Message;
+                    }
+                    
+                    failedEmployees.Add((employeeId, empCode, reason));
+                    _logger?.LogWarning("[PayrollAgent] Skipping employee {EmployeeId} ({Code}): {Reason}",
+                        employeeId, empCode ?? "unknown", reason);
+                }
+                catch (Exception ex)
+                {
+                    failedEmployees.Add((employeeId, null, ex.Message));
+                    _logger?.LogWarning(ex, "[PayrollAgent] Skipping employee {EmployeeId} due to error", employeeId);
+                }
+            }
+
+            if (successfulEntries.Count == 0)
+            {
+                _logger?.LogWarning("[PayrollAgent] No payroll entries generated for {Company}. Failed: {FailedCount}",
+                    companyCode, failedEmployees.Count);
+                
+                // Create alert tasks for failed employees if any
+                if (failedEmployees.Count > 0)
+                {
+                    await CreateFailureAlertTasksAsync(companyCode, decision.Month, failedEmployees, payrollTaskService, sessionId, ct);
+                }
                 return;
             }
 
-            _logger?.LogInformation("[PayrollAgent] Calculated {Count} entries for {Company}", preview.Entries.Count, companyCode);
+            _logger?.LogInformation("[PayrollAgent] Calculated {SuccessCount} entries for {Company} (skipped {FailedCount})",
+                successfulEntries.Count, companyCode, failedEmployees.Count);
 
             // 3. Convert preview entries to save entries
-            var saveEntries = preview.Entries.Select(e => new PayrollService.PayrollManualSaveEntry
+            var saveEntries = successfulEntries.Select(e => new PayrollService.PayrollManualSaveEntry
             {
                 EmployeeId = e.EmployeeId,
                 EmployeeCode = e.EmployeeCode,
@@ -312,7 +371,8 @@ public sealed class PayrollAgentService : BackgroundService
                 {
                     ["triggeredBy"] = "PayrollAgent",
                     ["reason"] = decision.Reason,
-                    ["forcedDueToDeadline"] = decision.ForcedDueToDeadline
+                    ["forcedDueToDeadline"] = decision.ForcedDueToDeadline,
+                    ["skippedEmployees"] = failedEmployees.Count
                 }.ToJsonString()).RootElement
             }).ToList();
 
@@ -330,8 +390,8 @@ public sealed class PayrollAgentService : BackgroundService
             var saveRequest = new PayrollService.PayrollManualSaveRequest
             {
                 Month = decision.Month,
-                PolicyId = preview.PolicyId,
-                Overwrite = false,
+                PolicyId = policyId,
+                Overwrite = true,
                 RunType = "agent",
                 Entries = saveEntries
             };
@@ -341,8 +401,11 @@ public sealed class PayrollAgentService : BackgroundService
             _logger?.LogInformation("[PayrollAgent] Saved payroll run {RunId} with {Count} entries for {Company}",
                 saveResult.RunId, saveResult.EntryCount, companyCode);
 
-            // 6. Create review tasks
-            var taskCandidates = preview.Entries.Select(e =>
+            // 6. Get default reviewer for this company
+            var reviewerId = await GetPayrollReviewerAsync(companyCode, ct);
+
+            // 7. Create review tasks for successful entries
+            var taskCandidates = successfulEntries.Select(e =>
             {
                 saveResult.EntryIdsByEmployeeId.TryGetValue(e.EmployeeId, out var entryId);
                 return new PayrollTaskService.PayrollTaskCandidate(
@@ -364,13 +427,19 @@ public sealed class PayrollAgentService : BackgroundService
                 sessionId,
                 companyCode,
                 saveResult.RunId,
-                targetUserId: null, // Will be assigned to appropriate reviewer
+                targetUserId: reviewerId,
                 taskCandidates,
                 ct);
 
+            // 8. Create alert tasks for failed employees
+            if (failedEmployees.Count > 0)
+            {
+                await CreateFailureAlertTasksAsync(companyCode, decision.Month, failedEmployees, payrollTaskService, sessionId, ct);
+            }
+
             _logger?.LogInformation(
-                "[PayrollAgent] Completed payroll for {Company} month {Month}. RunId: {RunId}, Tasks created: {TaskCount}",
-                companyCode, decision.Month, saveResult.RunId, tasksCreated);
+                "[PayrollAgent] Completed payroll for {Company} month {Month}. RunId: {RunId}, Tasks: {TaskCount}, Skipped: {SkippedCount}",
+                companyCode, decision.Month, saveResult.RunId, tasksCreated, failedEmployees.Count);
         }
         catch (Exception ex)
         {
@@ -378,6 +447,86 @@ public sealed class PayrollAgentService : BackgroundService
                 companyCode, decision.Month);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Creates alert tasks for employees whose payroll calculation failed.
+    /// </summary>
+    private async Task CreateFailureAlertTasksAsync(
+        string companyCode,
+        string month,
+        List<(Guid EmployeeId, string? EmployeeCode, string Reason)> failedEmployees,
+        PayrollTaskService payrollTaskService,
+        Guid sessionId,
+        CancellationToken ct)
+    {
+        var reviewerId = await GetPayrollReviewerAsync(companyCode, ct);
+        
+        var alertCandidates = failedEmployees.Select(f => new PayrollTaskService.PayrollTaskCandidate(
+            EntryId: Guid.Empty, // No entry for failed employees
+            EmployeeId: f.EmployeeId,
+            EmployeeCode: f.EmployeeCode,
+            EmployeeName: f.EmployeeCode, // May not have name
+            PeriodMonth: month,
+            TotalAmount: 0,
+            DiffSummary: null,
+            Summary: $"[要対応] 給与計算失敗: {f.Reason}",
+            NeedsConfirmation: true,
+            IsAnomaly: true,
+            IsCritical: true,
+            AnomalyReason: f.Reason)).ToList();
+
+        if (alertCandidates.Any())
+        {
+            await payrollTaskService.CreateTasksAsync(
+                sessionId,
+                companyCode,
+                runId: Guid.Empty, // No run associated with failed employees
+                targetUserId: reviewerId,
+                alertCandidates,
+                ct);
+            
+            _logger?.LogInformation("[PayrollAgent] Created {AlertCount} alert tasks for failed employees in {Company}",
+                alertCandidates.Count, companyCode);
+        }
+    }
+
+    /// <summary>
+    /// Gets the default payroll reviewer for a company.
+    /// Auto-discovers users with appropriate roles/permissions.
+    /// Priority: hr_admin > payroll:approve > admin
+    /// </summary>
+    private async Task<string?> GetPayrollReviewerAsync(string companyCode, CancellationToken ct)
+    {
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        
+        cmd.CommandText = """
+            SELECT user_id FROM users 
+            WHERE company_code = $1 
+              AND (
+                payload->'caps' @> '["payroll:approve"]'::jsonb
+                OR payload->'roles' @> '["admin"]'::jsonb
+                OR payload->'roles' @> '["hr_admin"]'::jsonb
+              )
+            ORDER BY 
+              CASE WHEN payload->'roles' @> '["hr_admin"]'::jsonb THEN 1
+                   WHEN payload->'caps' @> '["payroll:approve"]'::jsonb THEN 2
+                   ELSE 3 END
+            LIMIT 1
+            """;
+        cmd.Parameters.AddWithValue(companyCode);
+        var result = await cmd.ExecuteScalarAsync(ct);
+        
+        if (result is string userId && !string.IsNullOrWhiteSpace(userId))
+        {
+            _logger?.LogDebug("[PayrollAgent] Auto-discovered reviewer {UserId} for {Company}", userId, companyCode);
+            return userId;
+        }
+
+        // No authorized reviewer found - log error
+        _logger?.LogError("[PayrollAgent] No authorized reviewer (hr_admin/payroll:approve/admin) found for company {Company}. Payroll tasks will be orphaned!", companyCode);
+        return null;
     }
 
     /// <summary>
@@ -404,21 +553,60 @@ public sealed class PayrollAgentService : BackgroundService
 
     /// <summary>
     /// Checks if payroll has already been completed for the given month.
+    /// Returns true only if ALL active employees have payroll entries for the month.
     /// </summary>
     private async Task<bool> IsPayrollCompletedAsync(string companyCode, string month, CancellationToken ct)
     {
         await using var conn = await _ds.OpenConnectionAsync(ct);
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT 1 FROM payroll_runs 
-            WHERE company_code = $1 
-              AND period_month = $2 
-              AND status = 'completed'
-            LIMIT 1
-            """;
-        cmd.Parameters.AddWithValue(companyCode);
-        cmd.Parameters.AddWithValue(month);
-        return await cmd.ExecuteScalarAsync(ct) is not null;
+        
+        // Get count of active employees
+        int activeEmployeeCount;
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT COUNT(*) FROM employees 
+                WHERE company_code = $1 
+                  AND COALESCE(payload->>'status', 'active') <> 'inactive'
+                  AND COALESCE(payload->>'employment_type', '') NOT IN ('contractor', '個人事業主')
+                  AND (payload->>'hire_date' IS NULL OR (payload->>'hire_date')::date <= ($2 || '-01')::date + interval '1 month' - interval '1 day')
+                  AND (payload->>'leave_date' IS NULL OR (payload->>'leave_date')::date >= ($2 || '-01')::date)
+                """;
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(month);
+            activeEmployeeCount = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct) ?? 0);
+        }
+
+        if (activeEmployeeCount == 0)
+        {
+            return true; // No employees to calculate
+        }
+
+        // Get count of employees with payroll entries for this month
+        int calculatedCount;
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT COUNT(DISTINCT pe.employee_id) 
+                FROM payroll_entries pe
+                JOIN payroll_runs pr ON pe.run_id = pr.id
+                WHERE pr.company_code = $1 
+                  AND pr.period_month = $2
+                  AND pr.run_type IN ('manual', 'agent', 'auto')
+                """;
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(month);
+            calculatedCount = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct) ?? 0);
+        }
+
+        var isComplete = calculatedCount >= activeEmployeeCount;
+        
+        if (!isComplete)
+        {
+            _logger?.LogDebug("[PayrollAgent] Payroll incomplete for {Company} {Month}: {Calculated}/{Total} employees",
+                companyCode, month, calculatedCount, activeEmployeeCount);
+        }
+
+        return isComplete;
     }
 
     /// <summary>

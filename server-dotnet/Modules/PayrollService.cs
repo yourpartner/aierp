@@ -243,9 +243,9 @@ public sealed class PayrollService
     }
 
     /// <summary>
-    /// Response returned after saving payroll results, exposing run id and entry map.
+    /// Response returned after saving payroll results, exposing run id, entry map, and voucher count.
     /// </summary>
-    public sealed record PayrollManualSaveResult(Guid RunId, int EntryCount, IReadOnlyDictionary<Guid, Guid> EntryIdsByEmployeeId);
+    public sealed record PayrollManualSaveResult(Guid RunId, int EntryCount, int VoucherCount, IReadOnlyDictionary<Guid, Guid> EntryIdsByEmployeeId);
 
     /// <summary>
     /// Internal structure representing the voucher created for a payroll entry.
@@ -300,8 +300,12 @@ public sealed class PayrollService
         Dictionary<Guid, VoucherLink> voucherLinks;
         try
         {
+            var voucherSource = string.Equals(runType, "manual", StringComparison.OrdinalIgnoreCase)
+                ? VoucherSource.Manual
+                : VoucherSource.Auto;
+            var targetUserId = voucherSource == VoucherSource.Auto ? userCtx?.UserId : null;
             _logger?.LogDebug("[Payroll] Creating voucher links for {Count} entries", request.Entries.Count);
-            voucherLinks = await CreateVoucherLinksAsync(companyCode, request.Month, request.Entries, userCtx, ct);
+            voucherLinks = await CreateVoucherLinksAsync(companyCode, request.Month, request.Entries, userCtx, voucherSource, targetUserId, ct);
             _logger?.LogDebug("[Payroll] Created {Count} voucher links", voucherLinks.Count);
         }
         catch (PayrollExecutionException)
@@ -463,7 +467,7 @@ public sealed class PayrollService
             throw;
         }
 
-        return new PayrollManualSaveResult(runId, request.Entries.Count, entryMap);
+        return new PayrollManualSaveResult(runId, request.Entries.Count, voucherLinks.Count, entryMap);
     }
 
     /// <summary>
@@ -812,6 +816,8 @@ public sealed class PayrollService
         string month,
         IReadOnlyList<PayrollManualSaveEntry> entries,
         Auth.UserCtx? userCtx,
+        VoucherSource source,
+        string? targetUserId,
         CancellationToken ct)
     {
         var links = new Dictionary<Guid, VoucherLink>();
@@ -827,14 +833,22 @@ public sealed class PayrollService
             {
                 if (entry.AccountingDraft.ValueKind != JsonValueKind.Array) continue;
                 var payload = BuildVoucherPayload(entry, postingDate, month);
-                if (payload is null) continue;
+                if (payload is null)
+                {
+                    // Accounting draft exists but no valid lines -> fail fast
+                    if (entry.AccountingDraft.GetArrayLength() > 0)
+                    {
+                        throw new PayrollExecutionException(StatusCodes.Status400BadRequest,
+                            new { error = "会計仕訳に有効な行がありません。科目コード/金額を確認してください。" }, "invalid_accounting_draft");
+                    }
+                    continue;
+                }
 
                 var payloadJson = payload.ToJsonString();
                 using var payloadDoc = JsonDocument.Parse(payloadJson);
-                // Payroll 是后台自动场景，传入 targetUserId 以便创建警报任务
                 var (insertedJson, _) = await _finance.CreateVoucher(
                     companyCode, "vouchers", payloadDoc.RootElement, actor,
-                    VoucherSource.Auto, targetUserId: actor.UserId);
+                    source, targetUserId: targetUserId);
                 using var insertedDoc = JsonDocument.Parse(insertedJson);
                 var root = insertedDoc.RootElement;
 
