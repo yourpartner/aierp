@@ -947,6 +947,11 @@ public static class HrPayrollModule
             var companyCode = req.HttpContext.User.FindFirst("company")?.Value ?? "default";
             using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
             var root = doc.RootElement;
+            Guid? employeeId = null;
+            if (root.TryGetProperty("employeeId", out var empIdEl) && empIdEl.ValueKind == JsonValueKind.String)
+            {
+                if (Guid.TryParse(empIdEl.GetString(), out var empId)) employeeId = empId;
+            }
             
             // 获取 payrollSheet
             if (!root.TryGetProperty("payrollSheet", out var sheetEl) || sheetEl.ValueKind != JsonValueKind.Array)
@@ -976,6 +981,16 @@ public static class HrPayrollModule
             
             // 获取活跃的 Policy 的 journalRules
             await using var conn = await ds.OpenConnectionAsync(ct);
+            
+            // 如果没有 company claim，则通过 employeeId 获取 company_code
+            if ((string.IsNullOrWhiteSpace(companyCode) || companyCode == "default") && employeeId.HasValue)
+            {
+                await using var qe = conn.CreateCommand();
+                qe.CommandText = "SELECT company_code FROM employees WHERE id=$1 LIMIT 1";
+                qe.Parameters.AddWithValue(employeeId.Value);
+                var cc = (string?)await qe.ExecuteScalarAsync(ct);
+                if (!string.IsNullOrWhiteSpace(cc)) companyCode = cc;
+            }
             string? policyJson = null;
             await using (var q = conn.CreateCommand())
             {

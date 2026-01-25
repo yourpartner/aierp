@@ -590,6 +590,7 @@ async function regenerateJournal(entry: any) {
         amount: isDeductionItem(row) ? Math.abs(row.finalAmount || 0) : (row.finalAmount || 0),
         finalAmount: row.finalAmount
       })),
+      employeeId: entry.employeeId,
       employeeCode: entry.employeeCode,
       departmentCode: entry.departmentCode,
       departmentName: entry.departmentName
