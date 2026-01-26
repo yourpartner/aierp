@@ -834,7 +834,7 @@
             </div>
           </div>
         </section>
-        <el-dialog v-model="modalOpen" :title="modal.title" width="auto" append-to-body destroy-on-close @closed="onModalClosed" class="embed-dialog">
+        <el-dialog v-model="modalOpen" :title="modal.title" width="auto" append-to-body destroy-on-close @closed="onModalClosed" class="embed-dialog" :close-on-click-modal="true">
           <template #header></template>
           <component v-if="modal.key" :is="resolveComp(modal.key)" :key="modal.renderKey" ref="modalRef" @done="onModalDone" />
         </el-dialog>
@@ -6535,6 +6535,7 @@ function onChatDragLeave(){
   overflow-y: auto !important;
   overflow-x: hidden !important;
   padding: 3vh 0 !important;
+  pointer-events: auto !important;
 }
 
 .el-overlay-dialog .el-dialog.embed-dialog {
