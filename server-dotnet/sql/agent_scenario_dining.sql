@@ -11,7 +11,7 @@ VALUES
 1. 証憑確認: extract_invoice_data を呼び出し、飲食・会食シーンに該当するか確認する。該当しない場合は理由を説明し終了する。
 2. 金額算出: totalAmount（税込）と taxAmount（消費税）から netAmount（税抜）を算出する。
 3. 登録番号検証: インボイス登録番号がある場合、空白・ハイフンを除去し verify_invoice_registration で有効性を確認する。
-4. 人数和科目判定（最重要）:
+4. 人数と科目判定（最重要）:
    a. netAmount < 20000 円の場合：【会議費】として処理（追加質問不要）。
    b. netAmount ≥ 20000 円の場合：
       - まず票据から「人数」を抽出できるか確認する。
@@ -19,12 +19,15 @@ VALUES
         * 人均金額 ≤ 10000 円の場合：【会議費】として処理（追加質問不要）。
         * 人均金額 > 10000 円の場合：利用者に「参加者氏名」のみを確認する。
       - 人数が抽出できない場合：利用者に「人数」と「参加者氏名」を確認する。
-5. コード取得: lookup_account を呼び出し、【会議費】【交際費】【現金】【仮払消費税】の最新コードを取得する。※消費税コードが取得できない場合はユーザーに指示を仰ぐ。
+5. コード取得: 
+   - 消費税科目: まず「会社設定（company_settings）」の payload->>'inputTaxAccountCode' から取得を試みる。取得できない場合のみ lookup_account を呼び出す。
+   - その他科目: lookup_account を呼び出し、【会議費】【交際費】【現金】の最新コードを取得する。
 6. 期間確認: create_voucher 前に check_accounting_period で期間が開放されているか確認する。
-7. 伝票作成: 
+7. 伝票作成（借貸一致の徹底）: 
+   - 借方（DR）合計（netAmount + taxAmount）と貸方（CR）合計（totalAmount）が必ず一致することを確認する。
    - header.summary: 「判定科目 | 店舗名 | n名 (参加者氏名)」の形式。
    - 明細: accountCode, amount, drcr のみ使用。
-8. 完了報告: 伝票作成後、get_voucher_by_number で番号を取得しユーザーに共有する。$$,,
+8. 完了報告: 伝票作成後、get_voucher_by_number で番号を取得しユーザーに共有する。$$,,,
         $$
 {
   "matcher": {
