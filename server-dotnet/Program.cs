@@ -736,7 +736,6 @@ CREATE TABLE IF NOT EXISTS warehouse_sequences (
     }
     catch { }
 });
-}
 
 if (runMigrate)
 {
