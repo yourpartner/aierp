@@ -281,8 +281,17 @@ app.MapMethods("/{**any}", new[]{"OPTIONS"}, (HttpContext ctx) =>
     return Results.StatusCode(StatusCodes.Status403Forbidden);
 });
 
-// Run the embedded migration script at startup to ensure tables/indexes/generated columns/seed data
-// exist (idempotent). In production this can be replaced with a formal migration pipeline.
+// Migration is intentionally NOT auto-executed on startup.
+// To run migrate.sql (and the related fallback seed/migration helpers), explicitly set:
+// - env var: YANXIA_RUN_MIGRATE=1  (or true)
+// then restart the service.
+//
+// This prevents accidental overwrites of production data by migrate.sql seeds/updates.
+var runMigrate =
+    string.Equals(Environment.GetEnvironmentVariable("YANXIA_RUN_MIGRATE"), "1", StringComparison.OrdinalIgnoreCase) ||
+    string.Equals(Environment.GetEnvironmentVariable("YANXIA_RUN_MIGRATE"), "true", StringComparison.OrdinalIgnoreCase);
+
+if (runMigrate)
 app.Lifetime.ApplicationStarted.Register(async () =>
 {
     try
@@ -727,7 +736,10 @@ CREATE TABLE IF NOT EXISTS warehouse_sequences (
     }
     catch { }
 });
+}
 
+if (runMigrate)
+{
 // Additional fallback: create inventory/material tables if the main migration failed (idempotent).
 app.Lifetime.ApplicationStarted.Register(async () =>
 {
@@ -849,6 +861,7 @@ CREATE TABLE IF NOT EXISTS inventory_balances (
     }
     catch { }
 });
+}
 
 // Register HR payroll endpoints.
 // app.MapHrPayrollModule(); // Registered via PayrollStandardModule
