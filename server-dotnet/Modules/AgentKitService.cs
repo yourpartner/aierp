@@ -4357,6 +4357,7 @@ public sealed class AgentKitService
 - taxRate: 税率（百分数，整数）；
 - items: 明细数组，每项含 description、amount；
 - invoiceRegistrationNo: 如果看到符合 ^T\d{13}$ 的号码请注明；
+- guestCount: 就餐人数(票据上若有2名様或X名等记载则提取数字,否则返回0);
 - headerSummarySuggestion: 若能生成合理的凭证抬头摘要（例如“交通費 | 手段/会社名 | 起点→終点”或“会議費 | 店名 | 用途”），请给出。若缺乏必要信息则返回空字符串。
 - lineMemoSuggestion: 若能为主要会计分录提供简洁备注（例如“タクシー料金 8/9 墨田→上野”），请给出，缺少信息则留空。
 - memo: 其他补充说明。
@@ -4372,6 +4373,7 @@ public sealed class AgentKitService
 - taxRate: 税率（パーセンテージ、整数）
 - items: 明細配列。各要素は description と amount を含む
 - invoiceRegistrationNo: ^T\d{13}$ に一致する番号があれば記載
+- guestCount: 飲食の人数(証憑に2名様やX名等の記載があれば数値として抽出、なければ0)
 - headerSummarySuggestion: 伝票ヘッダーに適したサマリー（例：「交通費 | 手段/会社名 | 起点→終点」「会議費 | 店名 | 用途」）。情報不足なら空文字
 - lineMemoSuggestion: 主要仕訳行の簡潔なメモ（例：「タクシー料金 8/9 墨田→上野」）。情報不足なら空文字
 - memo: その他の補足

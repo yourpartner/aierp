@@ -14,20 +14,29 @@ VALUES
 4. 人数と科目判定（最重要）:
    a. netAmount < 20000 円の場合：【会議費】として処理（追加質問不要）。
    b. netAmount ≥ 20000 円の場合：
-      - まず票据から「人数」を抽出できるか確認する。
-      - 人数が抽出できた場合：直ちに「人均金額 = netAmount ÷ 人数」を計算する。
+      - extract_invoice_data の結果に含まれる guestCount を確認する。
+      - guestCount > 0 の場合（人数が票据から抽出できた場合）：
+        * 直ちに「人均金額 = netAmount ÷ guestCount」を計算する。
         * 人均金額 ≤ 10000 円の場合：【会議費】として処理（追加質問不要）。
         * 人均金額 > 10000 円の場合：利用者に「参加者氏名」のみを確認する。
-      - 人数が抽出できない場合：利用者に「人数」と「参加者氏名」を確認する。
-5. コード取得: 
-   - 消費税科目: まず「会社設定（company_settings）」の payload->>'inputTaxAccountCode' から取得を試みる。取得できない場合のみ lookup_account を呼び出す。
-   - その他科目: lookup_account を呼び出し、【会議費】【交際費】【現金】の最新コードを取得する。
+      - guestCount = 0 の場合（人数が票据から抽出できなかった場合）：
+        * 利用者に「人数」と「参加者氏名」を確認する。
+5. コード取得（重要：必ず日本語科目名を使用）: 
+   - 消費税科目: まず「会社設定（company_settings）」の payload->>'inputTaxAccountCode' から取得を試みる。取得できない場合のみ lookup_account(name='仮払消費税') を呼び出す。
+   - 費用科目: lookup_account を呼び出す際、必ず日本語の科目名を使用すること。
+     * 会議費の場合: lookup_account(name='会議費')
+     * 交際費の場合: lookup_account(name='交際費')
+   - 貸方科目: lookup_account(name='現金') または lookup_account(name='未払金')
+   ※「dining」「meal」等の英語名での検索は絶対に行わないこと。
 6. 期間確認: create_voucher 前に check_accounting_period で期間が開放されているか確認する。
 7. 伝票作成（借貸一致の徹底）: 
    - 借方（DR）合計（netAmount + taxAmount）と貸方（CR）合計（totalAmount）が必ず一致することを確認する。
-   - header.summary: 「判定科目 | 店舗名 | n名 (参加者氏名)」の形式。
+   - header.summary: 自分で生成すること（headerSummarySuggestionを使わない）。
+     * 参加者氏名がある場合：「科目 | 店舗名 | n名 (氏名)」例：「交際費 | 寿司堂 | 2名 (田中・山田)」
+     * 人数のみの場合：「科目 | 店舗名 | n名」例：「会議費 | 寿司堂 | 2名」
+     * 人数も不明の場合：「科目 | 店舗名」例：「会議費 | 寿司堂」
    - 明細: accountCode, amount, drcr のみ使用。
-8. 完了報告: 伝票作成後、get_voucher_by_number で番号を取得しユーザーに共有する。$$,,,
+8. 完了報告: 伝票作成後、get_voucher_by_number で番号を取得しユーザーに共有する。$$,
         $$
 {
   "matcher": {

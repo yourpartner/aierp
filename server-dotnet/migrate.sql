@@ -560,8 +560,8 @@ INSERT INTO accounts (company_code, payload)
 VALUES (
   'JP01',
   '{
-    "code": "6610",
-    "name": "雑費",
+    "code": "869",
+    "name": "支払手数料",
     "category": "PL",
     "openItem": false,
     "fieldRules": {
@@ -579,8 +579,8 @@ INSERT INTO accounts (company_code, payload)
 VALUES (
   'JP01',
   '{
-    "code": "1410",
-    "name": "仮払金",
+    "code": "189",
+    "name": "仮払消費税",
     "category": "BS",
     "openItem": false,
     "fieldRules": {
@@ -1314,16 +1314,15 @@ BEGIN
     SELECT 1 FROM moneytree_posting_rules WHERE company_code = 'JP01' AND title = '振込手数料-雑費'
   ) THEN
     UPDATE moneytree_posting_rules
-    SET description = '振込手数料を雑費で処理。支払と配対できない場合のフォールバック用。消費税10%を自動拆分。',
+    SET description = '振込手数料を支払手数料で処理。支払と配対できない場合のフォールバック用。消費税10%を自動分離。',
         action = '{
-          "debitAccount": "6610",
+          "debitAccount": "869",
           "creditAccount": "{bankAccount}",
           "summaryTemplate": "振込手数料 {description}",
           "postingDate": "transactionDate",
           "debitNote": "{description}",
           "creditNote": "{description}",
-          "inputTaxAccountCode": "1410",
-          "bankFeeAccountCode": "6610"
+          "bankFeeAccountCode": "869"
         }'::jsonb,
         updated_at = now()
     WHERE company_code = 'JP01' AND title = '振込手数料-雑費';
@@ -1332,18 +1331,17 @@ BEGIN
     VALUES (
       'JP01',
       '振込手数料-雑費',
-      '振込手数料を雑費で処理。支払と配対できない場合のフォールバック用。消費税10%を自動拆分。',
+      '振込手数料を支払手数料で処理。支払と配対できない場合のフォールバック用。消費税10%を自動分離。',
       10,
       '{"descriptionContains":["振込手数料"]}'::jsonb,
       '{
-        "debitAccount": "6610",
+        "debitAccount": "869",
         "creditAccount": "{bankAccount}",
         "summaryTemplate": "振込手数料 {description}",
         "postingDate": "transactionDate",
         "debitNote": "{description}",
         "creditNote": "{description}",
-        "inputTaxAccountCode": "1410",
-        "bankFeeAccountCode": "6610"
+        "bankFeeAccountCode": "869"
       }'::jsonb,
       TRUE,
       'system',

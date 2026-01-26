@@ -16,8 +16,8 @@ DECLARE
     v_salary_payable TEXT := '2130';  -- 未払給与
     v_interest_income TEXT := '8100';  -- 受取利息
     v_suspense_receipt TEXT := '2190';  -- 仮受金
-    v_fee_account TEXT := '6610';  -- 雑費（手续费）
-    v_input_tax TEXT := '1410';  -- 仮払消費税
+    v_fee_account TEXT := '869';  -- 支払手数料（银行手续费）
+    v_input_tax TEXT := NULL;  -- 消费税科目设为 NULL，迫使系统从公司设置获取
 BEGIN
 
 -- ============================================================
