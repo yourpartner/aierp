@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -292,21 +292,36 @@ public static class HrPayrollModule
         public string? LawNote { get; }
     }
 
-    private readonly struct WithholdingBracket
+    // 別表第一甲欄 税額表エントリ（查表/公式共用）
+    private readonly struct WithholdingTableEntry
     {
-        public WithholdingBracket(decimal min, decimal? max, decimal rate, decimal deduction, string version)
+        public WithholdingTableEntry(
+            decimal min,
+            decimal? max,
+            int dependents,
+            decimal taxAmount,
+            string calcType,
+            decimal? baseTax,
+            decimal? rate,
+            string version)
         {
             Min = min;
             Max = max;
+            Dependents = dependents;
+            TaxAmount = taxAmount;
+            CalcType = calcType;
+            BaseTax = baseTax;
             Rate = rate;
-            Deduction = deduction;
             Version = version;
         }
 
         public decimal Min { get; }
         public decimal? Max { get; }
-        public decimal Rate { get; }
-        public decimal Deduction { get; }
+        public int Dependents { get; }
+        public decimal TaxAmount { get; }
+        public string CalcType { get; }
+        public decimal? BaseTax { get; }
+        public decimal? Rate { get; }
         public string Version { get; }
     }
 
@@ -2237,6 +2252,771 @@ LIMIT @pageSize OFFSET @offset";
             var map = items.ToDictionary(k => k!, v => new { accountCode = (string?)null, contraAccountCode = (string?)null });
             return Results.Ok(new { suggestions = map, note = "placeholder suggestions" });
         }).RequireAuthorization();
+
+        // ============================================================
+        // 住民税管理 API（Resident Tax Management）
+        // ============================================================
+
+        // POST /resident-tax/parse-image
+        // 通过 AI 识别住民税税单图片，提取结构化数据
+        app.MapPost("/resident-tax/parse-image", async (HttpRequest req, NpgsqlDataSource ds, IConfiguration cfg, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+            var companyCode = cc.ToString();
+
+            var apiKey = cfg["OpenAI:ApiKey"];
+            if (string.IsNullOrWhiteSpace(apiKey))
+                return Results.StatusCode(500);
+
+            // 解析上传的图片
+            var imgs = new List<string>();
+            bool autoSave = true;
+            if (req.HasFormContentType)
+            {
+                var form = await req.ReadFormAsync(ct);
+                foreach (var f in form.Files)
+                {
+                    using var ms = new MemoryStream();
+                    await f.CopyToAsync(ms, ct);
+                    var bytes = ms.ToArray();
+                    var mime = string.IsNullOrWhiteSpace(f.ContentType) ? "image/jpeg" : f.ContentType;
+                    var b64 = Convert.ToBase64String(bytes);
+                    imgs.Add($"data:{mime};base64,{b64}");
+                }
+                if (form.TryGetValue("autoSave", out var autoSaveVal) && !string.IsNullOrWhiteSpace(autoSaveVal))
+                {
+                    if (bool.TryParse(autoSaveVal.ToString(), out var parsed)) autoSave = parsed;
+                }
+            }
+            else
+            {
+                using var body = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
+                var root = body.RootElement;
+                if (root.TryGetProperty("images", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var it in arr.EnumerateArray())
+                    {
+                        if (it.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(it.GetString()))
+                            imgs.Add(it.GetString()!);
+                    }
+                }
+                else if (root.TryGetProperty("imageBase64", out var b64) && b64.ValueKind == JsonValueKind.String)
+                {
+                    var val = b64.GetString();
+                    if (!string.IsNullOrWhiteSpace(val)) imgs.Add(val!);
+                }
+                if (root.TryGetProperty("autoSave", out var autoSaveNode) && autoSaveNode.ValueKind == JsonValueKind.True)
+                {
+                    autoSave = true;
+                }
+                else if (root.TryGetProperty("autoSave", out autoSaveNode) && autoSaveNode.ValueKind == JsonValueKind.False)
+                {
+                    autoSave = false;
+                }
+            }
+            if (imgs.Count == 0)
+                return Results.BadRequest(new { error = "images required" });
+
+            // 获取员工列表供 AI 匹配
+            var employees = new List<object>();
+            await using (var conn = await ds.OpenConnectionAsync(ct))
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = "SELECT id, employee_code, payload->>'nameKanji' as name_kanji, payload->>'nameKana' as name_kana FROM employees WHERE company_code=$1";
+                cmd.Parameters.AddWithValue(companyCode);
+                await using var rd = await cmd.ExecuteReaderAsync(ct);
+                while (await rd.ReadAsync(ct))
+                {
+                    employees.Add(new
+                    {
+                        id = rd.GetGuid(0).ToString(),
+                        code = rd.IsDBNull(1) ? "" : rd.GetString(1),
+                        nameKanji = rd.IsDBNull(2) ? "" : rd.GetString(2),
+                        nameKana = rd.IsDBNull(3) ? "" : rd.GetString(3)
+                    });
+                }
+            }
+
+            var sysPrompt = @"你是住民税税单（特別徴収税額通知書）解析助手。请从图片中提取住民税信息。
+
+员工列表（用于匹配）：
+" + JsonSerializer.Serialize(employees) + @"
+
+请识别图片中的以下信息并返回 JSON：
+{
+  ""success"": true/false,
+  ""rawText"": ""识别的原始文本"",
+  ""entries"": [
+    {
+      ""employeeId"": ""匹配到的员工ID（从员工列表中匹配）"",
+      ""employeeCode"": ""员工编号"",
+      ""employeeName"": ""纳税义务者姓名"",
+      ""fiscalYear"": 2025,  // 年度（如 2025 代表 2025年6月~2026年5月）
+      ""municipalityCode"": ""市区町村コード"",
+      ""municipalityName"": ""市区町村名"",
+      ""annualAmount"": 240000,  // 年税額
+      ""juneAmount"": 20800,     // 6月
+      ""julyAmount"": 19900,     // 7月
+      ""augustAmount"": 19900,   // 8月
+      ""septemberAmount"": 19900, // 9月
+      ""octoberAmount"": 19900,  // 10月
+      ""novemberAmount"": 19900, // 11月
+      ""decemberAmount"": 19900, // 12月
+      ""januaryAmount"": 19900,  // 1月
+      ""februaryAmount"": 19900, // 2月
+      ""marchAmount"": 19900,    // 3月
+      ""aprilAmount"": 19900,    // 4月
+      ""mayAmount"": 19900,      // 5月
+      ""confidence"": 0.95,
+      ""matchReason"": ""匹配原因说明""
+    }
+  ],
+  ""warnings"": [""任何警告信息""]
+}
+
+注意：
+1. 住民税年度从6月开始到次年5月结束
+2. 6月的金额通常与其他月份不同（有余数调整）
+3. 尽量匹配员工列表中的员工，如果无法匹配则 employeeId 留空
+4. 一张税单可能包含多个员工的数据";
+
+            var http = httpClientFactory.CreateClient("openai");
+            Server.Infrastructure.OpenAiApiHelper.SetOpenAiHeaders(http, apiKey);
+
+            var contentParts = new List<object>();
+            contentParts.Add(new { type = "text", text = "请解析这张住民税税单图片" });
+            foreach (var im in imgs)
+            {
+                var url = im.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ? im : ("data:image/jpeg;base64," + im);
+                contentParts.Add(new { type = "image_url", image_url = new { url } });
+            }
+
+            var messages = new object[]
+            {
+                new { role = "system", content = sysPrompt },
+                new { role = "user", content = contentParts.ToArray() }
+            };
+
+            var openAiResponse = await Server.Infrastructure.OpenAiApiHelper.CallOpenAiAsync(
+                http, apiKey, "gpt-4o", messages, temperature: 0, maxTokens: 4096, jsonMode: true, ct: ct);
+
+            if (string.IsNullOrWhiteSpace(openAiResponse.Content))
+                return Results.StatusCode(500);
+
+            try
+            {
+                var parseOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var parseResult = JsonSerializer.Deserialize<ResidentTaxParseResult>(openAiResponse.Content, parseOptions)
+                                  ?? new ResidentTaxParseResult { Success = false };
+                parseResult.Entries ??= new List<ResidentTaxParseEntry>();
+                parseResult.Warnings ??= new List<string>();
+
+                if (autoSave)
+                {
+                    int savedCount = 0, duplicateCount = 0, errorCount = 0;
+                    await using var conn = await ds.OpenConnectionAsync(ct);
+
+                    foreach (var entry in parseResult.Entries)
+                    {
+                        var resolvedEmployeeId = await ResolveResidentTaxEmployeeIdAsync(conn, companyCode, entry, ct);
+                        if (!resolvedEmployeeId.HasValue)
+                        {
+                            entry.SaveStatus = "error";
+                            entry.SaveMessage = "employee_not_matched";
+                            errorCount++;
+                            continue;
+                        }
+                        entry.EmployeeId = resolvedEmployeeId.Value.ToString();
+
+                        if (entry.FiscalYear < 2000 || entry.FiscalYear > 2100)
+                        {
+                            entry.SaveStatus = "error";
+                            entry.SaveMessage = "invalid_fiscal_year";
+                            errorCount++;
+                            continue;
+                        }
+
+                        var insertResult = await TryInsertResidentTaxAsync(conn, companyCode, resolvedEmployeeId.Value, entry, ct);
+                        if (insertResult.insertedId.HasValue)
+                        {
+                            entry.SaveStatus = "saved";
+                            entry.SavedId = insertResult.insertedId.Value.ToString();
+                            savedCount++;
+                        }
+                        else
+                        {
+                            entry.SaveStatus = "duplicate";
+                            entry.ExistingId = insertResult.existingId?.ToString();
+                            duplicateCount++;
+                        }
+                    }
+
+                    parseResult.AutoSaved = true;
+                    parseResult.SavedCount = savedCount;
+                    parseResult.DuplicateCount = duplicateCount;
+                    parseResult.ErrorCount = errorCount;
+                }
+
+                return Results.Text(JsonSerializer.Serialize(parseResult, new JsonSerializerOptions(JsonSerializerDefaults.Web)), "application/json");
+            }
+            catch
+            {
+                return Results.Text("{\"success\":false,\"error\":\"解析失败\"}", "application/json");
+            }
+        }).RequireAuthorization();
+
+        // GET /resident-tax
+        // 列出住民税数据，支持筛选
+        app.MapGet("/resident-tax", async (HttpRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+            var companyCode = cc.ToString();
+
+            var fiscalYear = req.Query["fiscalYear"].ToString();
+            var employeeId = req.Query["employeeId"].ToString();
+            var status = req.Query["status"].ToString();
+            var page = int.TryParse(req.Query["page"], out var p) ? p : 1;
+            var pageSize = int.TryParse(req.Query["pageSize"], out var ps) ? ps : 50;
+
+            var conditions = new List<string> { "rt.company_code = $1" };
+            var parameters = new List<object> { companyCode };
+            var paramIndex = 2;
+
+            if (!string.IsNullOrWhiteSpace(fiscalYear) && int.TryParse(fiscalYear, out var fy))
+            {
+                conditions.Add($"rt.fiscal_year = ${paramIndex++}");
+                parameters.Add(fy);
+            }
+            if (!string.IsNullOrWhiteSpace(employeeId) && Guid.TryParse(employeeId, out var eid))
+            {
+                conditions.Add($"rt.employee_id = ${paramIndex++}");
+                parameters.Add(eid);
+            }
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                conditions.Add($"rt.status = ${paramIndex++}");
+                parameters.Add(status);
+            }
+
+            var whereClause = string.Join(" AND ", conditions);
+            var offset = (page - 1) * pageSize;
+
+            await using var conn = await ds.OpenConnectionAsync(ct);
+
+            // 获取总数
+            int total;
+            await using (var countCmd = conn.CreateCommand())
+            {
+                countCmd.CommandText = $"SELECT COUNT(*) FROM resident_tax_schedules rt WHERE {whereClause}";
+                for (int i = 0; i < parameters.Count; i++)
+                    countCmd.Parameters.AddWithValue(parameters[i]);
+                total = Convert.ToInt32(await countCmd.ExecuteScalarAsync(ct));
+            }
+
+            // 获取数据
+            var data = new List<object>();
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = $@"
+                    SELECT rt.id, rt.employee_id, rt.fiscal_year, rt.municipality_code, rt.municipality_name,
+                           rt.annual_amount, rt.june_amount, rt.july_amount, rt.august_amount, rt.september_amount,
+                           rt.october_amount, rt.november_amount, rt.december_amount, rt.january_amount,
+                           rt.february_amount, rt.march_amount, rt.april_amount, rt.may_amount,
+                           rt.status, rt.notes, rt.created_at, rt.updated_at,
+                           e.employee_code, e.payload->>'nameKanji' as employee_name
+                    FROM resident_tax_schedules rt
+                    LEFT JOIN employees e ON e.id = rt.employee_id AND e.company_code = rt.company_code
+                    WHERE {whereClause}
+                    ORDER BY rt.fiscal_year DESC, e.employee_code ASC
+                    LIMIT {pageSize} OFFSET {offset}";
+                for (int i = 0; i < parameters.Count; i++)
+                    cmd.Parameters.AddWithValue(parameters[i]);
+
+                await using var rd = await cmd.ExecuteReaderAsync(ct);
+                while (await rd.ReadAsync(ct))
+                {
+                    data.Add(new
+                    {
+                        id = rd.GetGuid(0),
+                        employeeId = rd.GetGuid(1),
+                        fiscalYear = rd.GetInt32(2),
+                        municipalityCode = rd.IsDBNull(3) ? null : rd.GetString(3),
+                        municipalityName = rd.IsDBNull(4) ? null : rd.GetString(4),
+                        annualAmount = rd.GetDecimal(5),
+                        juneAmount = rd.GetDecimal(6),
+                        julyAmount = rd.GetDecimal(7),
+                        augustAmount = rd.GetDecimal(8),
+                        septemberAmount = rd.GetDecimal(9),
+                        octoberAmount = rd.GetDecimal(10),
+                        novemberAmount = rd.GetDecimal(11),
+                        decemberAmount = rd.GetDecimal(12),
+                        januaryAmount = rd.GetDecimal(13),
+                        februaryAmount = rd.GetDecimal(14),
+                        marchAmount = rd.GetDecimal(15),
+                        aprilAmount = rd.GetDecimal(16),
+                        mayAmount = rd.GetDecimal(17),
+                        status = rd.IsDBNull(18) ? "active" : rd.GetString(18),
+                        notes = rd.IsDBNull(19) ? null : rd.GetString(19),
+                        createdAt = rd.GetDateTime(20),
+                        updatedAt = rd.GetDateTime(21),
+                        employeeCode = rd.IsDBNull(22) ? null : rd.GetString(22),
+                        employeeName = rd.IsDBNull(23) ? null : rd.GetString(23)
+                    });
+                }
+            }
+
+            return Results.Ok(new { data, total, page, pageSize });
+        }).RequireAuthorization();
+
+        // POST /resident-tax
+        // 创建住民税记录（带重复检测）
+        app.MapPost("/resident-tax", async (HttpRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+            var companyCode = cc.ToString();
+
+            using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
+            var root = doc.RootElement;
+
+            var employeeIdStr = root.TryGetProperty("employeeId", out var eid) && eid.ValueKind == JsonValueKind.String ? eid.GetString() : null;
+            var fiscalYear = root.TryGetProperty("fiscalYear", out var fy) && fy.ValueKind == JsonValueKind.Number ? fy.GetInt32() : 0;
+
+            if (string.IsNullOrWhiteSpace(employeeIdStr) || !Guid.TryParse(employeeIdStr, out var employeeId))
+                return Results.BadRequest(new { error = "employeeId required" });
+            if (fiscalYear < 2000 || fiscalYear > 2100)
+                return Results.BadRequest(new { error = "fiscalYear invalid" });
+
+            await using var conn = await ds.OpenConnectionAsync(ct);
+
+            // 重复检测：检查是否已存在该员工该年度的住民税记录
+            await using (var checkCmd = conn.CreateCommand())
+            {
+                checkCmd.CommandText = "SELECT id, annual_amount FROM resident_tax_schedules WHERE company_code=$1 AND employee_id=$2 AND fiscal_year=$3";
+                checkCmd.Parameters.AddWithValue(companyCode);
+                checkCmd.Parameters.AddWithValue(employeeId);
+                checkCmd.Parameters.AddWithValue(fiscalYear);
+                await using var rd = await checkCmd.ExecuteReaderAsync(ct);
+                if (await rd.ReadAsync(ct))
+                {
+                    var existingId = rd.GetGuid(0);
+                    var existingAmount = rd.GetDecimal(1);
+                    return Results.Conflict(new
+                    {
+                        error = "duplicate",
+                        message = $"该员工 {fiscalYear} 年度的住民税记录已存在",
+                        existingId = existingId.ToString(),
+                        existingAnnualAmount = existingAmount,
+                        suggestion = "如需更新，请使用 PUT 方法或先删除现有记录"
+                    });
+                }
+            }
+
+            // 解析各月金额
+            decimal GetAmount(string prop) => root.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDecimal() : 0;
+            var annualAmount = GetAmount("annualAmount");
+            var juneAmount = GetAmount("juneAmount");
+            var julyAmount = GetAmount("julyAmount");
+            var augustAmount = GetAmount("augustAmount");
+            var septemberAmount = GetAmount("septemberAmount");
+            var octoberAmount = GetAmount("octoberAmount");
+            var novemberAmount = GetAmount("novemberAmount");
+            var decemberAmount = GetAmount("decemberAmount");
+            var januaryAmount = GetAmount("januaryAmount");
+            var februaryAmount = GetAmount("februaryAmount");
+            var marchAmount = GetAmount("marchAmount");
+            var aprilAmount = GetAmount("aprilAmount");
+            var mayAmount = GetAmount("mayAmount");
+
+            var municipalityCode = root.TryGetProperty("municipalityCode", out var mc) && mc.ValueKind == JsonValueKind.String ? mc.GetString() : null;
+            var municipalityName = root.TryGetProperty("municipalityName", out var mn) && mn.ValueKind == JsonValueKind.String ? mn.GetString() : null;
+            var notes = root.TryGetProperty("notes", out var nt) && nt.ValueKind == JsonValueKind.String ? nt.GetString() : null;
+
+            // 插入记录
+            Guid newId;
+            await using (var insertCmd = conn.CreateCommand())
+            {
+                insertCmd.CommandText = @"
+                    INSERT INTO resident_tax_schedules (
+                        company_code, employee_id, fiscal_year, municipality_code, municipality_name,
+                        annual_amount, june_amount, july_amount, august_amount, september_amount,
+                        october_amount, november_amount, december_amount, january_amount,
+                        february_amount, march_amount, april_amount, may_amount, notes
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                    RETURNING id";
+                insertCmd.Parameters.AddWithValue(companyCode);
+                insertCmd.Parameters.AddWithValue(employeeId);
+                insertCmd.Parameters.AddWithValue(fiscalYear);
+                insertCmd.Parameters.AddWithValue((object?)municipalityCode ?? DBNull.Value);
+                insertCmd.Parameters.AddWithValue((object?)municipalityName ?? DBNull.Value);
+                insertCmd.Parameters.AddWithValue(annualAmount);
+                insertCmd.Parameters.AddWithValue(juneAmount);
+                insertCmd.Parameters.AddWithValue(julyAmount);
+                insertCmd.Parameters.AddWithValue(augustAmount);
+                insertCmd.Parameters.AddWithValue(septemberAmount);
+                insertCmd.Parameters.AddWithValue(octoberAmount);
+                insertCmd.Parameters.AddWithValue(novemberAmount);
+                insertCmd.Parameters.AddWithValue(decemberAmount);
+                insertCmd.Parameters.AddWithValue(januaryAmount);
+                insertCmd.Parameters.AddWithValue(februaryAmount);
+                insertCmd.Parameters.AddWithValue(marchAmount);
+                insertCmd.Parameters.AddWithValue(aprilAmount);
+                insertCmd.Parameters.AddWithValue(mayAmount);
+                insertCmd.Parameters.AddWithValue((object?)notes ?? DBNull.Value);
+
+                newId = (Guid)(await insertCmd.ExecuteScalarAsync(ct))!;
+            }
+
+            return Results.Ok(new { id = newId, message = "住民税记录创建成功" });
+        }).RequireAuthorization();
+
+        // PUT /resident-tax/{id}
+        // 更新住民税记录
+        app.MapPut("/resident-tax/{id:guid}", async (Guid id, HttpRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+            var companyCode = cc.ToString();
+
+            using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
+            var root = doc.RootElement;
+
+            await using var conn = await ds.OpenConnectionAsync(ct);
+
+            // 检查记录是否存在
+            await using (var checkCmd = conn.CreateCommand())
+            {
+                checkCmd.CommandText = "SELECT 1 FROM resident_tax_schedules WHERE id=$1 AND company_code=$2";
+                checkCmd.Parameters.AddWithValue(id);
+                checkCmd.Parameters.AddWithValue(companyCode);
+                var exists = await checkCmd.ExecuteScalarAsync(ct);
+                if (exists is null)
+                    return Results.NotFound(new { error = "记录不存在" });
+            }
+
+            // 构建更新语句
+            var updates = new List<string>();
+            var parameters = new List<object> { id, companyCode };
+            var paramIndex = 3;
+
+            void TryAddDecimal(string jsonProp, string dbCol)
+            {
+                if (root.TryGetProperty(jsonProp, out var v) && v.ValueKind == JsonValueKind.Number)
+                {
+                    updates.Add($"{dbCol} = ${paramIndex++}");
+                    parameters.Add(v.GetDecimal());
+                }
+            }
+            void TryAddString(string jsonProp, string dbCol)
+            {
+                if (root.TryGetProperty(jsonProp, out var v) && v.ValueKind == JsonValueKind.String)
+                {
+                    updates.Add($"{dbCol} = ${paramIndex++}");
+                    parameters.Add(v.GetString()!);
+                }
+            }
+
+            TryAddDecimal("annualAmount", "annual_amount");
+            TryAddDecimal("juneAmount", "june_amount");
+            TryAddDecimal("julyAmount", "july_amount");
+            TryAddDecimal("augustAmount", "august_amount");
+            TryAddDecimal("septemberAmount", "september_amount");
+            TryAddDecimal("octoberAmount", "october_amount");
+            TryAddDecimal("novemberAmount", "november_amount");
+            TryAddDecimal("decemberAmount", "december_amount");
+            TryAddDecimal("januaryAmount", "january_amount");
+            TryAddDecimal("februaryAmount", "february_amount");
+            TryAddDecimal("marchAmount", "march_amount");
+            TryAddDecimal("aprilAmount", "april_amount");
+            TryAddDecimal("mayAmount", "may_amount");
+            TryAddString("municipalityCode", "municipality_code");
+            TryAddString("municipalityName", "municipality_name");
+            TryAddString("status", "status");
+            TryAddString("notes", "notes");
+
+            if (updates.Count == 0)
+                return Results.BadRequest(new { error = "没有要更新的字段" });
+
+            updates.Add("updated_at = now()");
+
+            await using (var updateCmd = conn.CreateCommand())
+            {
+                updateCmd.CommandText = $"UPDATE resident_tax_schedules SET {string.Join(", ", updates)} WHERE id=$1 AND company_code=$2";
+                for (int i = 0; i < parameters.Count; i++)
+                    updateCmd.Parameters.AddWithValue(parameters[i]);
+                await updateCmd.ExecuteNonQueryAsync(ct);
+            }
+
+            return Results.Ok(new { message = "更新成功" });
+        }).RequireAuthorization();
+
+        // DELETE /resident-tax/{id}
+        // 删除住民税记录
+        app.MapDelete("/resident-tax/{id:guid}", async (Guid id, HttpRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+            var companyCode = cc.ToString();
+
+            await using var conn = await ds.OpenConnectionAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM resident_tax_schedules WHERE id=$1 AND company_code=$2";
+            cmd.Parameters.AddWithValue(id);
+            cmd.Parameters.AddWithValue(companyCode);
+            var affected = await cmd.ExecuteNonQueryAsync(ct);
+
+            if (affected == 0)
+                return Results.NotFound(new { error = "记录不存在" });
+
+            return Results.Ok(new { message = "删除成功" });
+        }).RequireAuthorization();
+
+        // GET /resident-tax/employee/{employeeId}/current
+        // 获取员工当前适用的住民税（根据当前月份自动判断年度）
+        app.MapGet("/resident-tax/employee/{employeeId:guid}/current", async (Guid employeeId, HttpRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+            var companyCode = cc.ToString();
+
+            // 根据当前月份判断住民税年度（6月~次年5月）
+            var now = DateTime.Now;
+            var fiscalYear = now.Month >= 6 ? now.Year : now.Year - 1;
+
+            // 可选：从查询参数指定月份
+            var monthStr = req.Query["month"].ToString();
+            if (!string.IsNullOrWhiteSpace(monthStr) && DateTime.TryParse(monthStr + "-01", out var monthDate))
+            {
+                fiscalYear = monthDate.Month >= 6 ? monthDate.Year : monthDate.Year - 1;
+            }
+
+            await using var conn = await ds.OpenConnectionAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                SELECT id, fiscal_year, municipality_code, municipality_name, annual_amount,
+                       june_amount, july_amount, august_amount, september_amount,
+                       october_amount, november_amount, december_amount, january_amount,
+                       february_amount, march_amount, april_amount, may_amount,
+                       status, notes
+                FROM resident_tax_schedules
+                WHERE company_code=$1 AND employee_id=$2 AND fiscal_year=$3 AND status='active'
+                LIMIT 1";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(employeeId);
+            cmd.Parameters.AddWithValue(fiscalYear);
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            if (!await rd.ReadAsync(ct))
+                return Results.Ok(new { found = false, fiscalYear, message = "未找到该员工的住民税记录" });
+
+            return Results.Ok(new
+            {
+                found = true,
+                id = rd.GetGuid(0),
+                fiscalYear = rd.GetInt32(1),
+                municipalityCode = rd.IsDBNull(2) ? null : rd.GetString(2),
+                municipalityName = rd.IsDBNull(3) ? null : rd.GetString(3),
+                annualAmount = rd.GetDecimal(4),
+                juneAmount = rd.GetDecimal(5),
+                julyAmount = rd.GetDecimal(6),
+                augustAmount = rd.GetDecimal(7),
+                septemberAmount = rd.GetDecimal(8),
+                octoberAmount = rd.GetDecimal(9),
+                novemberAmount = rd.GetDecimal(10),
+                decemberAmount = rd.GetDecimal(11),
+                januaryAmount = rd.GetDecimal(12),
+                februaryAmount = rd.GetDecimal(13),
+                marchAmount = rd.GetDecimal(14),
+                aprilAmount = rd.GetDecimal(15),
+                mayAmount = rd.GetDecimal(16),
+                status = rd.IsDBNull(17) ? "active" : rd.GetString(17),
+                notes = rd.IsDBNull(18) ? null : rd.GetString(18)
+            });
+        }).RequireAuthorization();
+
+        // GET /resident-tax/summary
+        // 获取住民税汇总统计
+        app.MapGet("/resident-tax/summary", async (HttpRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+            var companyCode = cc.ToString();
+
+            var fiscalYearStr = req.Query["fiscalYear"].ToString();
+            var now = DateTime.Now;
+            var fiscalYear = now.Month >= 6 ? now.Year : now.Year - 1;
+            if (!string.IsNullOrWhiteSpace(fiscalYearStr) && int.TryParse(fiscalYearStr, out var fy))
+                fiscalYear = fy;
+
+            await using var conn = await ds.OpenConnectionAsync(ct);
+
+            // 统计信息
+            var summary = new
+            {
+                fiscalYear,
+                totalEmployees = 0,
+                registeredCount = 0,
+                totalAnnualAmount = 0m,
+                byMonth = new Dictionary<string, decimal>()
+            };
+
+            // 获取员工总数
+            int totalEmployees;
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = "SELECT COUNT(*) FROM employees WHERE company_code=$1";
+                cmd.Parameters.AddWithValue(companyCode);
+                totalEmployees = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+            }
+
+            // 获取已登记的住民税记录
+            int registeredCount;
+            decimal totalAnnual;
+            var monthlyTotals = new Dictionary<string, decimal>
+            {
+                ["june"] = 0, ["july"] = 0, ["august"] = 0, ["september"] = 0,
+                ["october"] = 0, ["november"] = 0, ["december"] = 0, ["january"] = 0,
+                ["february"] = 0, ["march"] = 0, ["april"] = 0, ["may"] = 0
+            };
+
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = @"
+                    SELECT COUNT(*), COALESCE(SUM(annual_amount), 0),
+                           COALESCE(SUM(june_amount), 0), COALESCE(SUM(july_amount), 0),
+                           COALESCE(SUM(august_amount), 0), COALESCE(SUM(september_amount), 0),
+                           COALESCE(SUM(october_amount), 0), COALESCE(SUM(november_amount), 0),
+                           COALESCE(SUM(december_amount), 0), COALESCE(SUM(january_amount), 0),
+                           COALESCE(SUM(february_amount), 0), COALESCE(SUM(march_amount), 0),
+                           COALESCE(SUM(april_amount), 0), COALESCE(SUM(may_amount), 0)
+                    FROM resident_tax_schedules
+                    WHERE company_code=$1 AND fiscal_year=$2 AND status='active'";
+                cmd.Parameters.AddWithValue(companyCode);
+                cmd.Parameters.AddWithValue(fiscalYear);
+
+                await using var rd = await cmd.ExecuteReaderAsync(ct);
+                await rd.ReadAsync(ct);
+                registeredCount = rd.GetInt32(0);
+                totalAnnual = rd.GetDecimal(1);
+                monthlyTotals["june"] = rd.GetDecimal(2);
+                monthlyTotals["july"] = rd.GetDecimal(3);
+                monthlyTotals["august"] = rd.GetDecimal(4);
+                monthlyTotals["september"] = rd.GetDecimal(5);
+                monthlyTotals["october"] = rd.GetDecimal(6);
+                monthlyTotals["november"] = rd.GetDecimal(7);
+                monthlyTotals["december"] = rd.GetDecimal(8);
+                monthlyTotals["january"] = rd.GetDecimal(9);
+                monthlyTotals["february"] = rd.GetDecimal(10);
+                monthlyTotals["march"] = rd.GetDecimal(11);
+                monthlyTotals["april"] = rd.GetDecimal(12);
+                monthlyTotals["may"] = rd.GetDecimal(13);
+            }
+
+            return Results.Ok(new
+            {
+                fiscalYear,
+                totalEmployees,
+                registeredCount,
+                unregisteredCount = totalEmployees - registeredCount,
+                totalAnnualAmount = totalAnnual,
+                byMonth = monthlyTotals
+            });
+        }).RequireAuthorization();
+    }
+
+    private static async Task<Guid?> ResolveResidentTaxEmployeeIdAsync(NpgsqlConnection conn, string companyCode, ResidentTaxParseEntry entry, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(entry.EmployeeId) && Guid.TryParse(entry.EmployeeId, out var parsed))
+            return parsed;
+
+        if (!string.IsNullOrWhiteSpace(entry.EmployeeCode))
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT id FROM employees WHERE company_code=$1 AND (employee_code=$2 OR payload->>'code'=$2) LIMIT 1";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(entry.EmployeeCode);
+            var id = await cmd.ExecuteScalarAsync(ct);
+            if (id is Guid g) return g;
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.EmployeeName))
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                SELECT id FROM employees 
+                WHERE company_code=$1 
+                  AND (payload->>'nameKanji'=$2 OR payload->>'name'=$2 OR payload->>'nameKana'=$2)
+                LIMIT 1";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(entry.EmployeeName);
+            var id = await cmd.ExecuteScalarAsync(ct);
+            if (id is Guid g) return g;
+        }
+
+        return null;
+    }
+
+    private static async Task<(Guid? insertedId, Guid? existingId)> TryInsertResidentTaxAsync(
+        NpgsqlConnection conn,
+        string companyCode,
+        Guid employeeId,
+        ResidentTaxParseEntry entry,
+        CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            INSERT INTO resident_tax_schedules (
+                company_code, employee_id, fiscal_year, municipality_code, municipality_name,
+                annual_amount, june_amount, july_amount, august_amount, september_amount,
+                october_amount, november_amount, december_amount, january_amount,
+                february_amount, march_amount, april_amount, may_amount, metadata
+            ) VALUES (
+                $1,$2,$3,$4,$5,
+                $6,$7,$8,$9,$10,
+                $11,$12,$13,$14,
+                $15,$16,$17,$18,$19
+            )
+            ON CONFLICT (company_code, employee_id, fiscal_year) DO NOTHING
+            RETURNING id";
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue(employeeId);
+        cmd.Parameters.AddWithValue(entry.FiscalYear);
+        cmd.Parameters.AddWithValue((object?)entry.MunicipalityCode ?? DBNull.Value);
+        cmd.Parameters.AddWithValue((object?)entry.MunicipalityName ?? DBNull.Value);
+        cmd.Parameters.AddWithValue(entry.AnnualAmount);
+        cmd.Parameters.AddWithValue(entry.JuneAmount);
+        cmd.Parameters.AddWithValue(entry.JulyAmount);
+        cmd.Parameters.AddWithValue(entry.AugustAmount);
+        cmd.Parameters.AddWithValue(entry.SeptemberAmount);
+        cmd.Parameters.AddWithValue(entry.OctoberAmount);
+        cmd.Parameters.AddWithValue(entry.NovemberAmount);
+        cmd.Parameters.AddWithValue(entry.DecemberAmount);
+        cmd.Parameters.AddWithValue(entry.JanuaryAmount);
+        cmd.Parameters.AddWithValue(entry.FebruaryAmount);
+        cmd.Parameters.AddWithValue(entry.MarchAmount);
+        cmd.Parameters.AddWithValue(entry.AprilAmount);
+        cmd.Parameters.AddWithValue(entry.MayAmount);
+        cmd.Parameters.AddWithValue(JsonSerializer.Serialize(new
+        {
+            entry.EmployeeCode,
+            entry.EmployeeName,
+            entry.Confidence,
+            entry.MatchReason
+        }));
+
+        var inserted = await cmd.ExecuteScalarAsync(ct);
+        if (inserted is Guid insertedId)
+            return (insertedId, null);
+
+        await using var checkCmd = conn.CreateCommand();
+        checkCmd.CommandText = "SELECT id FROM resident_tax_schedules WHERE company_code=$1 AND employee_id=$2 AND fiscal_year=$3";
+        checkCmd.Parameters.AddWithValue(companyCode);
+        checkCmd.Parameters.AddWithValue(employeeId);
+        checkCmd.Parameters.AddWithValue(entry.FiscalYear);
+        var existing = await checkCmd.ExecuteScalarAsync(ct);
+        return (null, existing as Guid?);
     }
 
     private static async Task<IResult> ExecutePayrollEndpoint(HttpRequest req, NpgsqlDataSource ds, LawDatasetService law, CancellationToken ct)
@@ -3091,13 +3871,13 @@ LIMIT @pageSize OFFSET @offset";
             {
             var rulesEl = rulesElement.Value;
                 var monthDate = DateTime.TryParse(month ?? string.Empty, out var md) ? md : DateTime.Today;
-            var whtBrackets = await LoadWithholdingBracketsAsync(ds, companyCode, monthDate, ct);
+            var whtTable = await LoadWithholdingTableAsync(ds, monthDate, ct);
             ApplyPolicyRules(
                 rulesEl,
                 sheetOut,
                 emp,
                 policyBody.Value,
-                whtBrackets,
+                whtTable,
                 nlBase,
                 nlCommute,
                 nlHourlyRate,
@@ -3271,44 +4051,47 @@ LIMIT @pageSize OFFSET @offset";
         return new PayrollExecutionResult(sheetOut, enriched, traceJson, employeeCodeOut, employeeNameOut, departmentCodeOut, departmentNameOut, netAmount, workHoursJson, warnings);
     }
 
-    private static async Task<List<WithholdingBracket>> LoadWithholdingBracketsAsync(
+    // 加载別表第一甲欄税額表（查表方式）
+    private static async Task<List<WithholdingTableEntry>> LoadWithholdingTableAsync(
         NpgsqlDataSource ds,
-        string companyCode,
         DateTime monthDate,
         CancellationToken ct)
     {
-        var list = new List<WithholdingBracket>();
+        var list = new List<WithholdingTableEntry>();
         try
         {
             await using var conn = await ds.OpenConnectionAsync(ct);
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"SELECT COALESCE(min_amount,0), max_amount, rate, deduction, COALESCE(version,'')
-                                              FROM withholding_rates
-                                              WHERE (company_code IS NULL OR company_code = $1)
-                                                AND category = 'monthly_ko'
-                                                AND effective_from <= $2
-                                                AND (effective_to IS NULL OR effective_to >= $2)
-                                              ORDER BY min_amount NULLS FIRST";
-            cmd.Parameters.AddWithValue(companyCode);
+            cmd.CommandText = @"SELECT COALESCE(min_amount,0), max_amount, dependents, tax_amount,
+                                       COALESCE(calc_type,'table'), base_tax, rate, COALESCE(version,'')
+                                FROM withholding_table
+                                WHERE category = 'monthly_ko_table'
+                                  AND effective_from <= $1
+                                  AND (effective_to IS NULL OR effective_to >= $1)
+                                ORDER BY dependents, min_amount NULLS FIRST";
             cmd.Parameters.AddWithValue(new DateTime(monthDate.Year, monthDate.Month, 1));
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
                 var min = reader.GetDecimal(0);
                 var max = reader.IsDBNull(1) ? (decimal?)null : reader.GetDecimal(1);
-                var rate = reader.GetDecimal(2);
-                var deduction = reader.GetDecimal(3);
-                var version = reader.GetString(4);
-                list.Add(new WithholdingBracket(min, max, rate, deduction, version));
+                var dependents = reader.GetInt32(2);
+                var taxAmount = reader.GetDecimal(3);
+                var calcType = reader.GetString(4);
+                var baseTax = reader.IsDBNull(5) ? (decimal?)null : reader.GetDecimal(5);
+                var rate = reader.IsDBNull(6) ? (decimal?)null : reader.GetDecimal(6);
+                var version = reader.GetString(7);
+                list.Add(new WithholdingTableEntry(min, max, dependents, taxAmount, calcType, baseTax, rate, version));
             }
         }
         catch
         {
-            // ignore load errors; proceed with empty bracket list
+            // ignore load errors; proceed with empty list
         }
 
         return list;
     }
+
 
     private static TimeSpan? ParseTimeSpan(string? value)
     {
@@ -3648,7 +4431,7 @@ LIMIT @pageSize OFFSET @offset";
         List<JsonObject> sheetOut,
         JsonElement emp,
         JsonElement policyBody,
-        IReadOnlyList<WithholdingBracket> whtBrackets,
+        IReadOnlyList<WithholdingTableEntry> whtTable,
         decimal nlBase,
         decimal nlCommute,
         decimal nlHourlyRate,
@@ -3933,7 +4716,7 @@ LIMIT @pageSize OFFSET @offset";
                 }
                 if (f.TryGetProperty("withholding", out var wht) && wht.ValueKind == JsonValueKind.Object)
                         {
-                            decimal sumEarn = 0m, si = 0m, pens = 0m;
+                            decimal sumEarn = 0m, si = 0m, pens = 0m, empIns = 0m;
                     foreach (var entry in sheetOut)
                             {
                         var code = ReadJsonString(entry, "itemCode");
@@ -3941,25 +4724,76 @@ LIMIT @pageSize OFFSET @offset";
                                 if (string.Equals(code, "BASE", StringComparison.OrdinalIgnoreCase) || string.Equals(code, "COMMUTE", StringComparison.OrdinalIgnoreCase)) sumEarn += amt;
                                 else if (string.Equals(code, "HEALTH_INS", StringComparison.OrdinalIgnoreCase)) si += amt;
                                 else if (string.Equals(code, "PENSION", StringComparison.OrdinalIgnoreCase)) pens += amt;
+                                else if (string.Equals(code, "EMP_INS", StringComparison.OrdinalIgnoreCase)) empIns += amt;
                             }
-                    var taxable = sumEarn - si - pens;
+                    // 課税給与 = 総支給額 - 社会保険料等（健康保険 + 厚生年金 + 雇用保険）
+                    var taxable = sumEarn - si - pens - empIns;
                     if (taxable < 0) taxable = 0;
-                    decimal rate = 0m, deduction = 0m; string? version = null;
-                    foreach (var bracket in whtBrackets)
+                    
+                    // 获取扶养人数（从公式配置或员工信息中读取，默认0）
+                    int dependents = 0;
+                    if (wht.TryGetProperty("dependents", out var depNode) && depNode.ValueKind == JsonValueKind.Number)
                     {
-                        var geMin = taxable >= bracket.Min;
-                        var ltMax = !bracket.Max.HasValue || taxable < bracket.Max.Value;
+                        dependents = depNode.GetInt32();
+                    }
+                    else if (emp.TryGetProperty("dependents", out var empDep) && empDep.ValueKind == JsonValueKind.Number)
+                    {
+                        dependents = empDep.GetInt32();
+                    }
+                    else if (emp.TryGetProperty("扶養人数", out var empDepJp) && empDepJp.ValueKind == JsonValueKind.Number)
+                    {
+                        dependents = empDepJp.GetInt32();
+                    }
+                    if (dependents < 0) dependents = 0;
+                    int extraDependents = 0;
+                    if (dependents > 7)
+                    {
+                        extraDependents = dependents - 7;
+                        dependents = 7; // 7人超は7人の税額から控除
+                    }
+                    
+                    // 使用別表第一甲欄（税額表方式）查表
+                    foreach (var tableEntry in whtTable)
+                    {
+                        if (tableEntry.Dependents != dependents) continue;
+                        if (!string.Equals(tableEntry.CalcType, "table", StringComparison.OrdinalIgnoreCase)) continue;
+                        var geMin = taxable >= tableEntry.Min;
+                        var ltMax = !tableEntry.Max.HasValue || taxable < tableEntry.Max.Value;
                         if (geMin && ltMax)
                         {
-                            rate = bracket.Rate;
-                            deduction = bracket.Deduction;
-                            version = bracket.Version;
-                            break;
+                            var tax = tableEntry.TaxAmount;
+                            if (extraDependents > 0)
+                            {
+                                tax = Math.Max(0m, tax - (extraDependents * 1610m));
+                            }
+                            return new FormulaEvalResult(tax, null, taxable, tableEntry.Version, "withholding");
                         }
                     }
-                    if (rate == 0m) return new FormulaEvalResult(0m, null, taxable, null, "withholding:not_found");
-                    var tax = ApplyRounding(Math.Max(0m, taxable * rate - deduction), "round", 0);
-                    return new FormulaEvalResult(tax, rate, taxable, version, "withholding");
+                    // 高額帯は算式（公式）で計算（同表内の formula 行を利用）
+                    foreach (var formula in whtTable)
+                    {
+                        if (formula.Dependents != dependents) continue;
+                        if (!string.Equals(formula.CalcType, "formula", StringComparison.OrdinalIgnoreCase)) continue;
+                        var geMin = taxable >= formula.Min;
+                        var ltMax = !formula.Max.HasValue || taxable < formula.Max.Value;
+                        if (geMin && ltMax)
+                        {
+                            if (!formula.BaseTax.HasValue || !formula.Rate.HasValue)
+                            {
+                                continue;
+                            }
+                            var tax = formula.BaseTax.Value + (taxable - formula.Min) * formula.Rate.Value;
+                            tax = ApplyRounding(Math.Max(0m, tax), "round", 0);
+                            if (extraDependents > 0)
+                            {
+                                tax = Math.Max(0m, tax - (extraDependents * 1610m));
+                            }
+                            return new FormulaEvalResult(tax, formula.Rate, taxable, formula.Version, "withholding:formula");
+                        }
+                    }
+                    // 警告：未找到匹配的税额表记录，可能是数据不完整或扶养人数超出范围
+                    // 返回特殊标记以便调用方识别
+                    return new FormulaEvalResult(0m, null, taxable, null, $"withholding:not_found:dep={dependents}:taxable={taxable}");
                 }
                 if (f.TryGetProperty("charRef", out var cref) && cref.ValueKind == JsonValueKind.String)
                         {
@@ -4591,6 +5425,48 @@ LIMIT @pageSize OFFSET @offset";
         var owner = reader.GetString(1);
         return string.Equals(company, companyCode, StringComparison.Ordinal) && string.Equals(owner, userId, StringComparison.Ordinal);
     }
+}
+
+internal sealed class ResidentTaxParseResult
+{
+    public bool Success { get; set; }
+    public string? RawText { get; set; }
+    public List<ResidentTaxParseEntry>? Entries { get; set; }
+    public List<string>? Warnings { get; set; }
+    public bool AutoSaved { get; set; }
+    public int SavedCount { get; set; }
+    public int DuplicateCount { get; set; }
+    public int ErrorCount { get; set; }
+}
+
+internal sealed class ResidentTaxParseEntry
+{
+    public string? EmployeeId { get; set; }
+    public string? EmployeeCode { get; set; }
+    public string? EmployeeName { get; set; }
+    public int FiscalYear { get; set; }
+    public string? MunicipalityCode { get; set; }
+    public string? MunicipalityName { get; set; }
+    public decimal AnnualAmount { get; set; }
+    public decimal JuneAmount { get; set; }
+    public decimal JulyAmount { get; set; }
+    public decimal AugustAmount { get; set; }
+    public decimal SeptemberAmount { get; set; }
+    public decimal OctoberAmount { get; set; }
+    public decimal NovemberAmount { get; set; }
+    public decimal DecemberAmount { get; set; }
+    public decimal JanuaryAmount { get; set; }
+    public decimal FebruaryAmount { get; set; }
+    public decimal MarchAmount { get; set; }
+    public decimal AprilAmount { get; set; }
+    public decimal MayAmount { get; set; }
+    public decimal Confidence { get; set; }
+    public string? MatchReason { get; set; }
+
+    public string? SaveStatus { get; set; }
+    public string? SaveMessage { get; set; }
+    public string? SavedId { get; set; }
+    public string? ExistingId { get; set; }
 }
 
 internal sealed record PayrollTaskCandidateInfo(

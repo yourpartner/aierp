@@ -161,36 +161,7 @@ public static class LawAdminModule
             return Results.Ok(new { inserted = 3 });
         }).RequireAuthorization();
 
-        // Import monthly withholding tax table (FY2025 electronic filing special case, Ko table).
-        app.MapPost("/admin/withholding/seed/monthly-ko-2025", async (NpgsqlDataSource ds) =>
-        {
-            await using var conn = await ds.OpenConnectionAsync();
-            await using var tx = await conn.BeginTransactionAsync();
-            async Task Ins(decimal min, decimal? max, decimal rate, decimal deduction, string ver, string note)
-            {
-                await using var cmd = conn.CreateCommand();
-                cmd.CommandText = @"INSERT INTO withholding_rates(company_code, category, min_amount, max_amount, rate, deduction, effective_from, effective_to, version, note)
-                                    VALUES (NULL, 'monthly_ko', $1, $2, $3, $4, $5, NULL, $6, $7)";
-                cmd.Parameters.AddWithValue(min);
-                if (max.HasValue) cmd.Parameters.AddWithValue(max.Value); else cmd.Parameters.AddWithValue(DBNull.Value);
-                cmd.Parameters.AddWithValue(rate);
-                cmd.Parameters.AddWithValue(deduction);
-                cmd.Parameters.AddWithValue(new DateTime(2025,4,1));
-                cmd.Parameters.AddWithValue(ver);
-                cmd.Parameters.AddWithValue(note);
-                await cmd.ExecuteNonQueryAsync();
-            }
-            // Supplemental table IV (rate × reconstruction special tax): 5.105%, 10.210%(-8296), 20.420%(-36374), 23.483%(-54113), 33.693%(-130688), 40.840%(-237893), 45.945%(-408061).
-            await Ins(0m,         162500m, 0.05105m,      0m,       "JP-WHT-MONTHLY-KO-2025", "NTA 別表第四 令和7年分");
-            await Ins(162501m,    275000m, 0.10210m,   8296m,       "JP-WHT-MONTHLY-KO-2025", "NTA 別表第四 令和7年分");
-            await Ins(275001m,    579166m, 0.20420m,  36374m,       "JP-WHT-MONTHLY-KO-2025", "NTA 別表第四 令和7年分");
-            await Ins(579167m,    750000m, 0.23483m,  54113m,       "JP-WHT-MONTHLY-KO-2025", "NTA 別表第四 令和7年分");
-            await Ins(750001m,   1500000m, 0.33693m, 130688m,       "JP-WHT-MONTHLY-KO-2025", "NTA 別表第四 令和7年分");
-            await Ins(1500001m,  3333333m, 0.40840m, 237893m,       "JP-WHT-MONTHLY-KO-2025", "NTA 別表第四 令和7年分");
-            await Ins(3333334m,       null, 0.45945m, 408061m,      "JP-WHT-MONTHLY-KO-2025", "NTA 別表第四 令和7年分");
-            await tx.CommitAsync();
-            return Results.Ok(new { inserted = 7, version = "JP-WHT-MONTHLY-KO-2025" });
-        }).RequireAuthorization();
+        // 源泉徴収税額表は SQL で直接ロードする（コードで解析しない）
     }
 }
 

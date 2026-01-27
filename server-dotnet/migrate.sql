@@ -1,4 +1,4 @@
-﻿-- ---------------------------------------
+-- ---------------------------------------
 -- 数据库迁移脚本（PostgreSQL）：
 -- - 启用 pgcrypto（用于 gen_random_uuid）
 -- - 创建公司、结构定义、凭证与主数据表
@@ -1684,6 +1684,32 @@ CREATE TABLE IF NOT EXISTS withholding_rates (
 );
 CREATE INDEX IF NOT EXISTS idx_withholding_rates_lookup ON withholding_rates(company_code, category, effective_from, effective_to);
 
+-- 源泉徴収税額表 別表第一（甲欄）- 月額表
+-- 給与金額と扶養親族数により税額を直接検索する
+-- 税額 = withholding_table.tax_amount (直接查表)
+CREATE TABLE IF NOT EXISTS withholding_table (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  category TEXT NOT NULL DEFAULT 'monthly_ko_table',
+  min_amount NUMERIC(18,2) NOT NULL,
+  max_amount NUMERIC(18,2) NULL,
+  dependents INT NOT NULL DEFAULT 0,
+  tax_amount NUMERIC(18,2) NOT NULL,
+  calc_type TEXT NOT NULL DEFAULT 'table',
+  base_tax NUMERIC(18,2) NULL,
+  rate NUMERIC(18,6) NULL,
+  effective_from DATE NOT NULL,
+  effective_to DATE NULL,
+  version TEXT NULL,
+  note TEXT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_withholding_table_lookup ON withholding_table(category, dependents, min_amount, effective_from, effective_to);
+ALTER TABLE withholding_table DROP COLUMN IF EXISTS company_code;
+
+ALTER TABLE withholding_table ADD COLUMN IF NOT EXISTS calc_type TEXT NOT NULL DEFAULT 'table';
+ALTER TABLE withholding_table ADD COLUMN IF NOT EXISTS base_tax NUMERIC(18,2) NULL;
+ALTER TABLE withholding_table ADD COLUMN IF NOT EXISTS rate NUMERIC(18,6) NULL;
+
 -- 认证与权限表
 CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2694,3 +2720,52 @@ SELECT 'JP01', '振込出金-従業員給与', '振込による従業員への�
   '{"debitAccount":"2130","creditAccount":"{bankAccount}","summaryTemplate":"給与支払 {description}","postingDate":"transactionDate","voucherType":"OT","counterparty":{"type":["employee"],"nameContains":["{description}"],"assignLine":"debit","activeOnly":true}}'::jsonb,
   TRUE, 'system', 'system'
 WHERE NOT EXISTS (SELECT 1 FROM moneytree_posting_rules WHERE company_code='JP01' AND title='振込出金-従業員給与');
+
+-- ============================================================
+-- 住民税年度扣除计划表（特別徴収税額通知書）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS resident_tax_schedules (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_code TEXT NOT NULL,
+  employee_id UUID NOT NULL,
+  
+  -- 年度：住民税年度从6月开始，如 2025 代表 2025年6月~2026年5月
+  fiscal_year INTEGER NOT NULL,
+  
+  -- 市区町村信息
+  municipality_code TEXT,
+  municipality_name TEXT,
+  
+  -- 年税額
+  annual_amount DECIMAL(10,0) NOT NULL DEFAULT 0,
+  
+  -- 12个月的扣除金额（6月~次年5月）
+  june_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  july_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  august_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  september_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  october_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  november_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  december_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  january_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  february_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  march_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  april_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  may_amount DECIMAL(8,0) NOT NULL DEFAULT 0,
+  
+  -- 状态: active/suspended/completed
+  status TEXT DEFAULT 'active',
+  notes TEXT,
+  
+  -- 元数据（OCR 原始数据、导入批次等）
+  metadata JSONB DEFAULT '{}',
+  
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  
+  UNIQUE(company_code, employee_id, fiscal_year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_resident_tax_company_year ON resident_tax_schedules(company_code, fiscal_year);
+CREATE INDEX IF NOT EXISTS idx_resident_tax_employee ON resident_tax_schedules(company_code, employee_id);
+CREATE INDEX IF NOT EXISTS idx_resident_tax_status ON resident_tax_schedules(company_code, status);

@@ -23,7 +23,8 @@ const { t } = useI18n()
 
 const langOptions = [
   { value: 'ja', label: '日本語' },
-  { value: 'en', label: 'English' }
+  { value: 'en', label: 'English' },
+  { value: 'zh', label: '中文' }
 ]
 
 const langVal = computed({
