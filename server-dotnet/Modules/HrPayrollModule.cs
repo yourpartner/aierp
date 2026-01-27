@@ -2557,7 +2557,7 @@ LIMIT @pageSize OFFSET @offset";
                            rt.annual_amount, rt.june_amount, rt.july_amount, rt.august_amount, rt.september_amount,
                            rt.october_amount, rt.november_amount, rt.december_amount, rt.january_amount,
                            rt.february_amount, rt.march_amount, rt.april_amount, rt.may_amount,
-                           rt.status, rt.notes, rt.created_at, rt.updated_at,
+                           rt.status, rt.metadata->>'notes' as notes, rt.created_at, rt.updated_at,
                            e.employee_code, e.payload->>'nameKanji' as employee_name
                     FROM resident_tax_schedules rt
                     LEFT JOIN employees e ON e.id = rt.employee_id AND e.company_code = rt.company_code
