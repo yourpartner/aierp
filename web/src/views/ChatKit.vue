@@ -17,159 +17,19 @@
             <el-button size="small" @click="newSession">{{ text.nav.newSession }}</el-button>
           </div>
         </div>
-        <!-- 財務会計 -->
-        <div v-if="hasModuleMenus('finance')" class="section">
-          <div class="section-title">{{ text.nav.groupFinance }}</div>
-            <el-menu class="menu" @select="onSelectCommon">
-            <el-menu-item v-if="isMenuAccessible('voucher.new')" index="voucher.new">{{ text.nav.voucherNew }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('vouchers.list')" index="vouchers.list">{{ text.nav.vouchers }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('accounts.list')" index="accounts.list">{{ text.nav.accounts }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('account.ledger')" index="account.ledger">{{ text.nav.accountLedger }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('account.balance')" index="account.balance">{{ text.nav.accountBalance }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('trial.balance')" index="trial.balance">{{ text.nav.trialBalance }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('ledger.export')" index="ledger.export">{{ text.nav.ledgerExport }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('op.bankPayment')" index="op.bankPayment">{{ text.nav.bankPayment }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('op.fbPayment')" index="op.fbPayment">{{ text.nav.fbPayment }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('fin.reports')" index="fin.reports">{{ text.nav.financialReports }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('fin.designer')" index="fin.designer">{{ text.nav.financialDesigner }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('fin.consumptionTax')" index="fin.consumptionTax">{{ text.nav.consumptionTax }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('fin.monthlyClosing')" index="fin.monthlyClosing">{{ text.nav.monthlyClosing }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('cash.ledger')" index="cash.ledger">{{ text.nav.cashLedger }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('rcpt.planner')" index="rcpt.planner">{{ text.nav.bankPlanner }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('moneytree.transactions')" index="moneytree.transactions">{{ text.nav.moneytreeTransactions }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('acct.periods')" index="acct.periods">{{ text.nav.accountingPeriods }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('bp.list')" index="bp.list">{{ text.nav.partners }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('bp.new')" index="bp.new">{{ text.nav.partnerNew }}</el-menu-item>
-          </el-menu>
-        </div>
-
-        <!-- 人事管理 -->
-        <div v-if="hasModuleMenus('hr')" class="section">
-          <div class="section-title">{{ text.nav.groupHR }}</div>
-          <el-menu class="menu" @select="onSelectCommon">
-            <el-menu-item v-if="isMenuAccessible('hr.dept')" index="hr.dept">{{ text.nav.hrDept }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('hr.emps')" index="hr.emps">{{ text.nav.hrEmps }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('hr.emp.new')" index="hr.emp.new">{{ text.nav.hrEmpNew }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('hr.policy.editor')" index="hr.policy.editor">{{ text.nav.policyEditor }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('payroll.execute')" index="payroll.execute">{{ text.nav.payrollExecute }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('payroll.history')" index="payroll.history">{{ text.nav.payrollHistory }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('timesheets.list')" index="timesheets.list">{{ text.nav.timesheets }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('timesheet.new')" index="timesheet.new">{{ text.nav.timesheetNew }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('cert.request')" index="cert.request">{{ text.nav.certRequest }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('cert.list')" index="cert.list">{{ text.nav.certList }}</el-menu-item>
-          </el-menu>
-        </div>
-
-        <!-- 在庫購買 -->
-        <div v-if="hasModuleMenus('inventory')" class="section">
-          <div class="section-title">{{ text.nav.groupInventory }}</div>
-          <el-menu class="menu" @select="onSelectCommon">
-              <el-menu-item v-if="isMenuAccessible('inv.materials')" index="inv.materials">{{ text.nav.inventoryMaterials }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.material.new')" index="inv.material.new">{{ text.nav.inventoryMaterialNew }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.warehouses')" index="inv.warehouses">{{ text.nav.inventoryWarehouses }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.warehouse.new')" index="inv.warehouse.new">{{ text.nav.inventoryWarehouseNew }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.bins')" index="inv.bins">{{ text.nav.inventoryBins }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.bin.new')" index="inv.bin.new">{{ text.nav.inventoryBinNew }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.stockstatus')" index="inv.stockstatus">{{ text.nav.inventoryStatuses }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.batches')" index="inv.batches">{{ text.nav.inventoryBatches }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.batch.new')" index="inv.batch.new">{{ text.nav.inventoryBatchNew }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.movement')" index="inv.movement">{{ text.nav.inventoryMovement }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.balances')" index="inv.balances">{{ text.nav.inventoryBalances }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.ledger')" index="inv.ledger">{{ text.nav.inventoryLedger }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.counts')" index="inv.counts">{{ text.nav.inventoryCounts }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.count.report')" index="inv.count.report">{{ text.nav.inventoryCountReport }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.po.list')" index="inv.po.list">{{ text.nav.purchaseOrders }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.po.new')" index="inv.po.new">{{ text.nav.purchaseOrderNew }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.vi.list')" index="inv.vi.list">{{ text.nav.vendorInvoices }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('inv.vi.new')" index="inv.vi.new">{{ text.nav.vendorInvoiceNew }}</el-menu-item>
-          </el-menu>
-        </div>
-
-        <!-- 固定資産 -->
-        <div v-if="hasModuleMenus('fixed_asset')" class="section">
-          <div class="section-title">固定資産</div>
-          <el-menu class="menu" @select="onSelectCommon">
-            <el-menu-item v-if="isMenuAccessible('fa.classes')" index="fa.classes">資産クラス管理</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('fa.list')" index="fa.list">固定資産</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('fa.depreciation')" index="fa.depreciation">定期償却記帳</el-menu-item>
-          </el-menu>
-        </div>
-
-        <!-- 受注管理 -->
-        <div v-if="hasModuleMenus('orders')" class="section">
-          <div class="section-title">{{ text.nav.groupOrders }}</div>
-          <el-menu class="menu" @select="onSelectCommon">
-            <el-menu-item v-if="isMenuAccessible('crm.salesOrders')" index="crm.salesOrders">{{ text.nav.crmSalesOrders }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('crm.orderEntry')" index="crm.orderEntry">{{ text.nav.crmOrderEntry }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('crm.deliveryNotes')" index="crm.deliveryNotes">{{ text.nav.crmDeliveryNotes }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('crm.salesInvoices')" index="crm.salesInvoices">{{ text.nav.crmSalesInvoices }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('crm.salesInvoiceCreate')" index="crm.salesInvoiceCreate">{{ text.nav.crmSalesInvoiceCreate }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('crm.salesAnalytics')" index="crm.salesAnalytics">{{ text.nav.crmSalesAnalytics }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('crm.salesAlerts')" index="crm.salesAlerts">{{ text.nav.crmSalesAlerts }}</el-menu-item>
-          </el-menu>
-        </div>
-
-        <!-- CRM -->
-        <div v-if="hasModuleMenus('crm')" class="section">
-          <div class="section-title">{{ text.nav.groupCRM }}</div>
-          <el-menu class="menu" @select="onSelectCommon">
-              <el-menu-item v-if="isMenuAccessible('crm.contacts')" index="crm.contacts">{{ text.nav.crmContacts }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('crm.deals')" index="crm.deals">{{ text.nav.crmDeals }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('crm.quotes')" index="crm.quotes">{{ text.nav.crmQuotes }}</el-menu-item>
-              <el-menu-item v-if="isMenuAccessible('crm.activities')" index="crm.activities">{{ text.nav.crmActivities }}</el-menu-item>
-          </el-menu>
-        </div>
-
-        <!-- システム設定 -->
-        <div v-if="hasModuleMenus('system')" class="section">
-          <div class="section-title">{{ text.nav.groupSystem }}</div>
-          <el-menu class="menu" @select="onSelectCommon">
-            <el-menu-item v-if="isMenuAccessible('company.settings')" index="company.settings">{{ text.nav.companySettings }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('system.users')" index="system.users">{{ text.nav.userManagement }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('system.roles')" index="system.roles">{{ text.nav.roleManagement }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('schema.editor')" index="schema.editor">{{ text.nav.schemaEditor }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('approvals.designer')" index="approvals.designer">{{ text.nav.approvalsDesigner }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('scheduler.tasks')" index="scheduler.tasks">{{ text.nav.schedulerTasks }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('notif.ruleRuns')" index="notif.ruleRuns">{{ text.nav.notifRuleRuns }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('notif.logs')" index="notif.logs">{{ text.nav.notifLogs }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('ai.workflowRules')" index="ai.workflowRules">{{ text.nav.workflowRules }}</el-menu-item>
-            <el-menu-item v-if="isMenuAccessible('ai.agentScenarios')" index="ai.agentScenarios">{{ text.nav.agentScenarios }}</el-menu-item>
-          </el-menu>
-        </div>
-
-        <!-- 动态菜单（基于后端 /edition API，显示 staffing 等动态模块） -->
-        <template v-for="section in dynamicMenuSections" :key="section.id">
-          <!-- 只显示 staffing/portal 等动态模块，跳过已硬编码的模块 -->
-          <div
-            v-if="section.id.startsWith('menu_staffing') || section.id.startsWith('menu_portal')"
-            class="section"
-          >
-            <div class="section-title">{{ getMenuLabel(section) }}</div>
+        <!-- 动态菜单（基于 permission_menus 数据库表，按角色配置显示） -->
+        <template v-for="group in accessibleMenuGroups" :key="group.moduleCode">
+          <div v-if="group.items.length > 0" class="section">
+            <div class="section-title">{{ getModuleGroupLabel(group.moduleCode) }}</div>
             <el-menu class="menu">
-              <template v-for="child in section.children" :key="child.id">
-                <!-- 二级菜单：如果有子节点则渲染子菜单 -->
-                <template v-if="child.children && child.children.length > 0">
-                  <div class="submenu-group">
-                    <div class="submenu-title">{{ getMenuLabel(child) }}</div>
-                    <el-menu-item
-                      v-for="subChild in child.children"
-                      :key="subChild.id"
-                      :index="subChild.path"
-                      @click="onDynamicMenuSelect(subChild.path)"
-                    >
-                      {{ getMenuLabel(subChild) }}
-                    </el-menu-item>
-                  </div>
-                </template>
-                <!-- 一级菜单项 -->
-                <el-menu-item
-                  v-else-if="child.path"
-                  :index="child.path"
-                  @click="onDynamicMenuSelect(child.path)"
-                >
-                  {{ getMenuLabel(child) }}
-                </el-menu-item>
-              </template>
+              <el-menu-item
+                v-for="item in group.items"
+                :key="item.key"
+                :index="item.key"
+                @click="onDbMenuSelect(item)"
+              >
+                {{ getMenuItemLabel(item) }}
+              </el-menu-item>
             </el-menu>
           </div>
         </template>
@@ -3474,20 +3334,68 @@ function hasCap(cap: string): boolean {
   return profile.caps.includes(cap) || profile.caps.includes('roles:manage')
 }
 
+// 菜单项结构（从 /api/permissions/accessible-menus-full 返回）
+interface MenuItemFromDb {
+  key: string
+  name: { ja?: string; en?: string; zh?: string } | string
+  path: string | null
+  order: number
+}
+interface MenuGroupFromDb {
+  moduleCode: string
+  items: MenuItemFromDb[]
+}
+
 // 可访问的菜单列表（用于菜单过滤）
 const accessibleMenus = ref<string[]>([])
+const accessibleMenuGroups = ref<MenuGroupFromDb[]>([])
 const menusLoaded = ref(false)
+
 async function loadAccessibleMenus() {
   try {
-    const res = await api.get('/api/permissions/accessible-menus')
-    accessibleMenus.value = res.data || []
+    // 调用新的 API 获取完整菜单结构
+    const res = await api.get('/api/permissions/accessible-menus-full')
+    accessibleMenuGroups.value = res.data || []
+    // 同时维护 accessibleMenus 列表（用于兼容）
+    accessibleMenus.value = accessibleMenuGroups.value.flatMap(g => g.items.map(i => i.key))
     menusLoaded.value = true
   } catch (e) {
     // 获取失败时不限制菜单显示（向后兼容）
     console.warn('Failed to load accessible menus:', e)
     accessibleMenus.value = []
+    accessibleMenuGroups.value = []
     menusLoaded.value = false
   }
+}
+
+// 获取菜单项的显示名称（支持多语言）
+function getMenuItemLabel(item: MenuItemFromDb): string {
+  if (typeof item.name === 'string') return item.name
+  const lang = langValue.value || 'ja'
+  if (lang === 'ja' && item.name.ja) return item.name.ja
+  if (lang === 'en' && item.name.en) return item.name.en
+  if (lang === 'zh' && item.name.zh) return item.name.zh
+  // 回退到任意可用的语言
+  return item.name.ja || item.name.en || item.name.zh || item.key
+}
+
+// 获取模块分组的显示名称
+function getModuleGroupLabel(moduleCode: string): string {
+  const navTexts = (text.value as any)?.nav || {}
+  // 尝试常见的映射
+  const mapping: Record<string, string> = {
+    'finance': navTexts.groupFinance || '財務会計',
+    'hr': navTexts.groupHR || '人事管理',
+    'inventory': navTexts.groupInventory || '在庫購買',
+    'crm': navTexts.groupCRM || 'CRM',
+    'sales': navTexts.groupOrders || '受注管理',
+    'system': navTexts.groupSystem || 'システム設定',
+    'ai': 'AI',
+    'staffing': navTexts.staffing || '人材派遣',
+    'portal': navTexts.portal || 'ポータル',
+    'fixed_assets': navTexts.groupFixedAssets || '固定資産',
+  }
+  return mapping[moduleCode] || moduleCode
 }
 
 // 检查菜单是否可访问
@@ -3497,32 +3405,6 @@ function isMenuAccessible(menuKey: string): boolean {
   // 如果菜单列表为空，表示用户没有任何权限
   if (accessibleMenus.value.length === 0) return false
   return accessibleMenus.value.includes(menuKey)
-}
-
-// 模块菜单映射：定义每个模块包含哪些菜单
-const moduleMenusMap: Record<string, string[]> = {
-  finance: ['voucher.new', 'vouchers.list', 'accounts.list', 'account.ledger', 'account.balance', 'trial.balance',
-            'ledger.export', 'op.bankPayment', 'op.fbPayment', 'fin.reports', 'fin.designer', 'fin.consumptionTax', 'fin.monthlyClosing',
-            'cash.ledger', 'rcpt.planner', 'moneytree.transactions', 'acct.periods', 'bp.list', 'bp.new'],
-  hr: ['hr.dept', 'hr.emps', 'hr.emp.new', 'hr.policy.editor', 'payroll.execute', 'payroll.history',
-       'timesheets.list', 'timesheet.new', 'cert.request', 'cert.list'],
-  inventory: ['inv.materials', 'inv.material.new', 'inv.warehouses', 'inv.warehouse.new', 'inv.bins',
-              'inv.bin.new', 'inv.stockstatus', 'inv.batches', 'inv.batch.new', 'inv.movement',
-              'inv.balances', 'inv.ledger', 'inv.counts', 'inv.count.report', 'inv.po.list', 'inv.po.new',
-              'inv.vi.list', 'inv.vi.new'],
-  fixed_asset: ['fa.classes', 'fa.list', 'fa.depreciation'],
-  orders: ['crm.salesOrders', 'crm.orderEntry', 'crm.deliveryNotes', 'crm.salesInvoices', 'crm.salesInvoiceCreate', 'crm.salesAnalytics', 'crm.salesAlerts'],
-  crm: ['crm.contacts', 'crm.deals', 'crm.quotes', 'crm.activities'],
-  system: ['company.settings', 'system.users', 'system.roles', 'schema.editor', 'approvals.designer',
-           'scheduler.tasks', 'notif.ruleRuns', 'notif.logs', 'ai.workflowRules', 'ai.agentScenarios']
-}
-
-// 检查模块是否有任何可访问的菜单
-function hasModuleMenus(moduleCode: string): boolean {
-  // 如果权限还没有加载成功，显示所有模块（向后兼容）
-  if (!menusLoaded.value) return true
-  const menus = moduleMenusMap[moduleCode] || []
-  return menus.some(m => accessibleMenus.value.includes(m))
 }
 
 // ============ 动态菜单（基于后端 /edition API）============
@@ -3564,6 +3446,7 @@ function toSnakeCase(str: string): string {
 
 // 路径到 embed key 的映射（用于动态菜单）
 const pathToEmbedKeyMap: Record<string, string> = {
+  // Staffing 模块
   '/staffing/resources': 'staffing.resources',
   '/staffing/projects': 'staffing.projects',
   '/staffing/contracts': 'staffing.contracts',
@@ -3576,30 +3459,141 @@ const pathToEmbedKeyMap: Record<string, string> = {
   '/staffing/ai/matching': 'staffing.ai.matching',
   '/staffing/ai/market': 'staffing.ai.market',
   '/staffing/ai/alerts': 'staffing.ai.alerts',
+  // 财务模块
+  '/voucher/new': 'voucher.new',
+  '/vouchers': 'vouchers.list',
+  '/accounts': 'accounts.list',
+  '/account-ledger': 'account.ledger',
+  '/account-balance': 'account.balance',
+  '/trial-balance': 'trial.balance',
+  '/ledger-export': 'ledger.export',
+  '/operations/bank-payment': 'op.bankPayment',
+  '/fb-payment': 'op.fbPayment',
+  '/financial/statements': 'fin.reports',
+  '/financial/nodes': 'fin.designer',
+  '/financial/consumption-tax': 'fin.consumptionTax',
+  '/financial/monthly-closing': 'fin.monthlyClosing',
+  '/cash/ledger': 'cash.ledger',
+  '/moneytree/transactions': 'moneytree.transactions',
+  // 人事模块
+  '/hr/departments': 'hr.dept',
+  '/hr/employees': 'hr.emps',
+  '/payroll-execute': 'payroll.execute',
+  '/payroll-history': 'payroll.history',
+  '/hr/resident-tax': 'hr.resident_tax',
+  '/timesheets': 'timesheets.list',
+  // 系统模块
+  '/company/settings': 'company.settings',
+  '/system/users': 'system.users',
+  '/system/roles': 'system.roles',
+  '/ai/agent-scenarios': 'ai.agentScenarios',
+  '/workflow/rules': 'ai.workflowRules',
+  '/notifications/runs': 'notif.ruleRuns',
+  '/notifications/logs': 'notif.logs',
+  // 固定资产
+  '/fixed-assets/classes': 'fa.classes',
+  '/fixed-assets/list': 'fa.list',
+  '/fixed-assets/depreciation': 'fa.depreciation',
+  // 库存
+  '/materials': 'inv.materials',
+  '/warehouses': 'inv.warehouses',
+  '/bins': 'inv.bins',
+  '/inventory/movement': 'inv.movement',
+  '/inventory/balances': 'inv.balances',
+  '/inventory/ledger': 'inv.ledger',
+  '/inventory-counts': 'inv.counts',
+  '/purchase-orders': 'inv.po.list',
+  '/vendor-invoices': 'inv.vi.list',
+  // CRM
+  '/crm/contacts': 'crm.contacts',
+  '/crm/deals': 'crm.deals',
+  '/crm/quotes': 'crm.quotes',
+  '/crm/sales-orders': 'crm.salesOrders',
+  '/crm/activities': 'crm.activities',
+  '/businesspartners': 'bp.list',
+  // 销售
+  '/sales-analytics': 'crm.salesAnalytics',
+  '/sales-alerts': 'crm.salesAlerts',
+  '/sales-invoices': 'crm.salesInvoices',
+  '/delivery-notes': 'crm.deliveryNotes',
+}
+
+// 检查菜单项是否可访问（基于权限）
+function isMenuItemAccessible(menu: MenuTreeNode): boolean {
+  // 如果权限还没加载，显示所有菜单（向后兼容）
+  if (!menusLoaded.value) return true
+  // 如果菜单没有设置权限要求，则可访问
+  if (!menu.permission) return true
+  // 检查用户是否有该权限
+  return accessibleMenus.value.includes(menu.id) || accessibleMenus.value.includes(menu.permission!)
+}
+
+// 检查模块是否有任何可访问的菜单项
+function hasSectionAccessibleMenus(section: MenuTreeNode): boolean {
+  if (!menusLoaded.value) return true
+  // 递归检查是否有任何可访问的子菜单
+  return section.children.some(child => {
+    if (child.children && child.children.length > 0) {
+      return child.children.some(sub => isMenuItemAccessible(sub))
+    }
+    return child.path && isMenuItemAccessible(child)
+  })
+}
+
+// 检查子菜单组是否有可访问的项
+function hasSubMenuAccessibleItems(submenu: MenuTreeNode): boolean {
+  if (!menusLoaded.value) return true
+  return submenu.children.some(child => isMenuItemAccessible(child))
+}
+
+// 获取可访问的子菜单项
+function getAccessibleChildren(children: MenuTreeNode[]): MenuTreeNode[] {
+  if (!menusLoaded.value) return children
+  return children.filter(child => isMenuItemAccessible(child))
 }
 
 // 处理动态菜单点击
-function onDynamicMenuSelect(path: string) {
-  if (!path) return
-  console.debug('[ChatKit] dynamic menu select', path)
+function onDynamicMenuSelect(menu: MenuTreeNode) {
+  if (!menu || !menu.path) return
+  console.debug('[ChatKit] dynamic menu select', menu.id, menu.path)
+  
   // 检查是否有对应的 embed key，使用弹窗方式打开
-  const embedKey = pathToEmbedKeyMap[path]
+  const embedKey = pathToEmbedKeyMap[menu.path]
   if (embedKey && embedMap[embedKey]) {
     openInModal(embedKey, getTitle(embedKey))
     return
   }
-  // 没有注册的页面，使用路由跳转（兜底）
-  router.push(path)
+  
+  // 没有注册的 embed 页面，使用路由跳转（兜底）
+  router.push(menu.path)
 }
 
-// 判断菜单是否应该显示（基于权限）
+// 处理基于数据库的菜单点击
+function onDbMenuSelect(item: MenuItemFromDb) {
+  if (!item) return
+  console.debug('[ChatKit] db menu select', item.key, item.path)
+  
+  // 优先使用 menu_key 作为 embed key
+  if (embedMap[item.key]) {
+    openInModal(item.key, getTitle(item.key))
+    return
+  }
+  
+  // 如果有 path，检查是否有对应的 embed key
+  if (item.path) {
+    const embedKey = pathToEmbedKeyMap[item.path]
+    if (embedKey && embedMap[embedKey]) {
+      openInModal(embedKey, getTitle(embedKey))
+      return
+    }
+    // 使用路由跳转
+    router.push(item.path)
+  }
+}
+
+// 判断菜单是否应该显示（基于权限）- 保留用于兼容
 function shouldShowMenu(menu: MenuTreeNode): boolean {
-  // 如果权限还没加载，显示所有菜单（向后兼容）
-  if (!menusLoaded.value) return true
-  // 如果菜单列表为空，表示用户没有任何权限
-  if (accessibleMenus.value.length === 0) return false
-  // 检查菜单 ID 是否在可访问列表中（可扩展为更复杂的权限逻辑）
-  return true // 暂时不限制动态菜单，后续可以根据 menu.permission 字段过滤
+  return isMenuItemAccessible(menu)
 }
 
 const profileInitials = computed(() => {
@@ -3653,6 +3647,7 @@ const embedMap:Record<string, any> = {
   ,'hr.policy.editor': PolicyEditor
   ,'payroll.execute': PayrollExecute
   ,'payroll.history': defineAsyncComponent(() => import('./PayrollHistory.vue'))
+  ,'hr.resident_tax': defineAsyncComponent(() => import('./ResidentTaxList.vue'))
   ,'timesheets.list': defineAsyncComponent(() => import('./TimesheetsList.vue'))
   ,'timesheet.new': defineAsyncComponent(() => import('./TimesheetForm.vue'))
   ,'cert.request': CertificateRequestForm
@@ -3749,6 +3744,7 @@ const titleKeyMap: Record<string, string> = {
   'hr.policy.editor': 'policyEditor',
   'payroll.execute': 'payrollExecute',
   'payroll.history': 'payrollHistory',
+  'hr.resident_tax': 'residentTax',
   'timesheets.list': 'timesheets',
   'timesheet.new': 'timesheetNew',
   'cert.request': 'certRequest',

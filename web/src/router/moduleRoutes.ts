@@ -36,8 +36,10 @@ export const hrCoreRoutes: RouteRecordRaw[] = [
   { path: '/cert/request', component: () => import('../views/CertificateRequestForm.vue'), meta: { requiresAuth: true } },
 ]
 
-// 薪酬模块路由 - 已通过 ChatKit 弹窗访问，不需要独立路由
-export const payrollRoutes: RouteRecordRaw[] = []
+// 薪酬模块路由
+export const payrollRoutes: RouteRecordRaw[] = [
+  { path: '/hr/resident-tax', component: () => import('../views/ResidentTaxList.vue'), meta: { requiresAuth: true } },
+]
 
 // AI核心模块路由 - 已通过 ChatKit 弹窗访问，不需要独立路由
 export const aiCoreRoutes: RouteRecordRaw[] = []

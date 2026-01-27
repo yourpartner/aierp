@@ -755,6 +755,60 @@ public class PermissionService
         return menus;
     }
 
+    /// <summary>获取用户可访问的菜单完整信息（包括分组、顺序、名称）</summary>
+    public async Task<List<PermissionMenu>> GetAccessibleMenusFullAsync(string companyCode, Guid userId)
+    {
+        var userCaps = new HashSet<string>();
+        
+        await using var conn = await _ds.OpenConnectionAsync();
+        
+        // 获取用户所有能力
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"SELECT DISTINCT rc.cap FROM role_caps rc
+                                JOIN user_roles ur ON ur.role_id = rc.role_id
+                                WHERE ur.user_id = $1";
+            cmd.Parameters.AddWithValue(userId);
+            await using var rd = await cmd.ExecuteReaderAsync();
+            while (await rd.ReadAsync())
+            {
+                userCaps.Add(rd.GetString(0));
+            }
+        }
+
+        // 获取可访问的菜单完整信息
+        var menus = new List<PermissionMenu>();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"SELECT id, module_code, menu_key, menu_name, menu_path, caps_required, display_order 
+                                FROM permission_menus 
+                                WHERE is_active = true 
+                                ORDER BY module_code, display_order";
+            await using var rd = await cmd.ExecuteReaderAsync();
+            while (await rd.ReadAsync())
+            {
+                var capsRequired = rd.IsDBNull(5) ? Array.Empty<string>() : (string[])rd.GetValue(5);
+                
+                // 如果没有要求任何cap，或者用户有任一required cap，则可访问
+                if (capsRequired.Length == 0 || capsRequired.Any(c => userCaps.Contains(c)))
+                {
+                    menus.Add(new PermissionMenu
+                    {
+                        Id = rd.GetGuid(0),
+                        ModuleCode = rd.GetString(1),
+                        MenuKey = rd.GetString(2),
+                        MenuName = JsonDocument.Parse(rd.GetString(3)).RootElement,
+                        MenuPath = rd.IsDBNull(4) ? null : rd.GetString(4),
+                        CapsRequired = capsRequired,
+                        DisplayOrder = rd.GetInt32(6)
+                    });
+                }
+            }
+        }
+
+        return menus;
+    }
+
     #endregion
 
     #region AI Role Generation

@@ -20,6 +20,7 @@ public class PayrollStandardModule : ModuleBase
             new MenuConfig { Id = "menu_payroll", Label = "menu.payroll", Icon = "Wallet", Path = "", ParentId = "menu_hr", Order = 210 },
             new MenuConfig { Id = "menu_payroll_execute", Label = "menu.payrollExecute", Icon = "CircleCheck", Path = "/payroll-execute", ParentId = "menu_hr", Order = 212, Permission = "payroll.execute" },
             new MenuConfig { Id = "menu_payroll_history", Label = "menu.payrollHistory", Icon = "Clock", Path = "/payroll-history", ParentId = "menu_hr", Order = 213, Permission = "payroll.history" },
+            new MenuConfig { Id = "hr.resident_tax", Label = "menu.residentTax", Icon = "Money", Path = "/hr/resident-tax", ParentId = "menu_hr", Order = 214, Permission = "payroll:resident_tax" },
         }
     };
     

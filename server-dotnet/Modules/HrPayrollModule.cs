@@ -58,6 +58,7 @@ public static class HrPayrollModule
         ["PENSION"] = "厚生年金",
         ["EMP_INS"] = "雇用保険",
         ["WHT"] = "源泉徴収税",
+        ["RESIDENT_TAX"] = "住民税",
         ["OVERTIME_STD"] = "時間外手当",
         ["OVERTIME_60"] = "時間外(60h超)",
         ["HOLIDAY_PAY"] = "休日労働手当",
@@ -350,6 +351,7 @@ public static class HrPayrollModule
             || code.Equals("PENSION", StringComparison.OrdinalIgnoreCase)
             || code.Equals("EMP_INS", StringComparison.OrdinalIgnoreCase)
             || code.Equals("WHT", StringComparison.OrdinalIgnoreCase)
+            || code.Equals("RESIDENT_TAX", StringComparison.OrdinalIgnoreCase)
             || code.Equals("ABSENCE_DEDUCT", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -567,6 +569,19 @@ public static class HrPayrollModule
                 debitAccount = debit,
                 creditAccount = credit,
                 items = new[] { new { code = "WHT" } },
+                description = FormatJournalDescription(debit, credit)
+            });
+        }
+        if (Has("住民税", "住民稅", "市民税", "県民税", "地方税", "特別徴収"))
+        {
+            var debit = Debit("residentTax", "3185");
+            var credit = Credit("residentTax", "315");
+            list.Add(new
+            {
+                name = "residentTax",
+                debitAccount = debit,
+                creditAccount = credit,
+                items = new[] { new { code = "RESIDENT_TAX" } },
                 description = FormatJournalDescription(debit, credit)
             });
         }
@@ -830,6 +845,7 @@ public static class HrPayrollModule
             bool wantsHolidayWork = ContainsAny(s, "休日", "祝日", "节假日", "節假日", "法定休日");
             bool wantsLateNight = ContainsAny(s, "深夜", "22時", "22点", "22點", "late night", "夜間");
             bool wantsAbsence = ContainsAny(s, "欠勤", "欠勤控除", "欠勤・遅刻", "勤怠控除", "工时不足", "工時不足", "遅刻", "早退");
+            bool wantsResidentTax = ContainsAny(s, "住民税", "住民稅", "市民税", "県民税", "地方税", "特別徴収");
             if (wantsHealth) {
                 EnsureDeductionItem("HEALTH_INS", "社会保険");
                 object baseExpr = new { charRef = "employee.baseSalaryMonth" };
@@ -872,6 +888,13 @@ public static class HrPayrollModule
                 EnsureDeductionItem("WHT", "源泉徴収税");
                 rules.Add(new { item = "WHT", type = "deduction", activation = BuildActivation(), formula = new { withholding = new { category = "monthly_ko" } } });
                 hints.Add("已生成源泉徴収税计算规则：按月額表甲欄匹配。");
+            }
+            if (wantsResidentTax)
+            {
+                EnsureDeductionItem("RESIDENT_TAX", "住民税");
+                // 住民税从 resident_tax_schedules 表根据当前月份查询
+                rules.Add(new { item = "RESIDENT_TAX", type = "deduction", activation = BuildActivation(), formula = new { residentTax = new { source = "db" } } });
+                hints.Add("已生成住民税计算规则：从住民税管理数据中根据当前月份查询扣除金额。");
             }
             if (wantsOvertime)
             {
@@ -931,6 +954,12 @@ public static class HrPayrollModule
                 var withholdingDebit = ResolveJournalDebit("withholding", "3184");
                 var withholdingCredit = ResolveJournalCredit("withholding", "315");
                 AddJournalRule("withholding", withholdingDebit, withholdingCredit, new[] { BuildJournalItem("WHT") }, FormatJournalDescription(withholdingDebit, withholdingCredit));
+            }
+            if (wantsResidentTax)
+            {
+                var residentTaxDebit = ResolveJournalDebit("residentTax", "3185");
+                var residentTaxCredit = ResolveJournalCredit("residentTax", "315");
+                AddJournalRule("residentTax", residentTaxDebit, residentTaxCredit, new[] { BuildJournalItem("RESIDENT_TAX") }, FormatJournalDescription(residentTaxDebit, residentTaxCredit));
             }
 
             if (!hasBase) riskFlags.Add("employee.missing_base_salary");
@@ -1082,6 +1111,10 @@ public static class HrPayrollModule
                         // 源泉徴収税
                         if (dslItems.Contains("WHT"))
                             autoJournalRules.Add(new { name = "withholding", debitAccount = "3184", creditAccount = "315", items = new[] { BuildJI("WHT") } });
+                        
+                        // 住民税
+                        if (dslItems.Contains("RESIDENT_TAX"))
+                            autoJournalRules.Add(new { name = "residentTax", debitAccount = "3185", creditAccount = "315", items = new[] { BuildJI("RESIDENT_TAX") } });
                         
                         // 年末調整徴収
                         if (dslItems.Contains("NENMATSU_CHOSHU"))
@@ -3609,6 +3642,8 @@ LIMIT @pageSize OFFSET @offset";
                                || (!string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("雇用保険", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("雇佣保险", StringComparison.OrdinalIgnoreCase)));
             bool wantsWithholding = (!string.IsNullOrWhiteSpace(empText) && (empText.Contains("源泉", StringComparison.OrdinalIgnoreCase) || empText.Contains("月額表", StringComparison.OrdinalIgnoreCase) || empText.Contains("甲欄", StringComparison.OrdinalIgnoreCase)))
                                || (!string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("源泉", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("月額表", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("甲欄", StringComparison.OrdinalIgnoreCase)));
+            bool wantsResidentTax = ContainsAny(empText, "住民税", "住民稅", "市民税", "県民税", "地方税", "特別徴収")
+                               || ContainsAny(companyTextInPolicy, "住民税", "住民稅", "市民税", "県民税", "地方税", "特別徴収");
             bool wantsOvertime = ContainsAny(empText, "残業", "時間外", "加班") || ContainsAny(companyTextInPolicy, "残業", "時間外", "加班");
             bool wantsOvertime60 = ContainsAny(empText, "60時間", "６０時間", "60h", "60小时") || ContainsAny(companyTextInPolicy, "60時間", "６０時間", "60h", "60小时");
             bool wantsHolidayWork = ContainsAny(empText, "休日", "祝日", "节假日", "節假日", "法定休日") || ContainsAny(companyTextInPolicy, "休日", "祝日", "节假日", "節假日", "法定休日");
@@ -3787,6 +3822,7 @@ LIMIT @pageSize OFFSET @offset";
             bool dslHasPension = dslItemCodes.Contains("PENSION");
             bool dslHasEmployment = dslItemCodes.Contains("EMP_INS");
             bool dslHasWithholding = dslItemCodes.Contains("WHT");
+            bool dslHasResidentTax = dslItemCodes.Contains("RESIDENT_TAX");
             bool dslHasBase = dslItemCodes.Contains("BASE");
             
             var wageJournalItems = new List<object>();
@@ -3826,6 +3862,12 @@ LIMIT @pageSize OFFSET @offset";
             {
                 AddJournalRuleLocal("withholding", ResolveJournalDebitLocal("withholding", "3184"), ResolveJournalCreditLocal("withholding", "315"), new[] { BuildJournalItem("WHT") }, "源泉所得税預り金／未払費用");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "withholding" });
+            }
+            // 住民税：DSL 有定义，或自然语言描述中有关键字
+            if (dslHasResidentTax || wantsResidentTax)
+            {
+                AddJournalRuleLocal("residentTax", ResolveJournalDebitLocal("residentTax", "3185"), ResolveJournalCreditLocal("residentTax", "315"), new[] { BuildJournalItem("RESIDENT_TAX") }, "住民税預り金／未払費用");
+                if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "residentTax" });
             }
 
             var arr = new System.Text.Json.Nodes.JsonArray(compiled.Select(o => System.Text.Json.JsonSerializer.SerializeToNode(o)!).ToArray());
@@ -3872,6 +3914,8 @@ LIMIT @pageSize OFFSET @offset";
             var rulesEl = rulesElement.Value;
                 var monthDate = DateTime.TryParse(month ?? string.Empty, out var md) ? md : DateTime.Today;
             var whtTable = await LoadWithholdingTableAsync(ds, monthDate, ct);
+            // 加载住民税金额
+            var residentTaxAmount = await LoadResidentTaxAmountAsync(conn, companyCode, employeeId, monthDate, ct);
             ApplyPolicyRules(
                 rulesEl,
                 sheetOut,
@@ -3887,7 +3931,8 @@ LIMIT @pageSize OFFSET @offset";
                 monthDate,
                 workHourSummary,
                 policyBody,
-                empNlDescription);
+                empNlDescription,
+                residentTaxAmount);
         }
         var journal = new List<JournalLine>();
         JsonElement? activeJournalRules = null;
@@ -4092,6 +4137,64 @@ LIMIT @pageSize OFFSET @offset";
         return list;
     }
 
+    // 加载住民税金额（根据员工和月份从 resident_tax_schedules 表查询）
+    private static async Task<decimal> LoadResidentTaxAmountAsync(
+        NpgsqlConnection conn,
+        string companyCode,
+        Guid employeeId,
+        DateTime monthDate,
+        CancellationToken ct)
+    {
+        try
+        {
+            // 住民税年度：6月~次年5月为一个年度
+            // 例如：2025年6月~2026年5月属于 fiscal_year=2025
+            var fiscalYear = monthDate.Month >= 6 ? monthDate.Year : monthDate.Year - 1;
+            
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"SELECT june_amount, july_amount, august_amount, september_amount,
+                                       october_amount, november_amount, december_amount,
+                                       january_amount, february_amount, march_amount, april_amount, may_amount
+                                FROM resident_tax_schedules
+                                WHERE company_code = $1 AND employee_id = $2 AND fiscal_year = $3 AND status = 'active'
+                                LIMIT 1";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(employeeId);
+            cmd.Parameters.AddWithValue(fiscalYear);
+            
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct))
+                return 0m; // 没有住民税记录
+            
+            // 根据月份返回对应的金额
+            // 字段顺序：june(0), july(1), august(2), september(3), october(4), november(5), 
+            //          december(6), january(7), february(8), march(9), april(10), may(11)
+            var monthIndex = monthDate.Month switch
+            {
+                6 => 0,  // june
+                7 => 1,  // july
+                8 => 2,  // august
+                9 => 3,  // september
+                10 => 4, // october
+                11 => 5, // november
+                12 => 6, // december
+                1 => 7,  // january
+                2 => 8,  // february
+                3 => 9,  // march
+                4 => 10, // april
+                5 => 11, // may
+                _ => -1
+            };
+            
+            if (monthIndex < 0) return 0m;
+            
+            return reader.IsDBNull(monthIndex) ? 0m : reader.GetDecimal(monthIndex);
+        }
+        catch
+        {
+            return 0m;
+        }
+    }
 
     private static TimeSpan? ParseTimeSpan(string? value)
     {
@@ -4441,7 +4544,8 @@ LIMIT @pageSize OFFSET @offset";
         DateTime monthDate,
         WorkHourSummary workHours,
         JsonElement? policyRoot,
-        string? empSalaryDescription = null)
+        string? empSalaryDescription = null,
+        decimal residentTaxAmount = 0m)
     {
         // 辅助函数：检查员工是否匹配规则的 activation 条件
         bool CheckActivation(JsonElement rule)
@@ -4794,6 +4898,12 @@ LIMIT @pageSize OFFSET @offset";
                     // 警告：未找到匹配的税额表记录，可能是数据不完整或扶养人数超出范围
                     // 返回特殊标记以便调用方识别
                     return new FormulaEvalResult(0m, null, taxable, null, $"withholding:not_found:dep={dependents}:taxable={taxable}");
+                }
+                // 住民税计算：从 resident_tax_schedules 表加载的金额
+                if (f.TryGetProperty("residentTax", out var rtNode) && rtNode.ValueKind == JsonValueKind.Object)
+                {
+                    // 直接返回已加载的住民税金额
+                    return new FormulaEvalResult(residentTaxAmount, null, null, null, residentTaxAmount > 0 ? "residentTax:db" : "residentTax:not_found");
                 }
                 if (f.TryGetProperty("charRef", out var cref) && cref.ValueKind == JsonValueKind.String)
                         {

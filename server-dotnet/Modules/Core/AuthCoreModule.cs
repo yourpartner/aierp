@@ -112,6 +112,52 @@ public class AuthCoreModule : ModuleBase
             var menus = await svc.GetAccessibleMenusAsync(user.CompanyCode, uid);
             return Results.Ok(menus);
         }).RequireAuthorization();
+
+        // 获取用户可访问的菜单完整信息（包括分组、顺序、名称）- 用于侧边栏动态渲染
+        app.MapGet("/permissions/accessible-menus-full", async (HttpRequest req, PermissionService svc) =>
+        {
+            var user = Auth.GetUserCtx(req);
+            if (string.IsNullOrWhiteSpace(user.CompanyCode)) return Results.BadRequest(new { error = "Missing x-company-code" });
+            if (string.IsNullOrWhiteSpace(user.UserId) || !Guid.TryParse(user.UserId, out var uid))
+                return Results.Ok(Array.Empty<object>());
+
+            var menus = await svc.GetAccessibleMenusFullAsync(user.CompanyCode, uid);
+            // 按 module_code 分组返回
+            var grouped = menus.GroupBy(m => m.ModuleCode)
+                               .Select(g => new {
+                                   moduleCode = g.Key,
+                                   items = g.OrderBy(m => m.DisplayOrder).Select(m => new {
+                                       key = m.MenuKey,
+                                       name = m.MenuName,
+                                       path = m.MenuPath,
+                                       order = m.DisplayOrder
+                                   })
+                               })
+                               .OrderBy(g => g.items.Min(i => i.order));
+            return Results.Ok(grouped);
+        }).RequireAuthorization();
+        app.MapGet("/api/permissions/accessible-menus-full", async (HttpRequest req, PermissionService svc) =>
+        {
+            var user = Auth.GetUserCtx(req);
+            if (string.IsNullOrWhiteSpace(user.CompanyCode)) return Results.BadRequest(new { error = "Missing x-company-code" });
+            if (string.IsNullOrWhiteSpace(user.UserId) || !Guid.TryParse(user.UserId, out var uid))
+                return Results.Ok(Array.Empty<object>());
+
+            var menus = await svc.GetAccessibleMenusFullAsync(user.CompanyCode, uid);
+            // 按 module_code 分组返回
+            var grouped = menus.GroupBy(m => m.ModuleCode)
+                               .Select(g => new {
+                                   moduleCode = g.Key,
+                                   items = g.OrderBy(m => m.DisplayOrder).Select(m => new {
+                                       key = m.MenuKey,
+                                       name = m.MenuName,
+                                       path = m.MenuPath,
+                                       order = m.DisplayOrder
+                                   })
+                               })
+                               .OrderBy(g => g.items.Min(i => i.order));
+            return Results.Ok(grouped);
+        }).RequireAuthorization();
     }
 
     private static void MapCompanySettingsEndpoints(WebApplication app)

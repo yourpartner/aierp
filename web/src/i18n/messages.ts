@@ -34,6 +34,7 @@ export interface Messages {
     policyEditor: string
     payrollExecute: string
     payrollHistory: string
+    residentTax: string
     timesheets: string
     timesheetNew: string
     certRequest: string
@@ -94,6 +95,41 @@ export interface Messages {
     faClasses: string
     faList: string
     faDepreciation: string
+    // 动态菜单翻译（后端 menu.xxx 对应）
+    finance: string
+    hr: string
+    ai: string
+    financialStatements: string
+    financialNodes: string
+    fixedAssets: string
+    assetClasses: string
+    assetsList: string
+    depreciation: string
+    moneytree: string
+    employees: string
+    departments: string
+    payroll: string
+    system: string
+    users: string
+    roles: string
+    notifications: string
+    notificationRuns: string
+    notificationLogs: string
+    contacts: string
+    deals: string
+    quotes: string
+    salesOrders: string
+    activities: string
+    businessPartners: string
+    sales: string
+    salesAnalytics: string
+    salesAlerts: string
+    salesInvoices: string
+    deliveryNotes: string
+    materials: string
+    warehouses: string
+    bins: string
+    purchase: string
     // Staffing (人才派遣)
     staffing: string
     resourcePool: string
@@ -818,6 +854,7 @@ export const ja: Messages = {
     policyEditor: '給与ポリシー',
     payrollExecute: '給与計算',
     payrollHistory: '給与履歴',
+    residentTax: '住民税',
     timesheets: '工数一覧',
     timesheetNew: '工数入力',
     certRequest: '証明書申請',
@@ -878,6 +915,41 @@ export const ja: Messages = {
     faClasses: '資産クラス管理',
     faList: '固定資産',
     faDepreciation: '定期償却記帳',
+    // 动态菜单翻译（后端 menu.xxx 对应，只包含缺失的 key）
+    finance: '財務会計',
+    hr: '人事管理',
+    ai: 'AI',
+    financialStatements: '財務諸表',
+    financialNodes: '財務諸表構成',
+    fixedAssets: '固定資産',
+    assetClasses: '資産クラス管理',
+    assetsList: '固定資産一覧',
+    depreciation: '定期償却記帳',
+    moneytree: '銀行明細',
+    employees: '社員一覧',
+    departments: '部門階層',
+    payroll: '給与管理',
+    system: 'システム設定',
+    users: 'ユーザー管理',
+    roles: 'ロール管理',
+    notifications: '通知',
+    notificationRuns: '通知ルール実行履歴',
+    notificationLogs: '通知送信ログ',
+    contacts: 'コンタクト一覧',
+    deals: '商談一覧',
+    quotes: '見積一覧',
+    salesOrders: '受注一覧',
+    activities: '活動一覧',
+    businessPartners: '取引先一覧',
+    sales: '販売管理',
+    salesAnalytics: '販売分析',
+    salesAlerts: '販売アラート',
+    salesInvoices: '請求書一覧',
+    deliveryNotes: '納品書一覧',
+    materials: '品目一覧',
+    warehouses: '倉庫一覧',
+    bins: '棚番一覧',
+    purchase: '購買管理',
     // Staffing (人材派遣)
     staffing: '人材派遣',
     resourcePool: 'リソースプール',
@@ -1812,6 +1884,7 @@ export const en: Messages = {
     policyEditor: 'Payroll Policy',
     payrollExecute: 'Payroll',
     payrollHistory: 'Payroll History',
+    residentTax: 'Resident Tax',
     timesheets: 'Timesheets',
     timesheetNew: 'New Timesheet',
     certRequest: 'Certificate Request',
@@ -1872,6 +1945,41 @@ export const en: Messages = {
     faClasses: 'Asset Classes',
     faList: 'Fixed Assets',
     faDepreciation: 'Depreciation Posting',
+    // Dynamic menu translations (backend menu.xxx mapping)
+    finance: 'Finance & Accounting',
+    hr: 'HR Management',
+    ai: 'AI',
+    financialStatements: 'Financial Statements',
+    financialNodes: 'Statement Designer',
+    fixedAssets: 'Fixed Assets',
+    assetClasses: 'Asset Classes',
+    assetsList: 'Fixed Assets List',
+    depreciation: 'Depreciation Posting',
+    moneytree: 'Bank Transactions',
+    employees: 'Employees',
+    departments: 'Departments',
+    payroll: 'Payroll',
+    system: 'System Settings',
+    users: 'User Management',
+    roles: 'Role Management',
+    notifications: 'Notifications',
+    notificationRuns: 'Notification Runs',
+    notificationLogs: 'Notification Logs',
+    contacts: 'Contacts',
+    deals: 'Deals',
+    quotes: 'Quotes',
+    salesOrders: 'Sales Orders',
+    activities: 'Activities',
+    businessPartners: 'Business Partners',
+    sales: 'Sales',
+    salesAnalytics: 'Sales Analytics',
+    salesAlerts: 'Sales Alerts',
+    salesInvoices: 'Sales Invoices',
+    deliveryNotes: 'Delivery Notes',
+    materials: 'Materials',
+    warehouses: 'Warehouses',
+    bins: 'Bins',
+    purchase: 'Purchasing',
     // Staffing
     staffing: 'Staffing',
     resourcePool: 'Resource Pool',
@@ -2812,6 +2920,7 @@ zh.nav = {
   policyEditor: '薪酬策略',
   payrollExecute: '薪资计算',
   payrollHistory: '薪资历史',
+  residentTax: '住民税',
   timesheets: '工时列表',
   timesheetNew: '录入工时',
   certRequest: '证明申请',
@@ -2872,6 +2981,41 @@ zh.nav = {
   faClasses: '资产类别管理',
   faList: '固定资产',
   faDepreciation: '定期折旧记账',
+  // 动态菜单翻译（后端 menu.xxx 对应）
+  finance: '财务会计',
+  hr: '人事管理',
+  ai: 'AI',
+  financialStatements: '财务报表',
+  financialNodes: '报表设计器',
+  fixedAssets: '固定资产',
+  assetClasses: '资产类别管理',
+  assetsList: '固定资产列表',
+  depreciation: '定期折旧记账',
+  moneytree: '银行明细',
+  employees: '员工列表',
+  departments: '部门层级',
+  payroll: '薪资管理',
+  system: '系统设置',
+  users: '用户管理',
+  roles: '角色管理',
+  notifications: '通知',
+  notificationRuns: '通知规则执行历史',
+  notificationLogs: '通知发送日志',
+  contacts: '联系人列表',
+  deals: '商机列表',
+  quotes: '报价列表',
+  salesOrders: '订单列表',
+  activities: '活动列表',
+  businessPartners: '业务伙伴',
+  sales: '销售管理',
+  salesAnalytics: '销售分析',
+  salesAlerts: '销售预警',
+  salesInvoices: '销售发票',
+  deliveryNotes: '送货单',
+  materials: '物料列表',
+  warehouses: '仓库列表',
+  bins: '库位列表',
+  purchase: '采购管理',
   // Staffing (人才派遣)
   staffing: '人才派遣',
   resourcePool: '资源池',
