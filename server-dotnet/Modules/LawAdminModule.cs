@@ -115,21 +115,22 @@ public static class LawAdminModule
             return Results.Ok(new { inserted = 2 });
         }).RequireAuthorization();
 
-        // Additional preset: Kyoukai Kenpo Tokyo March 2025 care insurance Category 2 (employee share).
-        app.MapPost("/admin/law-rates/seed/kyoukai-kenpo/tokyo/2025/care2", async (NpgsqlDataSource ds) =>
+        // Care insurance (kaigo hoken) for Category 2 insured (40-64 years old).
+        // Rate is stored separately from health insurance for precise calculation.
+        app.MapPost("/admin/law-rates/seed/kyoukai-kenpo/tokyo/2025/care", async (NpgsqlDataSource ds) =>
         {
             await using var conn = await ds.OpenConnectionAsync();
             await using var tx = await conn.BeginTransactionAsync();
             await using (var cmd = conn.CreateCommand())
             {
-                // Health insurance (Tokyo care-eligible) total 11.50% → employee share 5.75%.
+                // Care insurance (kaigo hoken) employee share.
                 cmd.CommandText = @"INSERT INTO law_rates(company_code, kind, key, min_amount, max_amount, rate, effective_from, effective_to, version, note)
-                                    VALUES (NULL, 'health', $1, NULL, NULL, $2, $3, NULL, $4, $5)";
-                cmd.Parameters.AddWithValue("東京都:care2");
-                cmd.Parameters.AddWithValue(0.0575m);
+                                    VALUES (NULL, 'care', $1, NULL, NULL, $2, $3, NULL, $4, $5)";
+                cmd.Parameters.AddWithValue("東京都:care");
+                cmd.Parameters.AddWithValue(0.0080m);
                 cmd.Parameters.AddWithValue(new DateTime(2025, 3, 1));
-                cmd.Parameters.AddWithValue("JP-TOKYO-KK-CARE2-2025-03");
-                cmd.Parameters.AddWithValue("Kyoukai Kenpo Tokyo care-eligible employee share 11.50%/2");
+                cmd.Parameters.AddWithValue("JP-CARE-2025-03");
+                cmd.Parameters.AddWithValue("Kaigo Hoken (Care Insurance) employee share - applies to age 40-64");
                 await cmd.ExecuteNonQueryAsync();
             }
             await tx.CommitAsync();

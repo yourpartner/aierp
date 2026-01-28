@@ -55,6 +55,7 @@ public static class HrPayrollModule
         ["BASE"] = "基本給",
         ["COMMUTE"] = "交通手当",
         ["HEALTH_INS"] = "健康保険",
+        ["CARE_INS"] = "介護保険",
         ["PENSION"] = "厚生年金",
         ["EMP_INS"] = "雇用保険",
         ["WHT"] = "源泉徴収税",
@@ -348,6 +349,7 @@ public static class HrPayrollModule
     {
         if (string.IsNullOrWhiteSpace(code)) return false;
         return code.Equals("HEALTH_INS", StringComparison.OrdinalIgnoreCase)
+            || code.Equals("CARE_INS", StringComparison.OrdinalIgnoreCase)
             || code.Equals("PENSION", StringComparison.OrdinalIgnoreCase)
             || code.Equals("EMP_INS", StringComparison.OrdinalIgnoreCase)
             || code.Equals("WHT", StringComparison.OrdinalIgnoreCase)
@@ -847,19 +849,25 @@ public static class HrPayrollModule
             bool wantsAbsence = ContainsAny(s, "欠勤", "欠勤控除", "欠勤・遅刻", "勤怠控除", "工时不足", "工時不足", "遅刻", "早退");
             bool wantsResidentTax = ContainsAny(s, "住民税", "住民稅", "市民税", "県民税", "地方税", "特別徴収");
             if (wantsHealth) {
-                EnsureDeductionItem("HEALTH_INS", "社会保険");
+                EnsureDeductionItem("HEALTH_INS", "健康保険");
                 object baseExpr = new { charRef = "employee.baseSalaryMonth" };
                 rules.Add(new { item = "HEALTH_INS", type = "deduction", activation = BuildActivation(), formula = new { _base = baseExpr, rate = "policy.law.health.rate", rounding = new { method = "round_half_down", precision = 0 } } });
                 hints.Add("已生成健康保险计算规则：按都道府県与月额区间匹配费率");
                 dependencies.AddRange(new[]{
                     "jp.health.standardMonthly",
                     "jp.health.rate.employee",
-                    "jp.health.rate.employer",
-                    "jp.health.care.rate.employee",
-                    "jp.health.care.rate.employer"
+                    "jp.health.rate.employer"
                 });
                 if (!(s.Contains("都道府", StringComparison.OrdinalIgnoreCase) || s.Contains("都", StringComparison.OrdinalIgnoreCase) || s.Contains("県", StringComparison.OrdinalIgnoreCase))) riskFlags.Add("health.missing_prefecture");
                 if (!(s.Contains("協会", StringComparison.OrdinalIgnoreCase) || s.Contains("組合", StringComparison.OrdinalIgnoreCase))) riskFlags.Add("health.missing_scheme");
+                // 介护保险：40岁~64岁员工自动计算
+                EnsureDeductionItem("CARE_INS", "介護保険");
+                rules.Add(new { item = "CARE_INS", type = "deduction", activation = BuildActivation(), formula = new { _base = baseExpr, rate = "policy.law.care.rate", rounding = new { method = "round_half_down", precision = 0 } } });
+                hints.Add("已生成介护保险计算规则：40岁~64岁员工自动计算");
+                dependencies.AddRange(new[]{
+                    "jp.health.care.rate.employee",
+                    "jp.health.care.rate.employer"
+                });
             }
             if (wantsPension) {
                 EnsureDeductionItem("PENSION", "厚生年金");
@@ -935,7 +943,9 @@ public static class HrPayrollModule
             {
                 var healthDebit = ResolveJournalDebit("health", "3181");
                 var healthCredit = ResolveJournalCredit("health", "315");
-                AddJournalRule("health", healthDebit, healthCredit, new[] { BuildJournalItem("HEALTH_INS") }, FormatJournalDescription(healthDebit, healthCredit));
+                // 社会保険（健康保険+介護保険を合算）
+                var healthItems = new List<object> { BuildJournalItem("HEALTH_INS"), BuildJournalItem("CARE_INS") };
+                AddJournalRule("health", healthDebit, healthCredit, healthItems, FormatJournalDescription(healthDebit, healthCredit));
             }
             if (wantsPension)
             {
@@ -1096,9 +1106,14 @@ public static class HrPayrollModule
                         if (wageItems.Count > 0)
                             autoJournalRules.Add(new { name = "wages", debitAccount = "832", creditAccount = "315", items = wageItems.ToArray() });
                         
-                        // 社会保険
-                        if (dslItems.Contains("HEALTH_INS"))
-                            autoJournalRules.Add(new { name = "health", debitAccount = "3181", creditAccount = "315", items = new[] { BuildJI("HEALTH_INS") } });
+                        // 社会保険（健康保険+介護保険を合算）
+                        if (dslItems.Contains("HEALTH_INS") || dslItems.Contains("CARE_INS"))
+                        {
+                            var healthItems = new List<object>();
+                            if (dslItems.Contains("HEALTH_INS")) healthItems.Add(BuildJI("HEALTH_INS"));
+                            if (dslItems.Contains("CARE_INS")) healthItems.Add(BuildJI("CARE_INS"));
+                            autoJournalRules.Add(new { name = "health", debitAccount = "3181", creditAccount = "315", items = healthItems.ToArray() });
+                        }
                         
                         // 厚生年金
                         if (dslItems.Contains("PENSION"))
@@ -3580,9 +3595,14 @@ LIMIT @pageSize OFFSET @offset";
                     if (wageItems.Count > 0)
                         autoJournalRules.Add(new { name = "wages", debitAccount = "832", creditAccount = "315", items = wageItems.ToArray(), description = "基本給および各種手当を給与手当／未払費用で仕訳" });
                     
-                    // 社会保険
-                    if (dslItems.Contains("HEALTH_INS"))
-                        autoJournalRules.Add(new { name = "health", debitAccount = "3181", creditAccount = "315", items = new[] { BuildJI("HEALTH_INS") }, description = "社会保険預り金／未払費用" });
+                    // 社会保険（健康保険+介護保険を合算）
+                    if (dslItems.Contains("HEALTH_INS") || dslItems.Contains("CARE_INS"))
+                    {
+                        var healthItems = new List<object>();
+                        if (dslItems.Contains("HEALTH_INS")) healthItems.Add(BuildJI("HEALTH_INS"));
+                        if (dslItems.Contains("CARE_INS")) healthItems.Add(BuildJI("CARE_INS"));
+                        autoJournalRules.Add(new { name = "health", debitAccount = "3181", creditAccount = "315", items = healthItems.ToArray(), description = "社会保険預り金／未払費用" });
+                    }
                     
                     // 厚生年金
                     if (dslItems.Contains("PENSION"))
@@ -3686,6 +3706,8 @@ LIMIT @pageSize OFFSET @offset";
             {
                 object baseExpr; if (nlBase>0) baseExpr = new { _const = nlBase }; else baseExpr = new { baseRef = "employee.healthBase" };
                 compiled.Add(new { item = "HEALTH_INS", type = "deduction", formula = new { _base = baseExpr, rate = "policy.law.health.rate" } });
+                // 介护保险：40岁~64岁员工自动计算
+                compiled.Add(new { item = "CARE_INS", type = "deduction", formula = new { _base = baseExpr, rate = "policy.law.care.rate" } });
             }
             if (wantsPension)
             {
@@ -3839,10 +3861,11 @@ LIMIT @pageSize OFFSET @offset";
                 AddJournalRuleLocal("wages", ResolveJournalDebitLocal("wages", "832"), ResolveJournalCreditLocal("wages", "315"), wageJournalItems, "基本給および各種手当を給与手当／未払費用で仕訳");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "wages", items = wageJournalItems.Select(i => i.ToString()).ToArray() });
             }
-            // 社会保険：DSL 有定义，或自然语言描述中有关键字
+            // 社会保険（健康保険+介護保険）：DSL 有定义，或自然语言描述中有关键字
             if (dslHasHealth || wantsHealth)
             {
-                AddJournalRuleLocal("health", ResolveJournalDebitLocal("health", "3181"), ResolveJournalCreditLocal("health", "315"), new[] { BuildJournalItem("HEALTH_INS") }, "社会保険預り金／未払費用");
+                var healthJournalItems = new List<object> { BuildJournalItem("HEALTH_INS"), BuildJournalItem("CARE_INS") };
+                AddJournalRuleLocal("health", ResolveJournalDebitLocal("health", "3181"), ResolveJournalCreditLocal("health", "315"), healthJournalItems, "社会保険預り金／未払費用");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "health" });
             }
             // 厚生年金：DSL 有定义，或自然语言描述中有关键字
@@ -5019,6 +5042,11 @@ LIMIT @pageSize OFFSET @offset";
                                     resolved = t.version
                                 });
                             }
+                        }
+                        else if (string.Equals(key, "policy.law.care.rate", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var t = law.GetCareInsuranceRate(emp, policyBody, monthDate);
+                            rateVal = t.rate; rateMark = t.rate; lawVer = t.version; lawNote = $"care:{t.note}";
                         }
                         else
                         {

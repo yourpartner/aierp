@@ -529,6 +529,7 @@ function isDeductionItem(row: any): boolean {
   if (row?.kind) return row.kind === 'deduction'
   const code = (row?.itemCode || '').toString().toUpperCase()
   return code === 'HEALTH_INS'
+    || code === 'CARE_INS'
     || code === 'PENSION'
     || code === 'EMP_INS'
     || code === 'WHT'

@@ -11,12 +11,6 @@ public class LawDatasetService
 
     private const string Version = "JP-EXAMPLE-2024-10";
 
-    private static readonly Dictionary<string, List<(decimal min, decimal max, decimal rate)>> HealthTables = new()
-    {
-        { "東京都", new(){ (0m,630000m,0.0495m), (630000m, 99999999m, 0.0500m) } },
-        { "大阪府", new(){ (0m,630000m,0.0497m), (630000m, 99999999m, 0.0502m) } },
-    };
-
     private static readonly List<(decimal min, decimal max, decimal rate)> PensionTable = new(){ (0m,650000m,0.0915m), (650000m, 99999999m, 0.0920m) };
 
     private static readonly Dictionary<string, decimal> EmploymentTable = new(StringComparer.OrdinalIgnoreCase)
@@ -26,31 +20,58 @@ public class LawDatasetService
 
     private static string GetString(JsonElement el, string key)
         => el.TryGetProperty(key, out var v) && v.ValueKind==JsonValueKind.String ? (v.GetString() ?? "") : "";
-    private static bool GetBool(JsonElement el, string key)
+    private static DateTime FirstDay(DateTime d) => new DateTime(d.Year, d.Month, 1);
+
+    /// <summary>
+    /// 计算员工在指定月份的年龄（周岁），按“生日所在月”规则
+    /// </summary>
+    private static int? CalculateAge(JsonElement employee, DateTime month)
     {
-        try{
-            if (el.TryGetProperty(key, out var v))
-            {
-                if (v.ValueKind==JsonValueKind.True) return true;
-                if (v.ValueKind==JsonValueKind.False) return false;
-                if (v.ValueKind==JsonValueKind.String && bool.TryParse(v.GetString(), out var b)) return b;
-            }
-        }catch{}
-        return false;
-    }
-    private static decimal GetNumber(JsonElement el, string key)
-    {
-        try{
-            if (el.TryGetProperty(key, out var v) && v.ValueKind==JsonValueKind.Number)
-            {
-                if (v.TryGetDecimal(out var d)) return d;
-                return Convert.ToDecimal(v.GetDouble());
-            }
-        }catch{}
-        return 0m;
+        var birthDateStr = GetString(employee, "birthDate");
+        if (string.IsNullOrWhiteSpace(birthDateStr)) return null;
+        if (!DateTime.TryParse(birthDateStr, out var birthDate)) return null;
+
+        // 以“月份”为单位判断年龄：生日当月视为已满岁
+        var age = month.Year - birthDate.Year;
+        if (month.Month < birthDate.Month)
+            age--;
+        return age;
     }
 
-    private static DateTime FirstDay(DateTime d) => new DateTime(d.Year, d.Month, 1);
+    /// <summary>
+    /// 判断员工在指定月份是否需要缴纳介护保险（40岁~64岁）
+    /// 日本法律：40岁生日当月开始缴纳，65岁生日当月停止（转为第一号被保险者）
+    /// </summary>
+    private bool IsCareInsuranceEligible(JsonElement employee, DateTime month)
+    {
+        var age = CalculateAge(employee, month);
+        if (!age.HasValue) return false;
+        return age.Value >= 40 && age.Value < 65;
+    }
+
+    /// <summary>
+    /// 获取介护保险费率（仅介护部分，不含健康保险）
+    /// 只有 40-64 岁的员工才需要缴纳介护保险
+    /// </summary>
+    public (decimal rate, string version, string note) GetCareInsuranceRate(JsonElement employee, JsonElement policy, DateTime month)
+    {
+        // 首先检查年龄：只有 40-64 岁需要缴纳介护保险
+        var age = CalculateAge(employee, month);
+        if (!age.HasValue || age.Value < 40 || age.Value >= 65)
+        {
+            return (0m, Version, $"care:not_eligible(age={age})");
+        }
+
+        string pref = "";
+        try { if (policy.TryGetProperty("law", out var lw) && lw.ValueKind==JsonValueKind.Object) pref = GetString(lw, "prefecture"); } catch {}
+        if (string.IsNullOrWhiteSpace(pref)) pref = GetString(employee, "companyPref");
+        if (string.IsNullOrWhiteSpace(pref)) pref = "東京都";
+
+        var key = $"{pref}:care";
+        var (ok, rate, ver, note) = QueryFromDb(companyCode: GetString(employee, "companyCode"), kind: "care", key: key, baseAmt: null, month);
+        if (ok) return (rate, ver!, $"{note} age={age}");
+        return (0m, Version, $"{pref}:care missing_rate age={age}");
+    }
 
     public (decimal rate, string version, string note) GetHealthRate(JsonElement employee, JsonElement policy, DateTime month, decimal baseAmount)
     {
@@ -59,17 +80,19 @@ public class LawDatasetService
         try { if (policy.TryGetProperty("law", out var lw) && lw.ValueKind==JsonValueKind.Object) pref = GetString(lw, "prefecture"); } catch {}
         if (string.IsNullOrWhiteSpace(pref)) pref = GetString(employee, "companyPref");
         if (string.IsNullOrWhiteSpace(pref)) pref = "東京都";
-        bool careEligible = false;
-        try { if (policy.TryGetProperty("law", out var lw) && lw.ValueKind==JsonValueKind.Object) careEligible = GetBool(lw, "careEligible"); } catch {}
-        if (!careEligible) careEligible = GetBool(employee, "careEligible");
-        var key = careEligible ? ($"{pref}:care2") : pref;
+
         var baseAmt = baseAmount;
-        var (ok, rate, ver, note) = QueryFromDb(companyCode: GetString(employee, "companyCode"), kind:"health", key: key, baseAmt, month);
-        if (ok) return (rate, ver!, note!);
-        if (!HealthTables.TryGetValue(pref, out var table)) table = HealthTables["東京都"];
-        var row = table.FirstOrDefault(x => baseAmt >= x.min && baseAmt < x.max);
-        var r = row.rate == 0 ? table[0].rate : row.rate;
-        return (r, Version, $"{(careEligible? key: pref)} base={baseAmt}");
+        var companyCode = GetString(employee, "companyCode");
+
+        // 只返回纯健康保险费率（不包含介护），介护保险单独计算
+        var (ok, healthRate, ver, note) = QueryFromDb(companyCode: companyCode, kind:"health", key: pref, baseAmt, month);
+        
+        if (!ok)
+        {
+            return (0m, Version, $"{pref}:health missing_rate");
+        }
+
+        return (healthRate, ver ?? Version, $"{pref} base={baseAmt}");
     }
 
     public (decimal rate, string version, string note) GetPensionRate(JsonElement employee, JsonElement policy, DateTime month, decimal baseAmount)
@@ -146,24 +169,48 @@ public class LawDatasetService
     {
         try
         {
+            // 将空字符串视为 NULL
+            if (string.IsNullOrWhiteSpace(companyCode)) companyCode = null;
+            if (string.IsNullOrWhiteSpace(key)) key = null;
+            
             using var conn = _ds.OpenConnection();
             using var cmd = conn.CreateCommand();
-            var sql = @"SELECT rate, version, note FROM law_rates
-                        WHERE (company_code IS NULL OR company_code = $1)
-                          AND kind = $2
-                          AND ($3 IS NULL OR key = $3)
-                          AND effective_from <= $4
-                          AND (effective_to IS NULL OR effective_to >= $4)
-                          AND ($5 IS NULL OR (min_amount IS NULL OR min_amount <= $5))
-                          AND ($5 IS NULL OR (max_amount IS NULL OR $5 < max_amount))
-                        ORDER BY company_code NULLS FIRST, effective_from DESC
-                        LIMIT 1";
-            cmd.CommandText = sql;
-            cmd.Parameters.AddWithValue((object?)companyCode ?? DBNull.Value);
-            cmd.Parameters.AddWithValue(kind);
-            cmd.Parameters.AddWithValue((object?)key ?? DBNull.Value);
-            cmd.Parameters.AddWithValue(FirstDay(month));
-            if (baseAmt.HasValue) cmd.Parameters.AddWithValue(baseAmt.Value); else cmd.Parameters.AddWithValue(DBNull.Value);
+            
+            // 根据是否有 baseAmt 使用不同的 SQL 查询
+            if (baseAmt.HasValue)
+            {
+                cmd.CommandText = @"SELECT rate, version, note FROM law_rates
+                            WHERE (company_code IS NULL OR company_code = $1)
+                              AND kind = $2
+                              AND ($3::text IS NULL OR key = $3)
+                              AND effective_from <= $4
+                              AND (effective_to IS NULL OR effective_to >= $4)
+                              AND (min_amount IS NULL OR min_amount <= $5)
+                              AND (max_amount IS NULL OR $5 < max_amount)
+                            ORDER BY company_code NULLS FIRST, effective_from DESC
+                            LIMIT 1";
+                cmd.Parameters.AddWithValue((object?)companyCode ?? DBNull.Value);
+                cmd.Parameters.AddWithValue(kind);
+                cmd.Parameters.AddWithValue((object?)key ?? DBNull.Value);
+                cmd.Parameters.AddWithValue(FirstDay(month));
+                cmd.Parameters.AddWithValue(baseAmt.Value);
+            }
+            else
+            {
+                cmd.CommandText = @"SELECT rate, version, note FROM law_rates
+                            WHERE (company_code IS NULL OR company_code = $1)
+                              AND kind = $2
+                              AND ($3::text IS NULL OR key = $3)
+                              AND effective_from <= $4
+                              AND (effective_to IS NULL OR effective_to >= $4)
+                            ORDER BY company_code NULLS FIRST, effective_from DESC
+                            LIMIT 1";
+                cmd.Parameters.AddWithValue((object?)companyCode ?? DBNull.Value);
+                cmd.Parameters.AddWithValue(kind);
+                cmd.Parameters.AddWithValue((object?)key ?? DBNull.Value);
+                cmd.Parameters.AddWithValue(FirstDay(month));
+            }
+            
             using var rd = cmd.ExecuteReader();
             if (rd.Read())
             {
@@ -173,7 +220,10 @@ public class LawDatasetService
                 return (true, rate, ver, note);
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[QueryFromDb] ERROR: {ex.Message}");
+        }
         return (false, 0m, null, null);
     }
 }
