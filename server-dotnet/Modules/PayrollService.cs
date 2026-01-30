@@ -1000,7 +1000,7 @@ public sealed class PayrollService
         var header = new JsonObject
         {
             ["postingDate"] = postingDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-            ["voucherType"] = "GL",
+            ["voucherType"] = "SA",
             ["currency"] = "JPY",
             ["summary"] = summary,
             ["source"] = "payroll"
