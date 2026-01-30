@@ -28,6 +28,21 @@
             </el-select>
             <div class="tax-hint">※事業年度の最終月を指定してください（例：12月決算の場合は12）</div>
           </el-form-item>
+          <el-form-item label="給与支払条件">
+            <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center">
+              <span>締日</span>
+              <el-input-number v-model="model.paymentTerms.cutOffDay" :min="1" :max="31" :step="1" />
+              <span>支払月</span>
+              <el-select v-model="model.paymentTerms.paymentMonth" style="width:120px">
+                <el-option :value="0" label="当月" />
+                <el-option :value="1" label="翌月" />
+                <el-option :value="2" label="翌々月" />
+              </el-select>
+              <span>支払日</span>
+              <el-input-number v-model="model.paymentTerms.paymentDay" :min="1" :max="31" :step="1" />
+            </div>
+            <div class="tax-hint">※取引先マスタと同じ形式（例：末締 翌月末払）</div>
+          </el-form-item>
           <el-form-item label="消費税免税期間">
             <div class="tax-period">
               <el-date-picker
@@ -110,7 +125,15 @@ import DynamicForm from '../components/DynamicForm.vue'
 import { useI18n, getLang } from '../i18n'
 
 const ENTITY = 'company_setting'
-const model = reactive<any>({ taxExemptFrom: '', taxExemptTo: '', inputTaxAccountCode: '', outputTaxAccountCode: '', bankFeeAccountCode: '', fiscalYearEndMonth: 12 })
+const model = reactive<any>({
+  taxExemptFrom: '',
+  taxExemptTo: '',
+  inputTaxAccountCode: '',
+  outputTaxAccountCode: '',
+  bankFeeAccountCode: '',
+  fiscalYearEndMonth: 12,
+  paymentTerms: { cutOffDay: 31, paymentMonth: 1, paymentDay: 31, description: '' }
+})
 const saving = ref(false)
 const ui = ref<any>(null)
 function ensureSealDefaults(){
@@ -140,6 +163,17 @@ function ensureFiscalYearEndMonthDefaults(){
   }
 }
 ensureFiscalYearEndMonthDefaults()
+function ensurePaymentTermsDefaults(){
+  if (!model.paymentTerms || typeof model.paymentTerms !== 'object') {
+    model.paymentTerms = { cutOffDay: 31, paymentMonth: 1, paymentDay: 31, description: '' }
+    return
+  }
+  if (model.paymentTerms.cutOffDay == null) model.paymentTerms.cutOffDay = 31
+  if (model.paymentTerms.paymentMonth == null) model.paymentTerms.paymentMonth = 1
+  if (model.paymentTerms.paymentDay == null) model.paymentTerms.paymentDay = 31
+  if (model.paymentTerms.description == null) model.paymentTerms.description = ''
+}
+ensurePaymentTermsDefaults()
 const cleanedUi = computed(()=>{
   const src = ui.value
   if (!src) return null
@@ -251,6 +285,7 @@ async function ensureSchema(){
     ensureTaxAccountDefaults()
     ensureBankFeeAccountDefaults()
     ensureFiscalYearEndMonthDefaults()
+    ensurePaymentTermsDefaults()
   }catch(e:any){
     // 后端未注册 schema：自动注册一次（全局 schema 或公司级均可复用）
     const doc = {
@@ -262,7 +297,8 @@ async function ensureSchema(){
           companyRep:{ type:'string' },
           workdayDefaultStart:{ type:'string', pattern:'^\\d{2}:\\d{2}$' },
           workdayDefaultEnd:{ type:'string', pattern:'^\\d{2}:\\d{2}$' },
-          lunchMinutes:{ type:'number', minimum:0, maximum:240 }
+          lunchMinutes:{ type:'number', minimum:0, maximum:240 },
+          payrollPaymentTermDays:{ type:'number', minimum:0, maximum:365 }
         },
         required:[]
       },
@@ -272,7 +308,8 @@ async function ensureSchema(){
         { field:'companyRep', label:'代表者', span:6 },
         { field:'workdayDefaultStart', label:'始業(HH:mm)', span:6 },
         { field:'workdayDefaultEnd', label:'終業(HH:mm)', span:6 },
-        { field:'lunchMinutes', label:'休憩(分)', span:6, props:{ type:'number' } }
+        { field:'lunchMinutes', label:'休憩(分)', span:6, props:{ type:'number' } },
+        { field:'payrollPaymentTermDays', label:'給与支払期限(日数)', span:6, props:{ type:'number' } }
       ] } ] } },
       query: { filters:['created_at'], sorts:['created_at'] },
       core_fields: { coreFields: [] },
@@ -314,13 +351,25 @@ async function load(){
       ])
     } else {
       // 默认值
-      Object.assign(model, { workdayDefaultStart:'09:00', workdayDefaultEnd:'18:00', lunchMinutes:60, taxExemptFrom:'', taxExemptTo:'', inputTaxAccountCode:'', outputTaxAccountCode:'', bankFeeAccountCode:'', fiscalYearEndMonth: 12 })
+      Object.assign(model, {
+        workdayDefaultStart:'09:00',
+        workdayDefaultEnd:'18:00',
+        lunchMinutes:60,
+        taxExemptFrom:'',
+        taxExemptTo:'',
+        inputTaxAccountCode:'',
+        outputTaxAccountCode:'',
+        bankFeeAccountCode:'',
+        fiscalYearEndMonth: 12,
+        paymentTerms: { cutOffDay: 31, paymentMonth: 1, paymentDay: 31, description: '' }
+      })
       currentId.value = ''
       ensureSealDefaults()
       ensureTaxExemptDefaults()
       ensureTaxAccountDefaults()
       ensureBankFeeAccountDefaults()
       ensureFiscalYearEndMonthDefaults()
+      ensurePaymentTermsDefaults()
     }
   }catch(e:any){ console.error(e?.response?.data || e) }
 }

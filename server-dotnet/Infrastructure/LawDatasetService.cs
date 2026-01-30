@@ -53,13 +53,13 @@ public class LawDatasetService
     /// 获取介护保险费率（仅介护部分，不含健康保险）
     /// 只有 40-64 岁的员工才需要缴纳介护保险
     /// </summary>
-    public (decimal rate, string version, string note) GetCareInsuranceRate(JsonElement employee, JsonElement policy, DateTime month)
+    public (decimal rate, decimal? baseOverride, string version, string note) GetCareInsuranceRate(JsonElement employee, JsonElement policy, DateTime month, decimal baseAmount)
     {
         // 首先检查年龄：只有 40-64 岁需要缴纳介护保险
         var age = CalculateAge(employee, month);
         if (!age.HasValue || age.Value < 40 || age.Value >= 65)
         {
-            return (0m, Version, $"care:not_eligible(age={age})");
+            return (0m, null, Version, $"care:not_eligible(age={age})");
         }
 
         string pref = "";
@@ -68,12 +68,18 @@ public class LawDatasetService
         if (string.IsNullOrWhiteSpace(pref)) pref = "東京都";
 
         var key = $"{pref}:care";
-        var (ok, rate, ver, note) = QueryFromDb(companyCode: GetString(employee, "companyCode"), kind: "care", key: key, baseAmt: null, month);
-        if (ok) return (rate, ver!, $"{note} age={age}");
-        return (0m, Version, $"{pref}:care missing_rate age={age}");
+        var companyCode = GetString(employee, "companyCode");
+        var (okStd, stdBase, stdVer, stdNote) = QueryFromDb(companyCode: companyCode, kind: "health_standard", key: pref, baseAmt: baseAmount, month);
+        var (ok, rate, ver, note) = QueryFromDb(companyCode: companyCode, kind: "care", key: key, baseAmt: null, month);
+        if (ok)
+        {
+            var baseNote = okStd ? $"std={stdBase}" : "std:missing";
+            return (rate, okStd ? stdBase : null, ver!, $"{note} {baseNote} age={age}");
+        }
+        return (0m, okStd ? stdBase : null, Version, $"{pref}:care missing_rate age={age}");
     }
 
-    public (decimal rate, string version, string note) GetHealthRate(JsonElement employee, JsonElement policy, DateTime month, decimal baseAmount)
+    public (decimal rate, decimal? baseOverride, string version, string note) GetHealthRate(JsonElement employee, JsonElement policy, DateTime month, decimal baseAmount)
     {
         // Prioritize values explicitly set in the policy
         string pref = "";
@@ -85,21 +91,29 @@ public class LawDatasetService
         var companyCode = GetString(employee, "companyCode");
 
         // 只返回纯健康保险费率（不包含介护），介护保险单独计算
-        var (ok, healthRate, ver, note) = QueryFromDb(companyCode: companyCode, kind:"health", key: pref, baseAmt, month);
+        var (okStd, stdBase, stdVer, stdNote) = QueryFromDb(companyCode: companyCode, kind: "health_standard", key: pref, baseAmt, month);
+        var (ok, healthRate, ver, note) = QueryFromDb(companyCode: companyCode, kind:"health", key: pref, baseAmt: null, month);
         
         if (!ok)
         {
-            return (0m, Version, $"{pref}:health missing_rate");
+            return (0m, okStd ? stdBase : null, Version, $"{pref}:health missing_rate");
         }
 
-        return (healthRate, ver ?? Version, $"{pref} base={baseAmt}");
+        var baseNote = okStd ? $"std={stdBase}" : "std:missing";
+        return (healthRate, okStd ? stdBase : null, ver ?? Version, $"{pref} base={baseAmt} {baseNote}");
     }
 
-    public (decimal rate, string version, string note) GetPensionRate(JsonElement employee, JsonElement policy, DateTime month, decimal baseAmount)
+    public (decimal rate, decimal? baseOverride, string version, string note) GetPensionRate(JsonElement employee, JsonElement policy, DateTime month, decimal baseAmount)
     {
         var baseAmt = baseAmount;
-        var (ok, rate, ver, note) = QueryFromDb(companyCode: GetString(employee, "companyCode"), kind:"pension", key: null, baseAmt, month);
-        if (ok) return (rate, ver!, note!);
+        var companyCode = GetString(employee, "companyCode");
+        var (okStd, stdBase, stdVer, stdNote) = QueryFromDb(companyCode: companyCode, kind:"pension_standard", key: null, baseAmt, month);
+        var (ok, rate, ver, note) = QueryFromDb(companyCode: companyCode, kind:"pension", key: null, baseAmt: null, month);
+        if (ok)
+        {
+            var baseNote = okStd ? $"std={stdBase}" : "std:missing";
+            return (rate, okStd ? stdBase : null, ver!, $"{note} {baseNote}");
+        }
         // Fallback: ignore company range and pick latest entry in same month
         try
         {
@@ -114,13 +128,15 @@ public class LawDatasetService
             if (rd2.Read())
             {
                 var rate2 = rd2.GetDecimal(0); var v = rd2.GetString(1); var n = rd2.GetString(2);
-                return (rate2, string.IsNullOrWhiteSpace(v)? Version : v, string.IsNullOrWhiteSpace(n)? $"base={baseAmt}" : n);
+                var baseNote = okStd ? $"std={stdBase}" : "std:missing";
+                return (rate2, okStd ? stdBase : null, string.IsNullOrWhiteSpace(v)? Version : v, string.IsNullOrWhiteSpace(n)? $"base={baseAmt} {baseNote}" : $"{n} {baseNote}");
             }
         }
         catch {}
         var row = PensionTable.FirstOrDefault(x => baseAmt >= x.min && baseAmt < x.max);
         var r = row.rate == 0 ? PensionTable[0].rate : row.rate;
-        return (r, Version, $"base={baseAmt}");
+        var fallbackBaseNote = okStd ? $"std={stdBase}" : "std:missing";
+        return (r, okStd ? stdBase : null, Version, $"base={baseAmt} {fallbackBaseNote}");
     }
 
     public (decimal rate, string version, string note) GetEmploymentRate(JsonElement employee, JsonElement policy, DateTime month)

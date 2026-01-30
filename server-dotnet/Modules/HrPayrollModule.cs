@@ -5023,11 +5023,13 @@ LIMIT @pageSize OFFSET @offset";
                         {
                                 var t = law.GetHealthRate(emp, policyBody, monthDate, baseVal);
                             rateVal = t.rate; rateMark = t.rate; lawVer = t.version; lawNote = $"health:{t.note}";
+                            if (t.baseOverride.HasValue) { baseVal = t.baseOverride.Value; baseMark = baseVal; }
                         }
                         else if (string.Equals(key, "policy.law.pension.rate", StringComparison.OrdinalIgnoreCase))
                         {
                                 var t = law.GetPensionRate(emp, policyBody, monthDate, baseVal);
                             rateVal = t.rate; rateMark = t.rate; lawVer = t.version; lawNote = $"pension:{t.note}";
+                            if (t.baseOverride.HasValue) { baseVal = t.baseOverride.Value; baseMark = baseVal; }
                         }
                         else if (string.Equals(key, "policy.law.employment.rate", StringComparison.OrdinalIgnoreCase))
                         {
@@ -5045,8 +5047,9 @@ LIMIT @pageSize OFFSET @offset";
                         }
                         else if (string.Equals(key, "policy.law.care.rate", StringComparison.OrdinalIgnoreCase))
                         {
-                            var t = law.GetCareInsuranceRate(emp, policyBody, monthDate);
+                            var t = law.GetCareInsuranceRate(emp, policyBody, monthDate, baseVal);
                             rateVal = t.rate; rateMark = t.rate; lawVer = t.version; lawNote = $"care:{t.note}";
+                            if (t.baseOverride.HasValue) { baseVal = t.baseOverride.Value; baseMark = baseVal; }
                         }
                         else
                         {

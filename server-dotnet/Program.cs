@@ -583,6 +583,17 @@ CREATE TABLE IF NOT EXISTS warehouse_sequences (
                         workdayDefaultStart = new { type = "string", pattern = @"^\d{2}:\d{2}$" },
                         workdayDefaultEnd = new { type = "string", pattern = @"^\d{2}:\d{2}$" },
                         lunchMinutes = new { type = "number", minimum = 0, maximum = 240 },
+                        paymentTerms = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                cutOffDay = new { type = "number", minimum = 1, maximum = 31 },
+                                paymentMonth = new { type = "number", minimum = 0, maximum = 2 },
+                                paymentDay = new { type = "number", minimum = 1, maximum = 31 },
+                                description = new { type = "string" }
+                            }
+                        },
                         seal = new {
                             type = "object",
                             properties = new {
@@ -614,6 +625,13 @@ CREATE TABLE IF NOT EXISTS warehouse_sequences (
                                     new { field = "workdayDefaultStart", label = "上班(HH:mm)", span = 6 },
                                     new { field = "workdayDefaultEnd", label = "下班(HH:mm)", span = 6 },
                                     new { field = "lunchMinutes", label = "午休(分钟)", span = 6, props = new { type = "number" } }
+                                } }
+                            , new { type = "grid", cols = new object[]
+                                {
+                                    new { field = "paymentTerms.cutOffDay", label = "給与締日", span = 6, props = new { type = "number" } },
+                                    new { field = "paymentTerms.paymentMonth", label = "支払月(0=当月,1=翌月,2=翌々月)", span = 6, props = new { type = "number" } },
+                                    new { field = "paymentTerms.paymentDay", label = "支払日", span = 6, props = new { type = "number" } },
+                                    new { field = "paymentTerms.description", label = "支払条件", span = 12 }
                                 } }
                             , new { type = "grid", cols = new object[]
                                 {

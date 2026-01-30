@@ -826,13 +826,56 @@ public sealed class PayrollService
         var postingDate = ResolvePostingDate(month);
         var actor = userCtx ?? new Auth.UserCtx("system", Array.Empty<string>(), Array.Empty<string>(), null);
         var createdVoucherIds = new List<Guid>();
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        var paymentTerms = await LoadPayrollPaymentTermsAsync(conn, companyCode, ct);
+        var paymentDateStr = CalculatePaymentDate(postingDate, paymentTerms);
+        var paymentDateRuleCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        async Task<string?> GetPaymentDateRuleAsync(string accountCode)
+        {
+            if (string.IsNullOrWhiteSpace(accountCode)) return null;
+            if (paymentDateRuleCache.TryGetValue(accountCode, out var cached)) return cached;
+            await using var q = conn.CreateCommand();
+            q.CommandText = "SELECT payload FROM accounts WHERE company_code=$1 AND account_code=$2 LIMIT 1";
+            q.Parameters.AddWithValue(companyCode);
+            q.Parameters.AddWithValue(accountCode);
+            var payloadText = (string?)await q.ExecuteScalarAsync(ct);
+            if (string.IsNullOrWhiteSpace(payloadText))
+            {
+                paymentDateRuleCache[accountCode] = null;
+                return null;
+            }
+            using var doc = JsonDocument.Parse(payloadText);
+            if (doc.RootElement.TryGetProperty("fieldRules", out var fr) && fr.ValueKind == JsonValueKind.Object)
+            {
+                if (fr.TryGetProperty("paymentDate", out var pd) && pd.ValueKind == JsonValueKind.String)
+                {
+                    var rule = pd.GetString();
+                    paymentDateRuleCache[accountCode] = rule;
+                    return rule;
+                }
+            }
+            paymentDateRuleCache[accountCode] = null;
+            return null;
+        }
 
         try
         {
             foreach (var entry in entries)
             {
                 if (entry.AccountingDraft.ValueKind != JsonValueKind.Array) continue;
-                var payload = BuildVoucherPayload(entry, postingDate, month);
+                var paymentDateRequiredAccounts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var line in entry.AccountingDraft.EnumerateArray())
+                {
+                    if (line.ValueKind != JsonValueKind.Object) continue;
+                    var accountCode = ReadJsonString(line, "accountCode");
+                    if (string.IsNullOrWhiteSpace(accountCode)) continue;
+                    var rule = await GetPaymentDateRuleAsync(accountCode);
+                    if (string.Equals(rule, "required", StringComparison.OrdinalIgnoreCase))
+                    {
+                        paymentDateRequiredAccounts.Add(accountCode);
+                    }
+                }
+                var payload = BuildVoucherPayload(entry, postingDate, month, paymentDateRequiredAccounts, paymentDateStr);
                 if (payload is null)
                 {
                     // Accounting draft exists but no valid lines -> fail fast
@@ -887,7 +930,12 @@ public sealed class PayrollService
     /// <summary>
     /// Builds the voucher payload from a payroll entry's accounting draft.
     /// </summary>
-    private static JsonObject? BuildVoucherPayload(PayrollManualSaveEntry entry, DateOnly postingDate, string month)
+    private static JsonObject? BuildVoucherPayload(
+        PayrollManualSaveEntry entry,
+        DateOnly postingDate,
+        string month,
+        ISet<string> paymentDateRequiredAccounts,
+        string? paymentDateStr)
     {
         if (entry.AccountingDraft.ValueKind != JsonValueKind.Array) return null;
         var lines = new JsonArray();
@@ -907,6 +955,16 @@ public sealed class PayrollService
                 ["drcr"] = drcr,
                 ["amount"] = Math.Abs(amount)
             };
+            if (!string.IsNullOrWhiteSpace(paymentDateStr) && paymentDateRequiredAccounts.Contains(accountCode!))
+            {
+                lineObj["paymentDate"] = paymentDateStr;
+            }
+
+            // Employee ID - use entry's EmployeeId (required by some accounts like 社会保険預り金)
+            if (entry.EmployeeId != Guid.Empty)
+            {
+                lineObj["employeeId"] = entry.EmployeeId.ToString();
+            }
 
             // Employee code - prefer from line, fallback to entry (only save code, not name)
             var employeeCode = ReadJsonString(line, "employeeCode");
@@ -953,6 +1011,69 @@ public sealed class PayrollService
             ["header"] = header,
             ["lines"] = lines
         };
+    }
+
+    private sealed record PaymentTerms(int CutOffDay, int PaymentMonth, int PaymentDay);
+
+    private async Task<PaymentTerms> LoadPayrollPaymentTermsAsync(NpgsqlConnection conn, string companyCode, CancellationToken ct)
+    {
+        try
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT payload->'paymentTerms' FROM company_settings WHERE company_code=$1 LIMIT 1";
+            cmd.Parameters.AddWithValue(companyCode);
+            var obj = await cmd.ExecuteScalarAsync(ct);
+            if (obj is string json && !string.IsNullOrWhiteSpace(json))
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                var cutOffDay = root.TryGetProperty("cutOffDay", out var co) && co.TryGetInt32(out var cod) ? cod : 31;
+                var paymentMonth = root.TryGetProperty("paymentMonth", out var pm) && pm.TryGetInt32(out var pmd) ? pmd : 1;
+                var paymentDay = root.TryGetProperty("paymentDay", out var pd) && pd.TryGetInt32(out var pdd) ? pdd : 31;
+                return new PaymentTerms(cutOffDay, paymentMonth, paymentDay);
+            }
+        }
+        catch
+        {
+            // ignore; fallback to defaults
+        }
+        return new PaymentTerms(31, 1, 31);
+    }
+
+    private static string? CalculatePaymentDate(DateOnly postingDate, PaymentTerms terms)
+    {
+        var cutOffDay = terms.CutOffDay <= 0 ? 31 : terms.CutOffDay;
+        var paymentMonth = terms.PaymentMonth;
+        var paymentDay = terms.PaymentDay <= 0 ? 31 : terms.PaymentDay;
+
+        var invoiceDate = new DateTime(postingDate.Year, postingDate.Month, postingDate.Day);
+        var day = invoiceDate.Day;
+
+        var baseMonth = invoiceDate.Month - 1;
+        var baseYear = invoiceDate.Year;
+
+        if (day > cutOffDay)
+        {
+            baseMonth += 1;
+            if (baseMonth > 11)
+            {
+                baseMonth = 0;
+                baseYear += 1;
+            }
+        }
+
+        var dueMonth = baseMonth + paymentMonth;
+        var dueYear = baseYear;
+        while (dueMonth > 11)
+        {
+            dueMonth -= 12;
+            dueYear += 1;
+        }
+
+        var lastDayOfMonth = DateTime.DaysInMonth(dueYear, dueMonth + 1);
+        var dueDay = paymentDay > lastDayOfMonth ? lastDayOfMonth : paymentDay;
+        var dueDate = new DateTime(dueYear, dueMonth + 1, dueDay);
+        return dueDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     }
 
     /// <summary>
