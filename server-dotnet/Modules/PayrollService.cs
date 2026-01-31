@@ -341,7 +341,7 @@ public sealed class PayrollService
                     WHERE company_code = $1
                       AND period_month = $2
                       AND run_type = $3
-                      AND (($4 IS NULL AND policy_id IS NULL) OR policy_id = $4);
+                      AND (($4::uuid IS NULL AND policy_id IS NULL) OR policy_id = $4::uuid);
                     """;
                 del.Parameters.AddWithValue(companyCode);
                 del.Parameters.AddWithValue(request.Month);
@@ -367,7 +367,7 @@ public sealed class PayrollService
                 insertRun.Transaction = tx;
                 insertRun.CommandText = """
                     INSERT INTO payroll_runs(id, company_code, policy_id, period_month, run_type, status, total_amount, diff_summary, metadata, created_at, updated_at)
-                    VALUES (gen_random_uuid(), $1, $2, $3, $4, 'completed', $5, NULL, $6::jsonb, now(), now())
+                    VALUES (gen_random_uuid(), $1, $2::uuid, $3, $4, 'completed', $5, NULL, $6::jsonb, now(), now())
                     RETURNING id;
                     """;
                 insertRun.Parameters.AddWithValue(companyCode);

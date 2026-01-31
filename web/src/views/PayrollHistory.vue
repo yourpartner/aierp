@@ -101,7 +101,7 @@
         </el-table-column>
         <el-table-column label="伝票番号" width="120">
           <template #default="{ row }">
-            <span v-if="row.voucherNo">{{ row.voucherNo }}</span>
+            <el-link v-if="row.voucherNo" type="primary" @click="openVoucherDialog(row)">{{ row.voucherNo }}</el-link>
             <span v-else class="emp-empty">未作成</span>
           </template>
         </el-table-column>
@@ -134,6 +134,19 @@
         />
       </div>
     </el-card>
+
+    <!-- 凭证详情弹窗 -->
+    <el-dialog v-model="voucherDialogVisible" width="auto" append-to-body destroy-on-close class="voucher-detail-dialog">
+      <template #header></template>
+      <div>
+        <VouchersList
+          v-if="voucherDialogVisible"
+          :allow-edit="false"
+          :initial-voucher-id="voucherDialogVoucherId || undefined"
+          :initial-voucher-no="voucherDialogVoucherNo || undefined"
+        />
+      </div>
+    </el-dialog>
 
     <!-- 詳細ドロワー -->
     <el-drawer v-model="detailVisible" size="65%" :title="detailTitle">
@@ -252,6 +265,7 @@ import { onMounted, reactive, ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Timer, Search, View } from '@element-plus/icons-vue'
 import api from '../api'
+import VouchersList from './VouchersList.vue'
 
 const defaultMonth = new Date().toISOString().slice(0, 7)
 
@@ -283,6 +297,20 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detailData = ref<any | null>(null)
 const showTraceRaw = ref(false)
+
+// 凭证详情弹窗
+const voucherDialogVisible = ref(false)
+const voucherDialogVoucherId = ref<string>('')
+const voucherDialogVoucherNo = ref<string>('')
+
+function openVoucherDialog(row: any) {
+  const voucherNo = row.voucherNo
+  const voucherId = row.voucherId
+  if (!voucherNo && !voucherId) return
+  voucherDialogVoucherId.value = voucherId || ''
+  voucherDialogVoucherNo.value = voucherNo || ''
+  voucherDialogVisible.value = true
+}
 
 const detailTitle = computed(() => {
   if (!detailData.value) return '給与明細'

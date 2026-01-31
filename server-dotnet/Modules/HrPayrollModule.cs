@@ -939,36 +939,38 @@ public static class HrPayrollModule
                 var wageCredit = ResolveJournalCredit("wages", "315");
                 AddJournalRule("wages", wageDebit, wageCredit, wageJournalItems, FormatJournalDescription(wageDebit, wageCredit));
             }
+            // 以下扣除项：从未払費用中扣除，转入预提金
+            // 会计分录：DR 315 未払費用（减少应付员工）/ CR 預り金（增加代扣负债）
             if (wantsHealth)
             {
-                var healthDebit = ResolveJournalDebit("health", "3181");
-                var healthCredit = ResolveJournalCredit("health", "315");
+                var healthDebit = ResolveJournalDebit("health", "315");
+                var healthCredit = ResolveJournalCredit("health", "3181");
                 // 社会保険（健康保険+介護保険を合算）
                 var healthItems = new List<object> { BuildJournalItem("HEALTH_INS"), BuildJournalItem("CARE_INS") };
                 AddJournalRule("health", healthDebit, healthCredit, healthItems, FormatJournalDescription(healthDebit, healthCredit));
             }
             if (wantsPension)
             {
-                var pensionDebit = ResolveJournalDebit("pension", "3182");
-                var pensionCredit = ResolveJournalCredit("pension", "315");
+                var pensionDebit = ResolveJournalDebit("pension", "315");
+                var pensionCredit = ResolveJournalCredit("pension", "3182");
                 AddJournalRule("pension", pensionDebit, pensionCredit, new[] { BuildJournalItem("PENSION") }, FormatJournalDescription(pensionDebit, pensionCredit));
             }
             if (wantsEmployment)
             {
-                var employmentDebit = ResolveJournalDebit("employment", "3183");
-                var employmentCredit = ResolveJournalCredit("employment", "315");
+                var employmentDebit = ResolveJournalDebit("employment", "315");
+                var employmentCredit = ResolveJournalCredit("employment", "3183");
                 AddJournalRule("employment", employmentDebit, employmentCredit, new[] { BuildJournalItem("EMP_INS") }, FormatJournalDescription(employmentDebit, employmentCredit));
             }
             if (wantsWithholding)
             {
-                var withholdingDebit = ResolveJournalDebit("withholding", "3184");
-                var withholdingCredit = ResolveJournalCredit("withholding", "315");
+                var withholdingDebit = ResolveJournalDebit("withholding", "315");
+                var withholdingCredit = ResolveJournalCredit("withholding", "3184");
                 AddJournalRule("withholding", withholdingDebit, withholdingCredit, new[] { BuildJournalItem("WHT") }, FormatJournalDescription(withholdingDebit, withholdingCredit));
             }
             if (wantsResidentTax)
             {
-                var residentTaxDebit = ResolveJournalDebit("residentTax", "3185");
-                var residentTaxCredit = ResolveJournalCredit("residentTax", "315");
+                var residentTaxDebit = ResolveJournalDebit("residentTax", "315");
+                var residentTaxCredit = ResolveJournalCredit("residentTax", "3185");
                 AddJournalRule("residentTax", residentTaxDebit, residentTaxCredit, new[] { BuildJournalItem("RESIDENT_TAX") }, FormatJournalDescription(residentTaxDebit, residentTaxCredit));
             }
 
@@ -1054,102 +1056,115 @@ public static class HrPayrollModule
             }
             
             JsonElement? journalRulesEl = null;
+            
             if (!string.IsNullOrEmpty(policyJson))
             {
                 using var policyDoc = JsonDocument.Parse(policyJson);
                 var policyRoot = policyDoc.RootElement;
                 
-                // 尝试获取 journalRules
+                // 优先使用 Policy 中定义的 journalRules（包括 dsl.journalRules）
                 if (policyRoot.TryGetProperty("journalRules", out var jr) && jr.ValueKind == JsonValueKind.Array && jr.GetArrayLength() > 0)
                 {
                     journalRulesEl = jr.Clone();
                 }
-                else
+                else if (policyRoot.TryGetProperty("dsl", out var dslEl) && dslEl.ValueKind == JsonValueKind.Object &&
+                         dslEl.TryGetProperty("journalRules", out var dslJr) && dslJr.ValueKind == JsonValueKind.Array && dslJr.GetArrayLength() > 0)
                 {
-                    // 如果没有 journalRules，基于 DSL rules 自动生成
-                    if (policyRoot.TryGetProperty("rules", out var rulesEl) && rulesEl.ValueKind == JsonValueKind.Array)
+                    journalRulesEl = dslJr.Clone();
+                }
+                
+                // 如果 Policy 中没有定义 journalRules，则基于 DSL rules 自动生成（作为 fallback）
+                if (!journalRulesEl.HasValue && policyRoot.TryGetProperty("rules", out var rulesEl) && rulesEl.ValueKind == JsonValueKind.Array)
+                {
+                    var dslItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var rule in rulesEl.EnumerateArray())
                     {
-                        var dslItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        foreach (var rule in rulesEl.EnumerateArray())
+                        if (rule.TryGetProperty("item", out var itemProp) && itemProp.ValueKind == JsonValueKind.String)
                         {
-                            if (rule.TryGetProperty("item", out var itemProp) && itemProp.ValueKind == JsonValueKind.String)
-                            {
-                                var code = itemProp.GetString();
-                                if (!string.IsNullOrWhiteSpace(code)) dslItems.Add(code);
-                            }
-                        }
-                        
-                        // 同时检查 payrollSheet 中的手动添加项目
-                        foreach (var item in sheetOut)
-                        {
-                            var code = ReadJsonString(item, "itemCode");
+                            var code = itemProp.GetString();
                             if (!string.IsNullOrWhiteSpace(code)) dslItems.Add(code);
                         }
-                        
-                        var autoJournalRules = new List<object>();
-                        object BuildJI(string code, decimal? sign = null) => sign.HasValue ? new { code, sign } : new { code };
-                        
-                        // 基本給/各種手当 → 給与手当/未払費用
-                        var wageItems = new List<object>();
-                        if (dslItems.Contains("BASE")) wageItems.Add(BuildJI("BASE"));
-                        if (dslItems.Contains("COMMUTE")) wageItems.Add(BuildJI("COMMUTE"));
-                        if (dslItems.Contains("OVERTIME_STD")) wageItems.Add(BuildJI("OVERTIME_STD"));
-                        if (dslItems.Contains("OVERTIME_60")) wageItems.Add(BuildJI("OVERTIME_60"));
-                        if (dslItems.Contains("HOLIDAY_PAY")) wageItems.Add(BuildJI("HOLIDAY_PAY"));
-                        if (dslItems.Contains("LATE_NIGHT_PAY")) wageItems.Add(BuildJI("LATE_NIGHT_PAY"));
-                        if (dslItems.Contains("ABSENCE_DEDUCT")) wageItems.Add(BuildJI("ABSENCE_DEDUCT", -1m));
-                        // 手动添加的收入项目
-                        foreach (var code in new[] { "BONUS", "ALLOWANCE_SPECIAL", "ALLOWANCE_HOUSING", "ALLOWANCE_FAMILY", "ALLOWANCE_POSITION", "NENMATSU_KANPU", "ADJUST_OTHER" })
-                        {
-                            if (dslItems.Contains(code)) wageItems.Add(BuildJI(code));
-                        }
-                        if (wageItems.Count > 0)
-                            autoJournalRules.Add(new { name = "wages", debitAccount = "832", creditAccount = "315", items = wageItems.ToArray() });
-                        
-                        // 社会保険（健康保険+介護保険を合算）
-                        if (dslItems.Contains("HEALTH_INS") || dslItems.Contains("CARE_INS"))
-                        {
-                            var healthItems = new List<object>();
-                            if (dslItems.Contains("HEALTH_INS")) healthItems.Add(BuildJI("HEALTH_INS"));
-                            if (dslItems.Contains("CARE_INS")) healthItems.Add(BuildJI("CARE_INS"));
-                            autoJournalRules.Add(new { name = "health", debitAccount = "3181", creditAccount = "315", items = healthItems.ToArray() });
-                        }
-                        
-                        // 厚生年金
-                        if (dslItems.Contains("PENSION"))
-                            autoJournalRules.Add(new { name = "pension", debitAccount = "3182", creditAccount = "315", items = new[] { BuildJI("PENSION") } });
-                        
-                        // 雇用保険
-                        if (dslItems.Contains("EMP_INS"))
-                            autoJournalRules.Add(new { name = "employment", debitAccount = "3183", creditAccount = "315", items = new[] { BuildJI("EMP_INS") } });
-                        
-                        // 源泉徴収税
-                        if (dslItems.Contains("WHT"))
-                            autoJournalRules.Add(new { name = "withholding", debitAccount = "3184", creditAccount = "315", items = new[] { BuildJI("WHT") } });
-                        
-                        // 住民税
-                        if (dslItems.Contains("RESIDENT_TAX"))
-                            autoJournalRules.Add(new { name = "residentTax", debitAccount = "3185", creditAccount = "315", items = new[] { BuildJI("RESIDENT_TAX") } });
-                        
-                        // 年末調整徴収
-                        if (dslItems.Contains("NENMATSU_CHOSHU"))
-                            autoJournalRules.Add(new { name = "nenmatsu_choshu", debitAccount = "315", creditAccount = "3184", items = new[] { BuildJI("NENMATSU_CHOSHU") } });
-                        
-                        // 手动控除项目
-                        var deductItems = new List<object>();
-                        foreach (var code in new[] { "DEDUCT_LOAN", "DEDUCT_ADVANCE", "DEDUCT_OTHER" })
-                        {
-                            if (dslItems.Contains(code)) deductItems.Add(BuildJI(code));
-                        }
-                        if (deductItems.Count > 0)
-                            autoJournalRules.Add(new { name = "deductions", debitAccount = "315", creditAccount = "318", items = deductItems.ToArray() });
-                        
-                        if (autoJournalRules.Count > 0)
-                        {
-                            var jrArray = new System.Text.Json.Nodes.JsonArray(autoJournalRules.Select(o => JsonSerializer.SerializeToNode(o)!).ToArray());
-                            using var jrDoc = JsonDocument.Parse(jrArray.ToJsonString());
-                            journalRulesEl = jrDoc.RootElement.Clone();
-                        }
+                    }
+                    
+                    // 同时检查 payrollSheet 中的手动添加项目
+                    foreach (var item in sheetOut)
+                    {
+                        var code = ReadJsonString(item, "itemCode");
+                        if (!string.IsNullOrWhiteSpace(code)) dslItems.Add(code);
+                    }
+                    
+                    var autoJournalRules = new List<object>();
+                    object BuildJI(string code, decimal? sign = null) => sign.HasValue ? new { code, sign } : new { code };
+                    
+                    // 基本給/各種手当 → 給与手当/未払費用
+                    var wageItems = new List<object>();
+                    if (dslItems.Contains("BASE")) wageItems.Add(BuildJI("BASE"));
+                    if (dslItems.Contains("COMMUTE")) wageItems.Add(BuildJI("COMMUTE"));
+                    if (dslItems.Contains("OVERTIME_STD")) wageItems.Add(BuildJI("OVERTIME_STD"));
+                    if (dslItems.Contains("OVERTIME_60")) wageItems.Add(BuildJI("OVERTIME_60"));
+                    if (dslItems.Contains("HOLIDAY_PAY")) wageItems.Add(BuildJI("HOLIDAY_PAY"));
+                    if (dslItems.Contains("LATE_NIGHT_PAY")) wageItems.Add(BuildJI("LATE_NIGHT_PAY"));
+                    if (dslItems.Contains("ABSENCE_DEDUCT")) wageItems.Add(BuildJI("ABSENCE_DEDUCT", -1m));
+                    // 手动添加的收入项目（不含年末調整還付，它有独立的分录规则）
+                    foreach (var code in new[] { "BONUS", "ALLOWANCE_SPECIAL", "ALLOWANCE_HOUSING", "ALLOWANCE_FAMILY", "ALLOWANCE_POSITION", "ADJUST_OTHER" })
+                    {
+                        if (dslItems.Contains(code)) wageItems.Add(BuildJI(code));
+                    }
+                    if (wageItems.Count > 0)
+                        autoJournalRules.Add(new { name = "wages", debitAccount = "832", creditAccount = "315", items = wageItems.ToArray() });
+                    
+                    // 年末調整還付（返还之前多扣的源泉税：借 源泉所得税預り金、贷 未払費用）
+                    // 会计分录：DR 3184 源泉所得税預り金（减少负债）/ CR 315 未払費用（增加应付员工）
+                    if (dslItems.Contains("NENMATSU_KANPU"))
+                        autoJournalRules.Add(new { name = "nenmatsu_kanpu", debitAccount = "3184", creditAccount = "315", items = new[] { BuildJI("NENMATSU_KANPU") } });
+                    
+                    // 以下扣除项：从未払費用中扣除，转入预提金
+                    // 会计分录：DR 315 未払費用（减少应付员工）/ CR 預り金（增加代扣负债）
+                    
+                    // 社会保険（健康保険+介護保険を合算）
+                    if (dslItems.Contains("HEALTH_INS") || dslItems.Contains("CARE_INS"))
+                    {
+                        var healthItems = new List<object>();
+                        if (dslItems.Contains("HEALTH_INS")) healthItems.Add(BuildJI("HEALTH_INS"));
+                        if (dslItems.Contains("CARE_INS")) healthItems.Add(BuildJI("CARE_INS"));
+                        autoJournalRules.Add(new { name = "health", debitAccount = "315", creditAccount = "3181", items = healthItems.ToArray() });
+                    }
+                    
+                    // 厚生年金
+                    if (dslItems.Contains("PENSION"))
+                        autoJournalRules.Add(new { name = "pension", debitAccount = "315", creditAccount = "3182", items = new[] { BuildJI("PENSION") } });
+                    
+                    // 雇用保険
+                    if (dslItems.Contains("EMP_INS"))
+                        autoJournalRules.Add(new { name = "employment", debitAccount = "315", creditAccount = "3183", items = new[] { BuildJI("EMP_INS") } });
+                    
+                    // 源泉徴収税
+                    if (dslItems.Contains("WHT"))
+                        autoJournalRules.Add(new { name = "withholding", debitAccount = "315", creditAccount = "3184", items = new[] { BuildJI("WHT") } });
+                    
+                    // 住民税
+                    if (dslItems.Contains("RESIDENT_TAX"))
+                        autoJournalRules.Add(new { name = "residentTax", debitAccount = "315", creditAccount = "3185", items = new[] { BuildJI("RESIDENT_TAX") } });
+                    
+                    // 年末調整徴収（追缴之前少扣的税：从未払費用扣除，转入源泉税）
+                    // 会计分录：DR 315 未払費用（减少应付员工）/ CR 3184 源泉所得税預り金（增加代扣负债）
+                    if (dslItems.Contains("NENMATSU_CHOSHU"))
+                        autoJournalRules.Add(new { name = "nenmatsu_choshu", debitAccount = "315", creditAccount = "3184", items = new[] { BuildJI("NENMATSU_CHOSHU") } });
+                    
+                    // 手动控除项目
+                    var deductItems = new List<object>();
+                    foreach (var code in new[] { "DEDUCT_LOAN", "DEDUCT_ADVANCE", "DEDUCT_OTHER" })
+                    {
+                        if (dslItems.Contains(code)) deductItems.Add(BuildJI(code));
+                    }
+                    if (deductItems.Count > 0)
+                        autoJournalRules.Add(new { name = "deductions", debitAccount = "315", creditAccount = "318", items = deductItems.ToArray() });
+                    
+                    if (autoJournalRules.Count > 0)
+                    {
+                        var jrArray = new System.Text.Json.Nodes.JsonArray(autoJournalRules.Select(o => JsonSerializer.SerializeToNode(o)!).ToArray());
+                        using var jrDoc = JsonDocument.Parse(jrArray.ToJsonString());
+                        journalRulesEl = jrDoc.RootElement.Clone();
                     }
                 }
             }
@@ -3566,10 +3581,21 @@ LIMIT @pageSize OFFSET @offset";
             {
                 rulesElement = explicitRules;
                 
-                // 即使有显式 rules，也需要生成会计凭证规则（如果 Policy 没有 journalRules）
-                if (!pBody.TryGetProperty("journalRules", out var existingJR) || existingJR.ValueKind != JsonValueKind.Array || existingJR.GetArrayLength() == 0)
+                // 优先使用 Policy 中定义的 journalRules（包括 dsl.journalRules）
+                if (pBody.TryGetProperty("journalRules", out var jr) && jr.ValueKind == JsonValueKind.Array && jr.GetArrayLength() > 0)
                 {
-                    // 基于 DSL rules 中的项目自动生成会计凭证规则
+                    compiledJournalRulesElement = jr;
+                    if (debug) trace?.Add(new { step = "journal.rules.fromPolicy", source = "policy.journalRules", count = jr.GetArrayLength() });
+                }
+                else if (pBody.TryGetProperty("dsl", out var dslEl) && dslEl.ValueKind == JsonValueKind.Object &&
+                         dslEl.TryGetProperty("journalRules", out var dslJr) && dslJr.ValueKind == JsonValueKind.Array && dslJr.GetArrayLength() > 0)
+                {
+                    compiledJournalRulesElement = dslJr;
+                    if (debug) trace?.Add(new { step = "journal.rules.fromPolicy", source = "dsl.journalRules", count = dslJr.GetArrayLength() });
+                }
+                else
+                {
+                    // 如果 Policy 中没有定义 journalRules，则基于 DSL rules 自动生成（作为 fallback）
                     var dslItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     foreach (var rule in explicitRules.EnumerateArray())
                     {
@@ -3595,33 +3621,36 @@ LIMIT @pageSize OFFSET @offset";
                     if (wageItems.Count > 0)
                         autoJournalRules.Add(new { name = "wages", debitAccount = "832", creditAccount = "315", items = wageItems.ToArray(), description = "基本給および各種手当を給与手当／未払費用で仕訳" });
                     
+                    // 以下扣除项：从未払費用中扣除，转入预提金
+                    // 会计分录：DR 315 未払費用（减少应付员工）/ CR 預り金（增加代扣负债）
+                    
                     // 社会保険（健康保険+介護保険を合算）
                     if (dslItems.Contains("HEALTH_INS") || dslItems.Contains("CARE_INS"))
                     {
                         var healthItems = new List<object>();
                         if (dslItems.Contains("HEALTH_INS")) healthItems.Add(BuildJI("HEALTH_INS"));
                         if (dslItems.Contains("CARE_INS")) healthItems.Add(BuildJI("CARE_INS"));
-                        autoJournalRules.Add(new { name = "health", debitAccount = "3181", creditAccount = "315", items = healthItems.ToArray(), description = "社会保険預り金／未払費用" });
+                        autoJournalRules.Add(new { name = "health", debitAccount = "315", creditAccount = "3181", items = healthItems.ToArray(), description = "未払費用／社会保険預り金" });
                     }
                     
                     // 厚生年金
                     if (dslItems.Contains("PENSION"))
-                        autoJournalRules.Add(new { name = "pension", debitAccount = "3182", creditAccount = "315", items = new[] { BuildJI("PENSION") }, description = "厚生年金預り金／未払費用" });
+                        autoJournalRules.Add(new { name = "pension", debitAccount = "315", creditAccount = "3182", items = new[] { BuildJI("PENSION") }, description = "未払費用／厚生年金預り金" });
                     
                     // 雇用保険
                     if (dslItems.Contains("EMP_INS"))
-                        autoJournalRules.Add(new { name = "employment", debitAccount = "3183", creditAccount = "315", items = new[] { BuildJI("EMP_INS") }, description = "雇用保険預り金／未払費用" });
+                        autoJournalRules.Add(new { name = "employment", debitAccount = "315", creditAccount = "3183", items = new[] { BuildJI("EMP_INS") }, description = "未払費用／雇用保険預り金" });
                     
                     // 源泉徴収税
                     if (dslItems.Contains("WHT"))
-                        autoJournalRules.Add(new { name = "withholding", debitAccount = "3184", creditAccount = "315", items = new[] { BuildJI("WHT") }, description = "源泉所得税預り金／未払費用" });
+                        autoJournalRules.Add(new { name = "withholding", debitAccount = "315", creditAccount = "3184", items = new[] { BuildJI("WHT") }, description = "未払費用／源泉所得税預り金" });
                     
                     if (autoJournalRules.Count > 0)
                     {
                         var jrArray = new System.Text.Json.Nodes.JsonArray(autoJournalRules.Select(o => System.Text.Json.JsonSerializer.SerializeToNode(o)!).ToArray());
                         compiledJournalRulesDoc = JsonDocument.Parse(jrArray.ToJsonString());
                         compiledJournalRulesElement = compiledJournalRulesDoc.RootElement;
-                        if (debug) trace?.Add(new { step = "journal.rules.auto", source = "dsl-items", count = autoJournalRules.Count, items = dslItems.ToArray() });
+                        if (debug) trace?.Add(new { step = "journal.rules.auto", source = "dsl-items-fallback", count = autoJournalRules.Count, items = dslItems.ToArray() });
                     }
                 }
             }
@@ -3861,35 +3890,38 @@ LIMIT @pageSize OFFSET @offset";
                 AddJournalRuleLocal("wages", ResolveJournalDebitLocal("wages", "832"), ResolveJournalCreditLocal("wages", "315"), wageJournalItems, "基本給および各種手当を給与手当／未払費用で仕訳");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "wages", items = wageJournalItems.Select(i => i.ToString()).ToArray() });
             }
+            // 以下扣除项：从未払費用中扣除，转入预提金
+            // 会计分录：DR 315 未払費用（减少应付员工）/ CR 預り金（增加代扣负债）
+            
             // 社会保険（健康保険+介護保険）：DSL 有定义，或自然语言描述中有关键字
             if (dslHasHealth || wantsHealth)
             {
                 var healthJournalItems = new List<object> { BuildJournalItem("HEALTH_INS"), BuildJournalItem("CARE_INS") };
-                AddJournalRuleLocal("health", ResolveJournalDebitLocal("health", "3181"), ResolveJournalCreditLocal("health", "315"), healthJournalItems, "社会保険預り金／未払費用");
+                AddJournalRuleLocal("health", ResolveJournalDebitLocal("health", "315"), ResolveJournalCreditLocal("health", "3181"), healthJournalItems, "未払費用／社会保険預り金");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "health" });
             }
             // 厚生年金：DSL 有定义，或自然语言描述中有关键字
             if (dslHasPension || wantsPension)
             {
-                AddJournalRuleLocal("pension", ResolveJournalDebitLocal("pension", "3182"), ResolveJournalCreditLocal("pension", "315"), new[] { BuildJournalItem("PENSION") }, "厚生年金預り金／未払費用");
+                AddJournalRuleLocal("pension", ResolveJournalDebitLocal("pension", "315"), ResolveJournalCreditLocal("pension", "3182"), new[] { BuildJournalItem("PENSION") }, "未払費用／厚生年金預り金");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "pension" });
             }
             // 雇用保険：DSL 有定义，或自然语言描述中有关键字
             if (dslHasEmployment || wantsEmployment)
             {
-                AddJournalRuleLocal("employment", ResolveJournalDebitLocal("employment", "3183"), ResolveJournalCreditLocal("employment", "315"), new[] { BuildJournalItem("EMP_INS") }, "雇用保険預り金／未払費用");
+                AddJournalRuleLocal("employment", ResolveJournalDebitLocal("employment", "315"), ResolveJournalCreditLocal("employment", "3183"), new[] { BuildJournalItem("EMP_INS") }, "未払費用／雇用保険預り金");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "employment" });
             }
             // 源泉徴収税：DSL 有定义，或自然语言描述中有关键字
             if (dslHasWithholding || wantsWithholding)
             {
-                AddJournalRuleLocal("withholding", ResolveJournalDebitLocal("withholding", "3184"), ResolveJournalCreditLocal("withholding", "315"), new[] { BuildJournalItem("WHT") }, "源泉所得税預り金／未払費用");
+                AddJournalRuleLocal("withholding", ResolveJournalDebitLocal("withholding", "315"), ResolveJournalCreditLocal("withholding", "3184"), new[] { BuildJournalItem("WHT") }, "未払費用／源泉所得税預り金");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "withholding" });
             }
             // 住民税：DSL 有定义，或自然语言描述中有关键字
             if (dslHasResidentTax || wantsResidentTax)
             {
-                AddJournalRuleLocal("residentTax", ResolveJournalDebitLocal("residentTax", "3185"), ResolveJournalCreditLocal("residentTax", "315"), new[] { BuildJournalItem("RESIDENT_TAX") }, "住民税預り金／未払費用");
+                AddJournalRuleLocal("residentTax", ResolveJournalDebitLocal("residentTax", "315"), ResolveJournalCreditLocal("residentTax", "3185"), new[] { BuildJournalItem("RESIDENT_TAX") }, "未払費用／住民税預り金");
                 if (debug) trace?.Add(new { step = "journal.builder", scope = "fallback", rule = "residentTax" });
             }
 
@@ -3910,13 +3942,8 @@ LIMIT @pageSize OFFSET @offset";
             }
         }
 
-        if (compiledJournalRulesElement is null && policyBody.HasValue &&
-            policyBody.Value.TryGetProperty("journalRules", out var jrExisting) &&
-            jrExisting.ValueKind == JsonValueKind.Array && jrExisting.GetArrayLength() > 0)
-        {
-            compiledJournalRulesElement = jrExisting;
-        }
-        else if (compiledJournalRulesElement is null)
+        // 如果没有 compiledJournalRulesElement，从文本生成（仅在 Policy/DSL 未提供 journalRules 时）
+        if (compiledJournalRulesElement is null)
         {
             var combinedText = CombineTextSegments(policyTextCombined, employeeTextForPolicy);
             var generatedJournalRules = BuildJournalRulesFromText(combinedText);
@@ -3958,47 +3985,18 @@ LIMIT @pageSize OFFSET @offset";
                 residentTaxAmount);
         }
         var journal = new List<JournalLine>();
-        JsonElement? activeJournalRules = null;
-        bool journalRulesFromPolicy = false;
-        bool journalRulesFromCompiled = false;
-        bool policyHasJournalRules = false;
-        if (policyBody.HasValue && policyBody.Value.ValueKind == JsonValueKind.Object &&
-            policyBody.Value.TryGetProperty("journalRules", out var jrFromPolicyCandidate))
-        {
-            policyHasJournalRules = jrFromPolicyCandidate.ValueKind == JsonValueKind.Array && jrFromPolicyCandidate.GetArrayLength() > 0;
-            if (policyHasJournalRules)
-            {
-                activeJournalRules = jrFromPolicyCandidate;
-                journalRulesFromPolicy = true;
-            }
-            if (debug)
-            {
-                trace?.Add(new { step = "journal.rules.policyCheck", hasProperty = true, entries = jrFromPolicyCandidate.GetArrayLength() });
-            }
-        }
-        else if (policyBody.HasValue && debug)
-        {
-            trace?.Add(new { step = "journal.rules.policyCheck", hasProperty = false });
-        }
-
-        if (!journalRulesFromPolicy && compiledJournalRulesElement.HasValue &&
+        
+        // 使用 journalRules（优先从 Policy 读取，fallback 到自动生成）
+        if (compiledJournalRulesElement.HasValue &&
             compiledJournalRulesElement.Value.ValueKind == JsonValueKind.Array &&
             compiledJournalRulesElement.Value.GetArrayLength() > 0)
         {
-            activeJournalRules = compiledJournalRulesElement.Value;
-            journalRulesFromCompiled = true;
-        }
-
-        if (activeJournalRules.HasValue)
-        {
-            journal = BuildJournalLinesFromDsl(activeJournalRules.Value, sheetOut);
+            journal = BuildJournalLinesFromDsl(compiledJournalRulesElement.Value, sheetOut);
             if (debug)
             {
                 trace?.Add(new
                 {
-                    step = "journal.rules.active",
-                    fromPolicy = journalRulesFromPolicy,
-                    fromCompiled = journalRulesFromCompiled,
+                    step = "journal.rules.applied",
                     lines = journal.Count
                 });
             }

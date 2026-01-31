@@ -149,10 +149,11 @@
     <el-dialog 
       v-model="dialogVisible" 
       :title="isEdit ? 'リソース編集' : '新規リソース登録'"
-      width="700px"
+      width="720px"
       destroy-on-close
+      class="resource-dialog"
     >
-      <el-form :model="form" label-width="120px" label-position="right">
+      <el-form :model="form" label-width="100px" label-position="right" class="resource-form">
         <el-row :gutter="20">
           <el-col :span="12">
             <el-form-item label="リソース種別" required>
@@ -224,7 +225,7 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="経験年数">
-              <el-input-number v-model="form.experienceYears" :min="0" :max="50" />
+              <el-input-number v-model="form.experienceYears" :min="0" :max="50" style="width: 100%" />
             </el-form-item>
           </el-col>
         </el-row>
@@ -232,17 +233,20 @@
         <el-divider>単価情報</el-divider>
 
         <el-row :gutter="20">
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item label="請求単価">
-              <el-input-number v-model="form.defaultBillingRate" :min="0" :step="10000" controls-position="right" />
+              <el-input-number v-model="form.defaultBillingRate" :min="0" :step="10000" controls-position="right" style="width: 100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item label="原価単価">
-              <el-input-number v-model="form.defaultCostRate" :min="0" :step="10000" controls-position="right" />
+              <el-input-number v-model="form.defaultCostRate" :min="0" :step="10000" controls-position="right" style="width: 100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="8">
+        </el-row>
+
+        <el-row :gutter="20">
+          <el-col :span="12">
             <el-form-item label="単価種別">
               <el-select v-model="form.rateType" style="width: 100%">
                 <el-option label="月額" value="monthly" />
@@ -726,6 +730,42 @@ onMounted(() => {
 
 .el-divider {
   margin: 16px 0;
+}
+
+/* 资源弹窗样式修复 */
+:deep(.resource-dialog) {
+  max-width: 90vw;
+}
+
+:deep(.resource-dialog .el-dialog__body) {
+  padding: 20px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.resource-form {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.resource-form :deep(.el-row) {
+  width: 100%;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.resource-form :deep(.el-input-number) {
+  width: 100% !important;
+  max-width: 100%;
+}
+
+.resource-form :deep(.el-input-number .el-input__wrapper) {
+  width: 100%;
+}
+
+.resource-form :deep(.el-form-item__content) {
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 /* 社员选择弹窗样式 */

@@ -533,6 +533,7 @@ function isDeductionItem(row: any): boolean {
     || code === 'PENSION'
     || code === 'EMP_INS'
     || code === 'WHT'
+    || code === 'RESIDENT_TAX'
     || code === 'ABSENCE_DEDUCT'
     || code === 'DEDUCT_LOAN'
     || code === 'DEDUCT_ADVANCE'
