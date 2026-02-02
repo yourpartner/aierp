@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "pz9HPhzdDwbfz0F+frW9nMeVBIp6ExB36AtA7sZXM5LKLu0xzrIonrCbLgHD7OulFSlizq5WooWGP7hY0X5Grg==",
+  "success": true,
+  "projectFilePath": "D:\\yanxia\\TempHashGen\\TempHashGen.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\ryuho\\.nuget\\packages\\bcrypt.net-next\\4.0.3\\bcrypt.net-next.4.0.3.nupkg.sha512"
+  ],
+  "logs": []
+}

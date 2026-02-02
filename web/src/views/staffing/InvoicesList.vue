@@ -128,9 +128,12 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="200" fixed="right" align="center">
+        <el-table-column label="操作" width="260" fixed="right" align="center">
           <template #default="{ row }">
             <el-button link type="primary" @click="onView(row)">詳細</el-button>
+            <el-button link type="info" @click="downloadPdf(row)">
+              <el-icon><Download /></el-icon>PDF
+            </el-button>
             <el-button link type="success" @click="confirmInvoice(row)" v-if="row.status === 'draft'">確定</el-button>
             <el-button link type="warning" @click="issueInvoice(row)" v-if="row.status === 'confirmed'">発行</el-button>
             <el-button link type="primary" @click="openPayment(row)" v-if="['issued', 'sent', 'partial_paid'].includes(row.status)">入金</el-button>
@@ -291,7 +294,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Tickets, Refresh, Search } from '@element-plus/icons-vue'
+import { Tickets, Refresh, Search, Download } from '@element-plus/icons-vue'
 import api from '../../api'
 
 interface InvoiceRow {
@@ -373,6 +376,24 @@ const onView = async (row: InvoiceRow) => {
     detailDialogVisible.value = true
   } catch (e: any) {
     ElMessage.error('詳細取得失敗')
+  }
+}
+
+const downloadPdf = async (row: InvoiceRow) => {
+  try {
+    const res = await api.get(`/staffing/invoices/${row.id}/pdf`)
+    if (res.data?.url) {
+      // 打开PDF链接（Azure Storage SAS URL）
+      window.open(res.data.url, '_blank')
+    } else {
+      ElMessage.warning('PDFが見つかりません')
+    }
+  } catch (e: any) {
+    if (e.response?.status === 404) {
+      ElMessage.warning('PDFが生成されていません')
+    } else {
+      ElMessage.error(e.response?.data?.error || 'PDFダウンロード失敗')
+    }
   }
 }
 

@@ -160,26 +160,22 @@
     <el-dialog 
       v-model="dialogVisible" 
       width="860px"
+      :show-close="false"
+      append-to-body
       destroy-on-close
       class="project-form-dialog"
     >
-      <template #header>
-        <!-- 空header，使用内部el-card的header -->
-      </template>
+      <template #header></template>
       <el-card class="project-form-card">
         <template #header>
-          <div class="dialog-header">
-            <div class="dialog-header__left">
-              <el-icon class="dialog-header__icon"><Briefcase /></el-icon>
-              <span class="dialog-header__title">{{ isEdit ? '案件編集' : '新規案件登録' }}</span>
-            </div>
-            <div class="dialog-header__right">
+          <div class="project-dialog-header">
+            <span class="project-dialog-title">{{ isEdit ? '案件編集' : '新規案件登録' }}</span>
+            <div class="header-actions">
               <el-button @click="dialogVisible = false">キャンセル</el-button>
               <el-button type="primary" @click="save" :loading="saving">保存</el-button>
             </div>
           </div>
         </template>
-        
         <el-form :model="form" label-width="100px" label-position="right" class="project-form">
           <el-row :gutter="20">
             <el-col :span="12">
@@ -683,15 +679,19 @@ const loadCandidates = async (projectId: string) => {
 }
 
 const searchResources = async (query: string) => {
-  if (!query) return
   try {
-    const res = await api.get('/staffing/resources', { params: { keyword: query, status: 'available' } })
+    const params: Record<string, any> = { status: 'available' }
+    if (query && query.trim()) {
+      params.keyword = query.trim()
+    }
+    const res = await api.get('/staffing/resources', { params })
     resourceOptions.value = (res.data.data || []).map((r: any) => ({
       label: `${r.resourceCode} - ${r.displayName}`,
       value: r.id
     }))
   } catch (e) {
-    console.error(e)
+    console.error('Failed to search resources:', e)
+    resourceOptions.value = []
   }
 }
 
@@ -887,40 +887,6 @@ onMounted(() => {
   align-items: center;
 }
 
-/* 弹窗表单样式 */
-.project-form-card {
-  border-radius: 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
-}
-
-.dialog-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.dialog-header__left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.dialog-header__icon {
-  font-size: 22px;
-  color: var(--el-color-primary);
-}
-
-.dialog-header__title {
-  font-size: 18px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.dialog-header__right {
-  display: flex;
-  gap: 8px;
-}
-
 .project-form {
   padding: 8px 0;
 }
@@ -971,22 +937,61 @@ onMounted(() => {
   text-align: right;
   flex-shrink: 0;
 }
+
+/* 案件弹窗样式 - 与财务会计保持一致 */
+.project-form-card {
+  max-width: 100%;
+  margin: 0;
+  border: none;
+  box-shadow: none;
+}
+
+.project-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--color-divider, #ebeef5);
+}
+
+.project-dialog-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 </style>
 
 <style>
-/* 项目表单弹窗全局样式 */
-.project-form-dialog.el-dialog {
+/* 案件弹窗全局样式 - 与财务会计保持一致 */
+.el-dialog.project-form-dialog {
   background: transparent !important;
   box-shadow: none !important;
+  border: none !important;
   padding: 0 !important;
 }
 
-.project-form-dialog .el-dialog__header {
+.el-dialog.project-form-dialog .el-dialog__header {
   display: none !important;
 }
 
-.project-form-dialog .el-dialog__body {
+.el-dialog.project-form-dialog .el-dialog__body {
   padding: 0 !important;
+  background: transparent !important;
+}
+
+/* 覆盖 el-card__header 的 padding，让分隔线延伸到边缘 */
+.project-form-card.el-card .el-card__header {
+  padding: 0 !important;
+}
+
+.project-form-card.el-card .el-card__body {
+  padding: 20px !important;
 }
 </style>
 

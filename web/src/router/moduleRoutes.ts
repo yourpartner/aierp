@@ -73,17 +73,23 @@ export const miscRoutes: RouteRecordRaw[] = [
 // 人才派遣 - 资源池模块路由 - 已通过 ChatKit 弹窗访问，不需要独立路由
 export const staffingResourcePoolRoutes: RouteRecordRaw[] = []
 
-// 人才派遣 - 案件模块路由 - 已通过 ChatKit 弹窗访问，不需要独立路由
-export const staffingProjectRoutes: RouteRecordRaw[] = []
+// 人才派遣 - 案件模块路由
+export const staffingProjectRoutes: RouteRecordRaw[] = [
+  { path: '/staffing/projects', component: () => import('../views/staffing/ProjectsList.vue'), meta: { requiresAuth: true } },
+]
 
-// 人才派遣 - 合同模块路由 - 已通过 ChatKit 弹窗访问，不需要独立路由
-export const staffingContractRoutes: RouteRecordRaw[] = []
+// 人才派遣 - 合同模块路由
+export const staffingContractRoutes: RouteRecordRaw[] = [
+  { path: '/staffing/contracts', component: () => import('../views/staffing/ContractsList.vue'), meta: { requiresAuth: true } },
+]
 
 // 人才派遣 - 勤怠連携モジュール路由 - 已通过 ChatKit 弹窗访问，不需要独立路由
 export const staffingTimesheetRoutes: RouteRecordRaw[] = []
 
-// 人才派遣 - 請求管理モジュール路由 - 已通过 ChatKit 弹窗访问，不需要独立路由
-export const staffingBillingRoutes: RouteRecordRaw[] = []
+// 人才派遣 - 請求管理モジュール路由
+export const staffingBillingRoutes: RouteRecordRaw[] = [
+  { path: '/staffing/invoices', component: () => import('../views/staffing/InvoicesList.vue'), meta: { requiresAuth: true } },
+]
 
 // 人才派遣 - 分析レポートモジュール路由 - 已通过 ChatKit 弹窗访问，不需要独立路由
 export const staffingAnalyticsRoutes: RouteRecordRaw[] = []

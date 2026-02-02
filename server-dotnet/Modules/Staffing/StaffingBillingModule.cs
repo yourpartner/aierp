@@ -1,7 +1,10 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Server.Domain;
 using Server.Infrastructure;
@@ -429,7 +432,27 @@ public class StaffingBillingModule : ModuleBase
                     }
                 }
 
-                generatedInvoices.Add(new { id = invoiceId, invoiceNo, clientId, totalAmount = grandTotal, lineCount = lineNo });
+                // PDF生成・Azure Storageへアップロード（必須）
+                var blobService = app.Services.GetService<AzureBlobService>();
+                if (blobService?.IsConfigured != true)
+                {
+                    return Results.Problem("Azure Storage is not configured. PDF generation requires Azure Storage.", statusCode: 503);
+                }
+
+                var cfg = app.Configuration;
+                string? pdfBlobPath;
+                try
+                {
+                    pdfBlobPath = await GenerateAndUploadInvoicePdfAsync(ds, cfg, blobService, cc.ToString(), invoiceId, conn);
+                }
+                catch (Exception pdfEx)
+                {
+                    // PDF生成失敗時は請求書作成も失敗させる
+                    Console.Error.WriteLine($"[StaffingBilling] PDF generation failed for invoice {invoiceId}: {pdfEx.Message}");
+                    return Results.Problem($"PDF generation failed: {pdfEx.Message}", statusCode: 500);
+                }
+
+                generatedInvoices.Add(new { id = invoiceId, invoiceNo, clientId, totalAmount = grandTotal, lineCount = lineNo, pdfBlobPath });
             }
 
             return Results.Ok(new { generated = generatedInvoices.Count, invoices = generatedInvoices, yearMonth });
@@ -546,7 +569,7 @@ public class StaffingBillingModule : ModuleBase
             return Results.Ok(new { paid = true, paidAmount = newPaidAmount, status = newStatus });
         }).RequireAuthorization();
 
-        // 請求書更新（ドラフト時のみ）
+        // 請求書更新（ドラフト時のみ）- 更新後PDFも再生成
         app.MapPut("/staffing/invoices/{id:guid}", async (Guid id, HttpRequest req, NpgsqlDataSource ds) =>
         {
             if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
@@ -581,6 +604,23 @@ public class StaffingBillingModule : ModuleBase
             upd.Parameters.AddWithValue(obj.ToJsonString());
             var result = await upd.ExecuteScalarAsync();
             if (result == null) return Results.NotFound();
+
+            // PDF再生成（Azure Storage上のPDFも更新）
+            var blobService = app.Services.GetService<AzureBlobService>();
+            if (blobService?.IsConfigured == true)
+            {
+                try
+                {
+                    var cfg = app.Configuration;
+                    await GenerateAndUploadInvoicePdfAsync(ds, cfg, blobService, cc.ToString(), id, conn);
+                }
+                catch (Exception pdfEx)
+                {
+                    Console.Error.WriteLine($"[StaffingBilling] PDF regeneration failed for invoice {id}: {pdfEx.Message}");
+                    return Results.Problem($"Invoice updated but PDF regeneration failed: {pdfEx.Message}", statusCode: 500);
+                }
+            }
+
             return Results.Ok(new { id, updated = true });
         }).RequireAuthorization();
 
@@ -608,6 +648,16 @@ public class StaffingBillingModule : ModuleBase
             tsCmd.Parameters.AddWithValue(id);
             await tsCmd.ExecuteNonQueryAsync();
 
+            // 取得PDF路径（用于删除）
+            string? pdfBlobPath = null;
+            await using (var pdfCmd = conn.CreateCommand())
+            {
+                pdfCmd.CommandText = $"SELECT payload->>'pdf_blob_path' FROM {invTable} WHERE id = $1 AND company_code = $2";
+                pdfCmd.Parameters.AddWithValue(id);
+                pdfCmd.Parameters.AddWithValue(cc.ToString());
+                pdfBlobPath = (await pdfCmd.ExecuteScalarAsync()) as string;
+            }
+
             // 請求書をキャンセル
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = $@"
@@ -621,9 +671,399 @@ public class StaffingBillingModule : ModuleBase
 
             var result = await cmd.ExecuteScalarAsync();
             if (result == null) return Results.NotFound(new { error = "Not found or cannot be cancelled" });
+
+            // 删除Azure Storage上的PDF
+            if (!string.IsNullOrWhiteSpace(pdfBlobPath))
+            {
+                try
+                {
+                    var blobService = app.Services.GetService<AzureBlobService>();
+                    if (blobService?.IsConfigured == true)
+                    {
+                        await blobService.DeleteAsync(pdfBlobPath, CancellationToken.None);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[StaffingBilling] Failed to delete PDF for cancelled invoice {id}: {ex.Message}");
+                }
+            }
+
             return Results.Ok(new { cancelled = true });
+        }).RequireAuthorization();
+
+        // PDF下载接口
+        app.MapGet("/staffing/invoices/{id:guid}/pdf", async (Guid id, HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            var invTable = Crud.TableFor("staffing_invoice");
+            await using var conn = await ds.OpenConnectionAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"SELECT payload->>'pdf_blob_path', invoice_no FROM {invTable} WHERE id = $1 AND company_code = $2";
+            cmd.Parameters.AddWithValue(id);
+            cmd.Parameters.AddWithValue(cc.ToString());
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync())
+                return Results.NotFound(new { error = "Invoice not found" });
+
+            var pdfBlobPath = reader.IsDBNull(0) ? null : reader.GetString(0);
+            var invoiceNo = reader.IsDBNull(1) ? "invoice" : reader.GetString(1);
+
+            if (string.IsNullOrWhiteSpace(pdfBlobPath))
+                return Results.NotFound(new { error = "PDF not generated yet" });
+
+            var blobService = app.Services.GetService<AzureBlobService>();
+            if (blobService?.IsConfigured != true)
+                return Results.Problem("Azure Storage is not configured", statusCode: 503);
+
+            var sasUrl = blobService.GetReadUri(pdfBlobPath);
+            return Results.Ok(new { url = sasUrl, filename = $"{invoiceNo}.pdf" });
+        }).RequireAuthorization();
+
+        // 手动重新生成PDF接口
+        app.MapPost("/staffing/invoices/{id:guid}/regenerate-pdf", async (Guid id, HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            var invTable = Crud.TableFor("staffing_invoice");
+            await using var conn = await ds.OpenConnectionAsync();
+
+            // 验证请求书存在
+            await using var checkCmd = conn.CreateCommand();
+            checkCmd.CommandText = $"SELECT 1 FROM {invTable} WHERE id = $1 AND company_code = $2";
+            checkCmd.Parameters.AddWithValue(id);
+            checkCmd.Parameters.AddWithValue(cc.ToString());
+            if (await checkCmd.ExecuteScalarAsync() == null)
+                return Results.NotFound(new { error = "Invoice not found" });
+
+            try
+            {
+                var blobService = app.Services.GetService<AzureBlobService>();
+                var cfg = app.Configuration;
+                var pdfResult = await GenerateAndUploadInvoicePdfAsync(ds, cfg, blobService, cc.ToString(), id, conn);
+                return Results.Ok(new { success = true, pdfBlobPath = pdfResult });
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem($"PDF generation failed: {ex.Message}", statusCode: 500);
+            }
         }).RequireAuthorization();
     }
 
-    // (date helper removed; invoice uses payload fields)
+    /// <summary>
+    /// 生成请求书PDF并上传到Azure Storage
+    /// </summary>
+    private static async Task<string?> GenerateAndUploadInvoicePdfAsync(
+        NpgsqlDataSource ds,
+        IConfiguration cfg,
+        AzureBlobService? blobService,
+        string companyCode,
+        Guid invoiceId,
+        NpgsqlConnection conn)
+    {
+        // 获取公司信息和印章
+        var (companyName, companyAddress, companyRep, sealDataUrl, sealSize, sealOffsetX, sealOffsetY, sealOpacity, companyZip, companyTel, companyEmail, bankInfo) 
+            = await LoadCompanyBasicsForInvoiceAsync(ds, companyCode);
+
+        // 获取请求书数据
+        var invTable = Crud.TableFor("staffing_invoice");
+        var lineTable = Crud.TableFor("staffing_invoice_line");
+        var rTable = Crud.TableFor("resource");
+
+        string? invoiceNo = null;
+        string? clientName = null;
+        string? clientAddress = null;
+        string? invoiceDate = null;
+        string? dueDate = null;
+        decimal subtotal = 0;
+        decimal taxRate = 0.10m;
+        decimal taxAmount = 0;
+        decimal totalAmount = 0;
+        string? remarks = null;
+
+        // 获取请求书头信息
+        await using (var invCmd = conn.CreateCommand())
+        {
+            invCmd.CommandText = $@"
+                SELECT i.invoice_no, 
+                       bp.payload->>'name' as client_name,
+                       bp.payload->>'address' as client_address,
+                       fn_jsonb_date(i.payload,'invoice_date') as invoice_date,
+                       fn_jsonb_date(i.payload,'due_date') as due_date,
+                       COALESCE(fn_jsonb_numeric(i.payload,'subtotal'), 0) as subtotal,
+                       COALESCE(fn_jsonb_numeric(i.payload,'tax_rate'), 0.10) as tax_rate,
+                       COALESCE(fn_jsonb_numeric(i.payload,'tax_amount'), 0) as tax_amount,
+                       COALESCE(fn_jsonb_numeric(i.payload,'total_amount'), 0) as total_amount,
+                       i.payload->>'remarks' as remarks
+                FROM {invTable} i
+                LEFT JOIN businesspartners bp ON i.client_partner_id = bp.id
+                WHERE i.id = $1 AND i.company_code = $2";
+            invCmd.Parameters.AddWithValue(invoiceId);
+            invCmd.Parameters.AddWithValue(companyCode);
+
+            await using var invReader = await invCmd.ExecuteReaderAsync();
+            if (!await invReader.ReadAsync())
+                throw new InvalidOperationException("Invoice not found");
+
+            invoiceNo = invReader.IsDBNull(0) ? "" : invReader.GetString(0);
+            clientName = invReader.IsDBNull(1) ? "" : invReader.GetString(1);
+            clientAddress = invReader.IsDBNull(2) ? null : invReader.GetString(2);
+            invoiceDate = invReader.IsDBNull(3) ? "" : invReader.GetDateTime(3).ToString("yyyy年MM月dd日");
+            dueDate = invReader.IsDBNull(4) ? "" : invReader.GetDateTime(4).ToString("yyyy年MM月dd日");
+            subtotal = invReader.IsDBNull(5) ? 0 : invReader.GetDecimal(5);
+            taxRate = invReader.IsDBNull(6) ? 0.10m : invReader.GetDecimal(6);
+            taxAmount = invReader.IsDBNull(7) ? 0 : invReader.GetDecimal(7);
+            totalAmount = invReader.IsDBNull(8) ? 0 : invReader.GetDecimal(8);
+            remarks = invReader.IsDBNull(9) ? null : invReader.GetString(9);
+        }
+
+        // 获取请求书明细
+        var lines = new List<object>();
+        await using (var lineCmd = conn.CreateCommand())
+        {
+            lineCmd.CommandText = $@"
+                SELECT l.payload->>'description' as description,
+                       fn_jsonb_numeric(l.payload,'quantity') as quantity,
+                       l.payload->>'unit' as unit,
+                       fn_jsonb_numeric(l.payload,'unit_price') as unit_price,
+                       fn_jsonb_numeric(l.payload,'line_amount') as line_amount,
+                       r.display_name as resource_name
+                FROM {lineTable} l
+                LEFT JOIN {rTable} r ON l.resource_id = r.id
+                WHERE l.invoice_id = $1 AND l.company_code = $2
+                ORDER BY l.line_no";
+            lineCmd.Parameters.AddWithValue(invoiceId);
+            lineCmd.Parameters.AddWithValue(companyCode);
+
+            await using var lineReader = await lineCmd.ExecuteReaderAsync();
+            while (await lineReader.ReadAsync())
+            {
+                lines.Add(new
+                {
+                    description = lineReader.IsDBNull(0) ? "" : lineReader.GetString(0),
+                    quantity = lineReader.IsDBNull(1) ? (decimal?)null : lineReader.GetDecimal(1),
+                    unit = lineReader.IsDBNull(2) ? "" : lineReader.GetString(2),
+                    unitPrice = lineReader.IsDBNull(3) ? (decimal?)null : lineReader.GetDecimal(3),
+                    amount = lineReader.IsDBNull(4) ? (decimal?)null : lineReader.GetDecimal(4)
+                });
+            }
+        }
+
+        // 构建PDF payload
+        var pdfPayload = new
+        {
+            template = "staffing_invoice",
+            invoiceNo,
+            invoiceDate,
+            dueDate,
+            clientName,
+            clientAddress,
+            companyName,
+            companyAddress,
+            companyZip,
+            companyTel,
+            companyEmail,
+            subtotal,
+            taxRate,
+            taxAmount,
+            totalAmount,
+            remarks,
+            bankInfo,
+            lines,
+            seal = string.IsNullOrWhiteSpace(sealDataUrl) ? null : new
+            {
+                image = sealDataUrl,
+                size = sealSize ?? 56.0,
+                offsetX = sealOffsetX ?? 0.0,
+                offsetY = sealOffsetY ?? 0.0,
+                opacity = sealOpacity ?? 0.8
+            },
+            docId = invoiceId.ToString()
+        };
+
+        // 调用 Agent Service 生成 PDF
+        var agentBase = (cfg["Agent:Base"] ?? Environment.GetEnvironmentVariable("AGENT_BASE") ?? "http://localhost:3030").TrimEnd('/');
+        var handler = new SocketsHttpHandler { UseProxy = false };
+        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+
+        async Task<HttpResponseMessage?> TryRender(string baseUrl)
+        {
+            try
+            {
+                return await http.PostAsync(
+                    baseUrl + "/pdf/render",
+                    new StringContent(JsonSerializer.Serialize(new { pdf = pdfPayload }), Encoding.UTF8, "application/json"));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        var resp = await TryRender(agentBase);
+        if (resp == null || !resp.IsSuccessStatusCode)
+        {
+            // 尝试 localhost/127.0.0.1 切换
+            var alt = agentBase.Contains("localhost")
+                ? agentBase.Replace("localhost", "127.0.0.1")
+                : agentBase.Replace("127.0.0.1", "localhost");
+            if (alt != agentBase)
+            {
+                var resp2 = await TryRender(alt);
+                if (resp2 != null) resp = resp2;
+            }
+        }
+
+        if (resp == null || !resp.IsSuccessStatusCode)
+        {
+            var errText = resp != null ? await resp.Content.ReadAsStringAsync() : "connection failed";
+            throw new InvalidOperationException($"PDF render failed: {errText}");
+        }
+
+        var respText = await resp.Content.ReadAsStringAsync();
+        using var respDoc = JsonDocument.Parse(respText);
+        var pdfBase64 = respDoc.RootElement.GetProperty("data").GetString();
+        if (string.IsNullOrWhiteSpace(pdfBase64))
+            throw new InvalidOperationException("PDF render returned empty data");
+
+        var pdfBytes = Convert.FromBase64String(pdfBase64);
+
+        // Azure Storage 必须配置
+        if (blobService?.IsConfigured != true)
+        {
+            throw new InvalidOperationException("Azure Storage is not configured. PDF generation requires Azure Storage.");
+        }
+
+        // 上传到 Azure Storage（路径规则: {companyCode}/staffing/invoices/{yyyy/MM/dd}/{invoiceNo}_{invoiceId}.pdf）
+        var blobPath = $"{companyCode}/staffing/invoices/{DateTime.UtcNow:yyyy/MM/dd}/{invoiceNo}_{invoiceId:N}.pdf";
+        using var pdfStream = new MemoryStream(pdfBytes);
+        await blobService.UploadAsync(pdfStream, blobPath, "application/pdf", CancellationToken.None);
+
+        // 更新请求书记录
+        await using var updateCmd = conn.CreateCommand();
+        updateCmd.CommandText = $@"
+            UPDATE {invTable} 
+            SET payload = payload || jsonb_build_object('pdf_blob_path', $3::text, 'pdf_generated_at', $4::text),
+                updated_at = now()
+            WHERE id = $1 AND company_code = $2";
+        updateCmd.Parameters.AddWithValue(invoiceId);
+        updateCmd.Parameters.AddWithValue(companyCode);
+        updateCmd.Parameters.AddWithValue(blobPath);
+        updateCmd.Parameters.AddWithValue(DateTimeOffset.UtcNow.ToString("O"));
+        await updateCmd.ExecuteNonQueryAsync();
+
+        return blobPath;
+    }
+
+    /// <summary>
+    /// 获取公司基本信息（用于请求书PDF）
+    /// </summary>
+    private static async Task<(string? companyName, string? companyAddress, string? companyRep, string? sealDataUrl,
+        double? sealSize, double? sealOffsetX, double? sealOffsetY, double? sealOpacity,
+        string? companyZip, string? companyTel, string? companyEmail, string? bankInfo)> 
+        LoadCompanyBasicsForInvoiceAsync(NpgsqlDataSource ds, string companyCode)
+    {
+        string? companyName = null, companyAddress = null, companyRep = null;
+        string? sealDataUrl = null;
+        double? sealSize = null, sealOffsetX = null, sealOffsetY = null, sealOpacity = null;
+        string? companyZip = null, companyTel = null, companyEmail = null, bankInfo = null;
+
+        await using var conn = await ds.OpenConnectionAsync();
+
+        // 获取公司设置
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT payload FROM company_settings WHERE company_code = $1 LIMIT 1";
+            cmd.Parameters.AddWithValue(companyCode);
+
+            var payloadJson = (string?)await cmd.ExecuteScalarAsync();
+            if (!string.IsNullOrWhiteSpace(payloadJson))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(payloadJson);
+                    var root = doc.RootElement;
+
+                    companyName = root.TryGetProperty("companyName", out var cn) && cn.ValueKind == JsonValueKind.String
+                        ? cn.GetString() : null;
+                    companyAddress = root.TryGetProperty("address", out var ad) && ad.ValueKind == JsonValueKind.String
+                        ? ad.GetString() : null;
+                    companyRep = root.TryGetProperty("companyRep", out var cr) && cr.ValueKind == JsonValueKind.String
+                        ? cr.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(companyRep))
+                        companyRep = root.TryGetProperty("representative", out var rp) && rp.ValueKind == JsonValueKind.String
+                            ? rp.GetString() : null;
+
+                    companyZip = root.TryGetProperty("postalCode", out var pz) && pz.ValueKind == JsonValueKind.String
+                        ? pz.GetString() : null;
+                    companyTel = root.TryGetProperty("tel", out var tel) && tel.ValueKind == JsonValueKind.String
+                        ? tel.GetString() : null;
+                    companyEmail = root.TryGetProperty("email", out var em) && em.ValueKind == JsonValueKind.String
+                        ? em.GetString() : null;
+                    bankInfo = root.TryGetProperty("bankInfo", out var bi) && bi.ValueKind == JsonValueKind.String
+                        ? bi.GetString() : null;
+
+                    // 解密印章
+                    if (root.TryGetProperty("seal", out var seal) && seal.ValueKind == JsonValueKind.Object)
+                    {
+                        var format = seal.TryGetProperty("format", out var fm) && fm.ValueKind == JsonValueKind.String
+                            ? (fm.GetString() ?? "png") : "png";
+
+                        if (seal.TryGetProperty("enc", out var enc) && enc.ValueKind == JsonValueKind.String)
+                        {
+                            var encString = enc.GetString();
+                            if (!string.IsNullOrWhiteSpace(encString))
+                            {
+                                try
+                                {
+                                    string b64;
+                                    if (OperatingSystem.IsWindows())
+                                    {
+                                        var bytes = ProtectedData.Unprotect(
+                                            Convert.FromBase64String(encString!),
+                                            null,
+                                            DataProtectionScope.CurrentUser);
+                                        b64 = Convert.ToBase64String(bytes);
+                                    }
+                                    else
+                                    {
+                                        b64 = encString!;
+                                    }
+                                    sealDataUrl = $"data:image/{format};base64,{b64}";
+                                }
+                                catch { }
+                            }
+                        }
+
+                        if (seal.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number)
+                            if (sz.TryGetDouble(out var d)) sealSize = d;
+                        if (seal.TryGetProperty("offsetX", out var ox) && ox.ValueKind == JsonValueKind.Number)
+                            if (ox.TryGetDouble(out var d)) sealOffsetX = d;
+                        if (seal.TryGetProperty("offsetY", out var oy) && oy.ValueKind == JsonValueKind.Number)
+                            if (oy.TryGetDouble(out var d)) sealOffsetY = d;
+                        if (seal.TryGetProperty("opacity", out var op) && op.ValueKind == JsonValueKind.Number)
+                            if (op.TryGetDouble(out var d)) sealOpacity = d;
+                    }
+                }
+                catch { }
+            }
+        }
+
+        // 如果公司名称为空，从 companies 表获取
+        if (string.IsNullOrWhiteSpace(companyName))
+        {
+            await using var q2 = conn.CreateCommand();
+            q2.CommandText = "SELECT name FROM companies WHERE company_code = $1 LIMIT 1";
+            q2.Parameters.AddWithValue(companyCode);
+            var nm = await q2.ExecuteScalarAsync();
+            companyName = nm as string;
+        }
+
+        return (companyName, companyAddress, companyRep, sealDataUrl, sealSize, sealOffsetX, sealOffsetY, sealOpacity,
+            companyZip, companyTel, companyEmail, bankInfo);
+    }
 }

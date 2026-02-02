@@ -532,6 +532,171 @@ async function renderTemplate(doc, pdf) {
     return true;
   }
 
+  // staffing_invoice: 人才派遣请求书（日本标准格式）
+  if (name === 'staffing_invoice') {
+    const L = Object.assign({
+      title: '請　求　書',
+      invoiceNo: '請求書番号',
+      invoiceDate: '請求日',
+      dueDate: 'お支払期限',
+      clientLabel: '御中',
+      fromLabel: '請求元',
+      subtotalLabel: '小計',
+      taxLabel: '消費税',
+      totalLabel: '合計金額',
+      remarkLabel: '備考',
+      bankLabel: 'お振込先',
+      itemNo: 'No.',
+      itemDescription: '品名・摘要',
+      itemQuantity: '数量',
+      itemUnit: '単位',
+      itemUnitPrice: '単価',
+      itemAmount: '金額',
+      currency: '¥',
+      thankYou: '上記の通りご請求申し上げます。'
+    }, pdf?.labels || {});
+
+    const x = doc.page.margins.left;
+    const rightX = doc.page.width - doc.page.margins.right;
+    let y = doc.page.margins.top;
+
+    // 标题
+    doc.fontSize(24).text(L.title, x, y, { width: pageWidth, align: 'center' });
+    y += 40;
+
+    // 请求书番号・请求日（右上角）
+    const infoX = rightX - 200;
+    doc.fontSize(10);
+    doc.text(`${L.invoiceNo}: ${pdf?.invoiceNo || ''}`, infoX, y, { width: 200, align: 'left' });
+    y += 16;
+    doc.text(`${L.invoiceDate}: ${pdf?.invoiceDate || ''}`, infoX, y, { width: 200, align: 'left' });
+    y += 16;
+    doc.text(`${L.dueDate}: ${pdf?.dueDate || ''}`, infoX, y, { width: 200, align: 'left' });
+    y += 30;
+
+    // 客户信息（左侧）
+    const clientY = doc.page.margins.top + 40;
+    doc.fontSize(14).text(String(pdf?.clientName || ''), x, clientY, { width: 280 });
+    doc.fontSize(12).text(L.clientLabel, x, clientY + 20);
+    if (pdf?.clientAddress) {
+      doc.fontSize(10).text(pdf.clientAddress, x, clientY + 38, { width: 280 });
+    }
+    y = Math.max(y, clientY + 70);
+
+    // 合计金额（大字体突出显示）
+    doc.fontSize(10).text(L.totalLabel, x, y);
+    const totalAmount = Number(pdf?.totalAmount || 0);
+    doc.fontSize(20).fillColor('#000000').text(`${L.currency}${totalAmount.toLocaleString('ja-JP')}`, x + 80, y - 4, { width: 200 });
+    doc.moveTo(x, y + 24).lineTo(x + 280, y + 24).lineWidth(2).stroke();
+    doc.lineWidth(1);
+    y += 40;
+
+    // 请求元信息（右侧）
+    const fromX = rightX - 220;
+    const fromY = y - 80;
+    doc.fontSize(10);
+    if (pdf?.companyZip) doc.text(`〒${pdf.companyZip}`, fromX, fromY);
+    if (pdf?.companyAddress) doc.text(pdf.companyAddress, fromX, fromY + 14, { width: 220 });
+    doc.fontSize(11).text(pdf?.companyName || '', fromX, fromY + 32, { width: 220 });
+    if (pdf?.companyTel) doc.fontSize(9).text(`TEL: ${pdf.companyTel}`, fromX, fromY + 48);
+    if (pdf?.companyEmail) doc.fontSize(9).text(`Email: ${pdf.companyEmail}`, fromX, fromY + 60);
+
+    // 印章叠加在公司信息旁边
+    try {
+      const sealCfg = pdf?.seal || {};
+      const size = Math.max(40, Number(sealCfg.size ?? 56));
+      const ox = Number.isFinite(sealCfg.x) ? Number(sealCfg.x) : (fromX + 160 + Number(sealCfg.offsetX || 0));
+      const oy = Number.isFinite(sealCfg.y) ? Number(sealCfg.y) : (fromY + 10 + Number(sealCfg.offsetY || 0));
+      const tmpPdf = { ...pdf, seal: { ...sealCfg, x: ox, y: oy, size } };
+      drawSealOverlay(doc, tmpPdf);
+    } catch {}
+
+    // 明细表格
+    y += 20;
+    const tableX = x;
+    const colWidths = [30, 220, 50, 40, 70, 80]; // No, 品名, 数量, 単位, 単価, 金額
+    const tableWidth = colWidths.reduce((a, b) => a + b, 0);
+    const rowHeight = 24;
+
+    // 表头
+    doc.fillColor('#f0f0f0').rect(tableX, y, tableWidth, rowHeight).fill();
+    doc.fillColor('#000000').fontSize(9);
+    let cx = tableX;
+    const headers = [L.itemNo, L.itemDescription, L.itemQuantity, L.itemUnit, L.itemUnitPrice, L.itemAmount];
+    headers.forEach((h, i) => {
+      doc.text(h, cx + 4, y + 7, { width: colWidths[i] - 8, align: i >= 2 ? 'right' : 'left' });
+      cx += colWidths[i];
+    });
+    doc.rect(tableX, y, tableWidth, rowHeight).stroke();
+    y += rowHeight;
+
+    // 明细行
+    const lines = pdf?.lines || [];
+    lines.forEach((line, idx) => {
+      cx = tableX;
+      const vals = [
+        String(idx + 1),
+        String(line.description || ''),
+        String(line.quantity ?? ''),
+        String(line.unit || ''),
+        line.unitPrice != null ? `${L.currency}${Number(line.unitPrice).toLocaleString('ja-JP')}` : '',
+        line.amount != null ? `${L.currency}${Number(line.amount).toLocaleString('ja-JP')}` : ''
+      ];
+      vals.forEach((v, i) => {
+        doc.text(v, cx + 4, y + 7, { width: colWidths[i] - 8, align: i >= 2 ? 'right' : 'left' });
+        cx += colWidths[i];
+      });
+      doc.rect(tableX, y, tableWidth, rowHeight).stroke();
+      y += rowHeight;
+    });
+
+    // 空白行（至少显示几行）
+    const minRows = 5;
+    for (let i = lines.length; i < minRows; i++) {
+      doc.rect(tableX, y, tableWidth, rowHeight).stroke();
+      y += rowHeight;
+    }
+
+    // 小计・消费税・合计（右侧）
+    y += 10;
+    const sumX = tableX + tableWidth - 180;
+    const sumW = 180;
+    const subtotal = Number(pdf?.subtotal || 0);
+    const taxAmount = Number(pdf?.taxAmount || 0);
+    const taxRate = Number(pdf?.taxRate || 0.10);
+
+    doc.fontSize(10);
+    doc.text(L.subtotalLabel, sumX, y, { width: 80 });
+    doc.text(`${L.currency}${subtotal.toLocaleString('ja-JP')}`, sumX + 80, y, { width: 100, align: 'right' });
+    y += 18;
+    doc.text(`${L.taxLabel} (${(taxRate * 100).toFixed(0)}%)`, sumX, y, { width: 80 });
+    doc.text(`${L.currency}${taxAmount.toLocaleString('ja-JP')}`, sumX + 80, y, { width: 100, align: 'right' });
+    y += 18;
+    doc.fontSize(12).fillColor('#000000');
+    doc.text(L.totalLabel, sumX, y, { width: 80 });
+    doc.text(`${L.currency}${totalAmount.toLocaleString('ja-JP')}`, sumX + 80, y, { width: 100, align: 'right' });
+    doc.moveTo(sumX, y + 16).lineTo(sumX + sumW, y + 16).lineWidth(1.5).stroke();
+    doc.lineWidth(1);
+    y += 30;
+
+    // 备注
+    if (pdf?.remarks) {
+      doc.fontSize(9).text(`${L.remarkLabel}: ${pdf.remarks}`, tableX, y, { width: tableWidth });
+      y += 20;
+    }
+
+    // 振込先
+    if (pdf?.bankInfo) {
+      doc.fontSize(9).text(`${L.bankLabel}:`, tableX, y);
+      y += 14;
+      doc.text(pdf.bankInfo, tableX + 10, y, { width: tableWidth - 20 });
+    }
+
+    // 页脚 DocID
+    try { drawFooterDocId(doc, pdf); } catch {}
+    return true;
+  }
+
   // 其他模板：仅叠加印章与页脚 DocID
   try { drawSealOverlay(doc, pdf); } catch {}
   try { drawFooterDocId(doc, pdf); } catch {}

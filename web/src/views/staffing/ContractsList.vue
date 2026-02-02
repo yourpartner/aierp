@@ -158,200 +158,209 @@
     <!-- 新規・編集ダイアログ -->
     <el-dialog 
       v-model="dialogVisible" 
-      :title="isEdit ? '契約編集' : '新規契約登録'"
       width="850px"
+      :show-close="false"
+      append-to-body
       destroy-on-close
+      class="contract-form-dialog"
     >
-      <el-form :model="form" label-width="120px" label-position="right">
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="契約形態" required>
-              <el-select v-model="form.contractType" style="width: 100%">
-                <el-option label="派遣" value="dispatch" />
-                <el-option label="SES（準委任）" value="ses" />
-                <el-option label="請負" value="contract" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="契約番号" v-if="isEdit">
-              <el-input v-model="form.contractNo" disabled />
-            </el-form-item>
-          </el-col>
-        </el-row>
+      <template #header></template>
+      <el-card class="contract-form-card">
+        <template #header>
+          <div class="contract-dialog-header">
+            <span class="contract-dialog-title">{{ isEdit ? '契約編集' : '新規契約登録' }}</span>
+            <div class="header-actions">
+              <el-button @click="dialogVisible = false">キャンセル</el-button>
+              <el-button type="primary" @click="save" :loading="saving">保存</el-button>
+            </div>
+          </div>
+        </template>
+        <el-form :model="form" label-width="120px" label-position="right" class="contract-form">
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="契約形態" required>
+                <el-select v-model="form.contractType" style="width: 100%">
+                  <el-option label="派遣" value="dispatch" />
+                  <el-option label="SES（準委任）" value="ses" />
+                  <el-option label="請負" value="contract" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="契約番号" v-if="isEdit">
+                <el-input v-model="form.contractNo" disabled />
+              </el-form-item>
+            </el-col>
+          </el-row>
 
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="顧客" required>
-              <el-select 
-                v-model="form.clientPartnerId" 
-                filterable 
-                remote
-                :remote-method="searchClients"
-                placeholder="顧客を選択"
-                style="width: 100%"
-              >
-                <el-option v-for="opt in clientOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="リソース">
-              <el-select 
-                v-model="form.resourceId" 
-                filterable 
-                remote
-                clearable
-                :remote-method="searchResources"
-                placeholder="リソースを選択"
-                style="width: 100%"
-              >
-                <el-option v-for="opt in resourceOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="顧客" required>
+                <el-select 
+                  v-model="form.clientPartnerId" 
+                  filterable 
+                  remote
+                  :remote-method="searchClients"
+                  placeholder="顧客を選択"
+                  style="width: 100%"
+                >
+                  <el-option v-for="opt in clientOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="リソース">
+                <el-select 
+                  v-model="form.resourceId" 
+                  filterable 
+                  remote
+                  clearable
+                  :remote-method="searchResources"
+                  placeholder="リソースを選択"
+                  style="width: 100%"
+                >
+                  <el-option v-for="opt in resourceOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
 
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="案件">
-              <el-select 
-                v-model="form.projectId" 
-                filterable 
-                remote
-                clearable
-                :remote-method="searchProjects"
-                placeholder="案件を選択（任意）"
-                style="width: 100%"
-              >
-                <el-option v-for="opt in projectOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="案件">
+                <el-select 
+                  v-model="form.projectId" 
+                  filterable 
+                  remote
+                  clearable
+                  :remote-method="searchProjects"
+                  placeholder="案件を選択（任意）"
+                  style="width: 100%"
+                >
+                  <el-option v-for="opt in projectOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
 
-        <el-divider>契約期間</el-divider>
+          <el-divider content-position="left">契約期間</el-divider>
 
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="開始日" required>
-              <el-date-picker v-model="form.startDate" type="date" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="終了日">
-              <el-date-picker v-model="form.endDate" type="date" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-        </el-row>
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="開始日" required>
+                <el-date-picker v-model="form.startDate" type="date" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="終了日">
+                <el-date-picker v-model="form.endDate" type="date" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+          </el-row>
 
-        <el-divider>勤務条件</el-divider>
+          <el-divider content-position="left">勤務条件</el-divider>
 
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="勤務地">
-              <el-input v-model="form.workLocation" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="勤務曜日">
-              <el-input v-model="form.workDays" placeholder="例: 月～金" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="月間基準時間">
-              <el-input-number v-model="form.monthlyWorkHours" :min="0" :max="300" />
-            </el-form-item>
-          </el-col>
-        </el-row>
+          <el-row :gutter="20">
+            <el-col :span="8">
+              <el-form-item label="勤務地">
+                <el-input v-model="form.workLocation" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="勤務曜日">
+                <el-input v-model="form.workDays" placeholder="例: 月～金" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="月間基準時間">
+                <el-input-number v-model="form.monthlyWorkHours" :min="0" :max="300" />
+              </el-form-item>
+            </el-col>
+          </el-row>
 
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="勤務開始">
-              <el-time-picker v-model="form.workStartTime" format="HH:mm" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="勤務終了">
-              <el-time-picker v-model="form.workEndTime" format="HH:mm" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-        </el-row>
+          <el-row :gutter="20">
+            <el-col :span="8">
+              <el-form-item label="勤務開始">
+                <el-time-picker v-model="form.workStartTime" format="HH:mm" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="勤務終了">
+                <el-time-picker v-model="form.workEndTime" format="HH:mm" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+          </el-row>
 
-        <el-divider>請求条件</el-divider>
+          <el-divider content-position="left">請求条件</el-divider>
 
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="請求単価" required>
-              <el-input-number v-model="form.billingRate" :min="0" :step="10000" controls-position="right" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="単価種別">
-              <el-select v-model="form.billingRateType" style="width: 100%">
-                <el-option label="月額" value="monthly" />
-                <el-option label="日額" value="daily" />
-                <el-option label="時給" value="hourly" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="残業倍率">
-              <el-input-number v-model="form.overtimeRateMultiplier" :min="1" :max="2" :step="0.05" :precision="2" />
-            </el-form-item>
-          </el-col>
-        </el-row>
+          <el-row :gutter="20">
+            <el-col :span="8">
+              <el-form-item label="請求単価" required>
+                <el-input-number v-model="form.billingRate" :min="0" :step="10000" controls-position="right" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="単価種別">
+                <el-select v-model="form.billingRateType" style="width: 100%">
+                  <el-option label="月額" value="monthly" />
+                  <el-option label="日額" value="daily" />
+                  <el-option label="時給" value="hourly" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="残業倍率">
+                <el-input-number v-model="form.overtimeRateMultiplier" :min="1" :max="2" :step="0.05" :precision="2" />
+              </el-form-item>
+            </el-col>
+          </el-row>
 
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="精算方式">
-              <el-select v-model="form.settlementType" style="width: 100%">
-                <el-option label="幅精算" value="range" />
-                <el-option label="固定" value="fixed" />
-                <el-option label="実費" value="actual" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="精算下限H" v-if="form.settlementType === 'range'">
-              <el-input-number v-model="form.settlementLowerHours" :min="0" :max="200" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="精算上限H" v-if="form.settlementType === 'range'">
-              <el-input-number v-model="form.settlementUpperHours" :min="0" :max="200" />
-            </el-form-item>
-          </el-col>
-        </el-row>
+          <el-row :gutter="20">
+            <el-col :span="8">
+              <el-form-item label="精算方式">
+                <el-select v-model="form.settlementType" style="width: 100%">
+                  <el-option label="幅精算" value="range" />
+                  <el-option label="固定" value="fixed" />
+                  <el-option label="実費" value="actual" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="精算下限H" v-if="form.settlementType === 'range'">
+                <el-input-number v-model="form.settlementLowerHours" :min="0" :max="200" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="精算上限H" v-if="form.settlementType === 'range'">
+                <el-input-number v-model="form.settlementUpperHours" :min="0" :max="200" />
+              </el-form-item>
+            </el-col>
+          </el-row>
 
-        <el-divider>原価条件</el-divider>
+          <el-divider content-position="left">原価条件</el-divider>
 
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="原価単価">
-              <el-input-number v-model="form.costRate" :min="0" :step="10000" controls-position="right" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="単価種別">
-              <el-select v-model="form.costRateType" style="width: 100%">
-                <el-option label="月額" value="monthly" />
-                <el-option label="日額" value="daily" />
-                <el-option label="時給" value="hourly" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
+          <el-row :gutter="20">
+            <el-col :span="8">
+              <el-form-item label="原価単価">
+                <el-input-number v-model="form.costRate" :min="0" :step="10000" controls-position="right" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="単価種別">
+                <el-select v-model="form.costRateType" style="width: 100%">
+                  <el-option label="月額" value="monthly" />
+                  <el-option label="日額" value="daily" />
+                  <el-option label="時給" value="hourly" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
 
-        <el-form-item label="備考">
-          <el-input v-model="form.notes" type="textarea" :rows="3" />
-        </el-form-item>
-      </el-form>
-
-      <template #footer>
-        <el-button @click="dialogVisible = false">キャンセル</el-button>
-        <el-button type="primary" @click="save" :loading="saving">保存</el-button>
-      </template>
+          <el-form-item label="備考">
+            <el-input v-model="form.notes" type="textarea" :rows="3" />
+          </el-form-item>
+        </el-form>
+      </el-card>
     </el-dialog>
 
     <!-- 契約更新ダイアログ -->
@@ -480,45 +489,76 @@ const load = async () => {
 }
 
 const searchClients = async (query: string) => {
-  if (!query) return
   try {
-    const res = await api.get('/businesspartners', { params: { keyword: query, flag_customer: true } })
-    clientOptions.value = (res.data.data || []).map((bp: any) => ({
-      label: `${bp.partner_code} - ${bp.payload?.name || ''}`,
-      value: bp.id
-    }))
+    // 使用正确的搜索 API
+    const where: any[] = [{ field: 'flag_customer', op: 'eq', value: true }]
+    if (query && query.trim()) {
+      where.push({ json: 'name', op: 'contains', value: query.trim() })
+    }
+    const res = await api.post('/objects/businesspartner/search', {
+      page: 1,
+      pageSize: 50,
+      where,
+      orderBy: [{ field: 'name', direction: 'asc' }]
+    })
+    clientOptions.value = (res.data?.data || []).map((bp: any) => {
+      const code = bp.partner_code || bp.payload?.code || ''
+      const name = bp.payload?.name || bp.name || ''
+      return {
+        label: name ? `${name} (${code})` : code,
+        value: bp.id
+      }
+    })
   } catch (e) {
-    console.error(e)
+    console.error('Failed to search clients:', e)
+    clientOptions.value = []
   }
 }
 
 const searchResources = async (query: string) => {
-  if (!query) return
   try {
-    const res = await api.get('/staffing/resources', { params: { keyword: query } })
+    const params: Record<string, any> = {}
+    if (query && query.trim()) {
+      params.keyword = query.trim()
+    }
+    const res = await api.get('/staffing/resources', { params })
     resourceOptions.value = (res.data.data || []).map((r: any) => ({
       label: `${r.resourceCode} - ${r.displayName}`,
       value: r.id
     }))
   } catch (e) {
-    console.error(e)
+    console.error('Failed to search resources:', e)
+    resourceOptions.value = []
   }
 }
 
 const searchProjects = async (query: string) => {
-  if (!query) return
   try {
-    const res = await api.get('/staffing/projects', { params: { status: 'open' } })
+    const params: Record<string, any> = { status: 'open' }
+    if (query && query.trim()) {
+      params.keyword = query.trim()
+    }
+    const res = await api.get('/staffing/projects', { params })
     projectOptions.value = (res.data.data || []).map((p: any) => ({
       label: `${p.projectCode} - ${p.projectName}`,
       value: p.id
     }))
   } catch (e) {
-    console.error(e)
+    console.error('Failed to search projects:', e)
+    projectOptions.value = []
   }
 }
 
-const openNew = () => {
+// 加载默认选项（弹窗打开时使用）
+const loadDefaultOptions = async () => {
+  await Promise.all([
+    searchClients(''),
+    searchResources(''),
+    searchProjects('')
+  ])
+}
+
+const openNew = async () => {
   isEdit.value = false
   Object.assign(form, {
     id: '',
@@ -545,6 +585,8 @@ const openNew = () => {
     notes: ''
   })
   dialogVisible.value = true
+  // 加载默认选项
+  await loadDefaultOptions()
 }
 
 const onEdit = async (row: ContractRow) => {
@@ -822,7 +864,77 @@ onMounted(() => {
   color: #999;
 }
 
-.el-divider {
-  margin: 16px 0;
+/* 契約弹窗样式 - 与案件弹窗保持一致 */
+.contract-form-card {
+  max-width: 100%;
+  margin: 0;
+  border: none;
+  box-shadow: none;
+}
+
+.contract-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--color-divider, #ebeef5);
+}
+
+.contract-dialog-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.contract-form {
+  padding: 8px 0;
+}
+
+.contract-form .el-form-item {
+  margin-bottom: 18px;
+}
+
+.contract-form .el-divider {
+  margin: 20px 0 16px;
+}
+
+.contract-form .el-divider__text {
+  font-size: 13px;
+  font-weight: 500;
+  color: #606266;
+}
+</style>
+
+<style>
+/* 契約弹窗全局样式 - 与案件弹窗保持一致 */
+.el-dialog.contract-form-dialog {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+.el-dialog.contract-form-dialog .el-dialog__header {
+  display: none !important;
+}
+
+.el-dialog.contract-form-dialog .el-dialog__body {
+  padding: 0 !important;
+  background: transparent !important;
+}
+
+/* 覆盖 el-card__header 的 padding */
+.contract-form-card.el-card .el-card__header {
+  padding: 0 !important;
+}
+
+.contract-form-card.el-card .el-card__body {
+  padding: 20px !important;
 }
 </style>
