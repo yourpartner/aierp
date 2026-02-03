@@ -915,12 +915,16 @@ async function searchAccounts(query: string) {
     const where: any[] = []
     const q = query?.trim()
     if (q) {
-      where.push({ json: 'name', op: 'contains', value: q })
-      where.push({ field: 'account_code', op: 'contains', value: q })
+      // 使用 anyOf 实现 OR 逻辑：名称包含 OR 科目代码包含
+      where.push({
+        anyOf: [
+          { json: 'name', op: 'contains', value: q },
+          { field: 'account_code', op: 'contains', value: q }
+        ]
+      })
     }
-    const dsl = q
-      ? { where, page: 1, pageSize: 50 }
-      : { where: [], page: 1, pageSize: 50 }
+    // pageSize: 0 表示不限制，全量返回
+    const dsl = { where, page: 1, pageSize: 0 }
     const r = await api.post('/objects/account/search', dsl)
     const rows = Array.isArray(r.data?.data) ? r.data.data : []
     accountOptions.value = rows.map((x:any) => ({

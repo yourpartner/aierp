@@ -2098,10 +2098,14 @@ async Task<IResult> HandleObjectSearch(HttpRequest req, string entity, NpgsqlDat
 
     var page = searchRequest.Page.GetValueOrDefault(1);
     if (page < 1) page = 1;
-    var pageSize = searchRequest.PageSize.GetValueOrDefault(50);
-    if (pageSize < 1) pageSize = 1;
-    if (pageSize > 500) pageSize = 500;
-    var offset = (page - 1) * pageSize;
+    var pageSize = searchRequest.PageSize;
+    // pageSize = null 或 0 表示不分页，全量返回
+    if (pageSize != null && pageSize != 0)
+    {
+        if (pageSize < 1) pageSize = 1;
+        if (pageSize > 10000) pageSize = 10000;
+    }
+    var offset = pageSize == null || pageSize == 0 ? 0 : (page - 1) * pageSize.Value;
     builder.SetPagination(pageSize, offset);
 
     try
@@ -6907,7 +6911,7 @@ sealed class SearchQueryBuilder
     private readonly List<string> _whereParts = new();
     private readonly List<(object? Value, NpgsqlDbType? Type)> _parameters = new();
     private readonly List<(string Field, string Direction)> _orderRequests = new();
-    private int _limit = 50;
+    private int? _limit = 50;
     private int _offset;
 
     private static readonly Regex IdentifierRegex = new("^[A-Za-z0-9_]+$", RegexOptions.Compiled);
@@ -6962,10 +6966,19 @@ sealed class SearchQueryBuilder
         }
     }
 
-    public void SetPagination(int limit, int offset)
+    public void SetPagination(int? limit, int offset)
     {
-        _limit = Math.Clamp(limit, 1, 500);
-        _offset = Math.Max(0, offset);
+        // limit = null 或 0 表示不限制，全量返回
+        if (limit == null || limit == 0)
+        {
+            _limit = null;
+            _offset = 0;
+        }
+        else
+        {
+            _limit = Math.Clamp(limit.Value, 1, 10000);
+            _offset = Math.Max(0, offset);
+        }
     }
 
     public async Task<SearchResult> ExecuteAsync(NpgsqlDataSource ds)
@@ -6991,11 +7004,21 @@ sealed class SearchQueryBuilder
         };
 
         var dataParams = baseParams.ToList();
-        var limitPlaceholder = AddParamToList(dataParams, _limit, null);
-        var offsetPlaceholder = AddParamToList(dataParams, _offset, null);
+        string paginationSql;
+        if (_limit == null)
+        {
+            // 不限制，全量返回
+            paginationSql = "";
+        }
+        else
+        {
+            var limitPlaceholder = AddParamToList(dataParams, _limit.Value, null);
+            var offsetPlaceholder = AddParamToList(dataParams, _offset, null);
+            paginationSql = $" LIMIT {limitPlaceholder} OFFSET {offsetPlaceholder}";
+        }
 
         await using var dataCmd = conn.CreateCommand();
-        dataCmd.CommandText = $"SELECT to_jsonb(t) FROM (SELECT * FROM {_table} WHERE {whereSql}{orderSql} LIMIT {limitPlaceholder} OFFSET {offsetPlaceholder}) t";
+        dataCmd.CommandText = $"SELECT to_jsonb(t) FROM (SELECT * FROM {_table} WHERE {whereSql}{orderSql}{paginationSql}) t";
         ApplyParameters(dataCmd, dataParams);
 
         var rows = new List<JsonObject>();
