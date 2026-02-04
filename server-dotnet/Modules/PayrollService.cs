@@ -327,27 +327,37 @@ public sealed class PayrollService
         await using var tx = await conn.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, ct);
         Guid runId = Guid.Empty;
         var entryMap = new Dictionary<Guid, Guid>();
+        var entryEmployeeIds = request.Entries
+            .Select(e => e.EmployeeId)
+            .Distinct()
+            .ToArray();
 
         try
         {
             List<Guid> previousVoucherIds = new();
             if (request.Overwrite && hasExisting)
             {
-                previousVoucherIds = await LoadVoucherIdsForPeriodAsync(conn, tx, companyCode, request.Month, runType, request.PolicyId, ct);
-                await using var del = conn.CreateCommand();
-                del.Transaction = tx;
-                del.CommandText = """
-                    DELETE FROM payroll_runs
-                    WHERE company_code = $1
-                      AND period_month = $2
-                      AND run_type = $3
-                      AND (($4::uuid IS NULL AND policy_id IS NULL) OR policy_id = $4::uuid);
+                runId = await LoadRunIdAsync(conn, tx, companyCode, request.PolicyId, request.Month, runType, ct);
+                if (runId == Guid.Empty)
+                {
+                    throw new PayrollExecutionException(StatusCodes.Status500InternalServerError, new { error = "既存の給与結果が見つかりませんでした" }, "run_not_found");
+                }
+
+                previousVoucherIds = await LoadVoucherIdsForEmployeesAsync(conn, tx, companyCode, runId, entryEmployeeIds, ct);
+                await using var delEntries = conn.CreateCommand();
+                delEntries.Transaction = tx;
+                delEntries.CommandText = """
+                    DELETE FROM payroll_run_entries
+                    WHERE run_id = $1
+                      AND employee_id = ANY($2);
                     """;
-                del.Parameters.AddWithValue(companyCode);
-                del.Parameters.AddWithValue(request.Month);
-                del.Parameters.AddWithValue(runType);
-                del.Parameters.AddWithValue(request.PolicyId.HasValue ? request.PolicyId.Value : (object)DBNull.Value);
-                await del.ExecuteNonQueryAsync(ct);
+                delEntries.Parameters.AddWithValue(runId);
+                delEntries.Parameters.Add(new NpgsqlParameter
+                {
+                    Value = entryEmployeeIds,
+                    NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Uuid
+                });
+                await delEntries.ExecuteNonQueryAsync(ct);
 
                 if (previousVoucherIds.Count > 0)
                 {
@@ -355,29 +365,32 @@ public sealed class PayrollService
                 }
             }
 
-            var totalAmount = request.Entries.Sum(e => e.TotalAmount);
-            var metadata = new JsonObject
+            if (runId == Guid.Empty)
             {
-                ["runType"] = runType,
-                ["createdBy"] = userCtx?.UserId
-            };
+                var totalAmount = request.Entries.Sum(e => e.TotalAmount);
+                var metadata = new JsonObject
+                {
+                    ["runType"] = runType,
+                    ["createdBy"] = userCtx?.UserId
+                };
 
-            await using (var insertRun = conn.CreateCommand())
-            {
-                insertRun.Transaction = tx;
-                insertRun.CommandText = """
-                    INSERT INTO payroll_runs(id, company_code, policy_id, period_month, run_type, status, total_amount, diff_summary, metadata, created_at, updated_at)
-                    VALUES (gen_random_uuid(), $1, $2::uuid, $3, $4, 'completed', $5, NULL, $6::jsonb, now(), now())
-                    RETURNING id;
-                    """;
-                insertRun.Parameters.AddWithValue(companyCode);
-                insertRun.Parameters.AddWithValue(request.PolicyId.HasValue ? request.PolicyId.Value : (object)DBNull.Value);
-                insertRun.Parameters.AddWithValue(request.Month);
-                insertRun.Parameters.AddWithValue(runType);
-                insertRun.Parameters.AddWithValue(totalAmount);
-                insertRun.Parameters.AddWithValue(JsonSerializer.Serialize(metadata, JsonOptions));
-                var obj = await insertRun.ExecuteScalarAsync(ct);
-                runId = obj is Guid g ? g : Guid.Empty;
+                await using (var insertRun = conn.CreateCommand())
+                {
+                    insertRun.Transaction = tx;
+                    insertRun.CommandText = """
+                        INSERT INTO payroll_runs(id, company_code, policy_id, period_month, run_type, status, total_amount, diff_summary, metadata, created_at, updated_at)
+                        VALUES (gen_random_uuid(), $1, $2::uuid, $3, $4, 'completed', $5, NULL, $6::jsonb, now(), now())
+                        RETURNING id;
+                        """;
+                    insertRun.Parameters.AddWithValue(companyCode);
+                    insertRun.Parameters.AddWithValue(request.PolicyId.HasValue ? request.PolicyId.Value : (object)DBNull.Value);
+                    insertRun.Parameters.AddWithValue(request.Month);
+                    insertRun.Parameters.AddWithValue(runType);
+                    insertRun.Parameters.AddWithValue(totalAmount);
+                    insertRun.Parameters.AddWithValue(JsonSerializer.Serialize(metadata, JsonOptions));
+                    var obj = await insertRun.ExecuteScalarAsync(ct);
+                    runId = obj is Guid g ? g : Guid.Empty;
+                }
             }
 
             if (runId == Guid.Empty)
@@ -449,6 +462,23 @@ public sealed class PayrollService
                     await insertTrace.ExecuteNonQueryAsync(ct);
                 }
                 entryMap[entry.EmployeeId] = entryId;
+            }
+
+            await using (var updateRun = conn.CreateCommand())
+            {
+                updateRun.Transaction = tx;
+                updateRun.CommandText = """
+                    UPDATE payroll_runs
+                    SET total_amount = (
+                        SELECT COALESCE(SUM(total_amount), 0)
+                        FROM payroll_run_entries
+                        WHERE run_id = $1
+                    ),
+                    updated_at = now()
+                    WHERE id = $1;
+                    """;
+                updateRun.Parameters.AddWithValue(runId);
+                await updateRun.ExecuteNonQueryAsync(ct);
             }
 
             await tx.CommitAsync(ct);
@@ -1105,6 +1135,73 @@ public sealed class PayrollService
         cmd.Parameters.AddWithValue(month);
         cmd.Parameters.AddWithValue(runType);
         cmd.Parameters.Add(new NpgsqlParameter { Value = policyId.HasValue ? policyId.Value : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            if (!reader.IsDBNull(0))
+            {
+                ids.Add(reader.GetGuid(0));
+            }
+        }
+        return ids;
+    }
+
+    private static async Task<Guid> LoadRunIdAsync(
+        NpgsqlConnection conn,
+        NpgsqlTransaction tx,
+        string companyCode,
+        Guid? policyId,
+        string month,
+        string runType,
+        CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            SELECT id
+            FROM payroll_runs
+            WHERE company_code = $1
+              AND period_month = $2
+              AND run_type = $3
+              AND (($4 IS NULL AND policy_id IS NULL) OR policy_id = $4)
+            LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue(month);
+        cmd.Parameters.AddWithValue(runType);
+        cmd.Parameters.Add(new NpgsqlParameter { Value = policyId.HasValue ? policyId.Value : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
+        var obj = await cmd.ExecuteScalarAsync(ct);
+        return obj is Guid g ? g : Guid.Empty;
+    }
+
+    private static async Task<List<Guid>> LoadVoucherIdsForEmployeesAsync(
+        NpgsqlConnection conn,
+        NpgsqlTransaction tx,
+        string companyCode,
+        Guid runId,
+        IReadOnlyList<Guid> employeeIds,
+        CancellationToken ct)
+    {
+        var ids = new List<Guid>();
+        if (employeeIds.Count == 0) return ids;
+
+        await using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            SELECT voucher_id
+            FROM payroll_run_entries
+            WHERE company_code = $1
+              AND run_id = $2
+              AND employee_id = ANY($3)
+              AND voucher_id IS NOT NULL;
+            """;
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue(runId);
+        cmd.Parameters.Add(new NpgsqlParameter
+        {
+            Value = employeeIds.ToArray(),
+            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Uuid
+        });
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
