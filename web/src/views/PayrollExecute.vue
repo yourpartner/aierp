@@ -79,17 +79,26 @@
             </el-form-item>
             <el-form-item label="総工時">
               <el-input-number
-                v-model="manualHoursDialog.totalHours"
+                v-model="manualHoursDialog.hours"
                 :min="0"
                 :max="744"
-                :precision="2"
-                :step="0.5"
-                style="width: 150px"
+                :precision="0"
+                :controls="false"
+                style="width: 80px"
               />
-              <span style="margin-left: 8px">時間</span>
+              <span style="margin: 0 8px">時間</span>
+              <el-input-number
+                v-model="manualHoursDialog.minutes"
+                :min="1"
+                :max="59"
+                :precision="0"
+                :controls="false"
+                style="width: 60px"
+              />
+              <span style="margin-left: 8px">分</span>
             </el-form-item>
             <el-form-item label="計算結果">
-              <span class="manual-hours-result">¥{{ formatAmount(manualHoursDialog.hourlyRate * manualHoursDialog.totalHours) }}</span>
+              <span class="manual-hours-result">¥{{ formatAmount(manualHoursDialog.hourlyRate * (manualHoursDialog.hours + (manualHoursDialog.minutes ?? 0) / 60)) }}</span>
             </el-form-item>
           </el-form>
         </div>
@@ -389,7 +398,8 @@ const manualHoursDialog = ref({
   employeeCode: '',
   employeeName: '',
   hourlyRate: 0,
-  totalHours: 0
+  hours: 0,
+  minutes: null as number | null
 })
 
 // 項目追加ダイアログ
@@ -714,7 +724,8 @@ async function run(){
         employeeCode: data.employeeCode || '',
         employeeName: data.employeeName || data.employeeCode || '',
         hourlyRate: data.hourlyRate || 0,
-        totalHours: 160 // 默认按一个月标准工时
+        hours: 160, // 默认按一个月标准工时
+        minutes: null
       }
     } else {
       error.value = extractErrorMessage(e, '実行に失敗しました')
@@ -729,14 +740,15 @@ const manualWorkHoursMap = ref<Record<string, { totalHours: number; hourlyRate: 
 // 提交手动输入的工时
 async function submitManualHours() {
   const dialog = manualHoursDialog.value
-  if (dialog.totalHours <= 0) {
+  const totalHours = dialog.hours + (dialog.minutes ?? 0) / 60
+  if (totalHours <= 0) {
     ElMessage.warning('工時を入力してください')
     return
   }
   
   // 保存手动工时到 map
   manualWorkHoursMap.value[dialog.employeeId] = {
-    totalHours: dialog.totalHours,
+    totalHours: totalHours,
     hourlyRate: dialog.hourlyRate
   }
   
@@ -801,7 +813,8 @@ async function submitManualHours() {
         employeeCode: data.employeeCode || '',
         employeeName: data.employeeName || data.employeeCode || '',
         hourlyRate: data.hourlyRate || 0,
-        totalHours: 160
+        hours: 160,
+        minutes: null
       }
     } else {
       error.value = extractErrorMessage(e, '計算に失敗しました')
