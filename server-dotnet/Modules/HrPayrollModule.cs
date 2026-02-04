@@ -4743,7 +4743,17 @@ LIMIT @pageSize OFFSET @offset";
             key ??= string.Empty;
             if (key.Equals("baseSalaryMonth", StringComparison.OrdinalIgnoreCase)) return nlBase > 0 ? nlBase : 0m;
             if (key.Equals("commuteAllowance", StringComparison.OrdinalIgnoreCase)) return nlCommute > 0 ? nlCommute : 0m;
-            if (key.Equals("salaryTotal", StringComparison.OrdinalIgnoreCase)) return (nlBase > 0 ? nlBase : 0m) + (nlCommute > 0 ? nlCommute : 0m);
+            if (key.Equals("salaryTotal", StringComparison.OrdinalIgnoreCase))
+            {
+                var baseFromNl = (nlBase > 0 ? nlBase : 0m) + (nlCommute > 0 ? nlCommute : 0m);
+                if (baseFromNl > 0) return baseFromNl;
+                // 時給制員工：使用 時給 × 工時 作為 salaryTotal（用於雇用保険計算）
+                if (nlHourlyRate > 0 && workHours.HasData)
+                {
+                    return nlHourlyRate * workHours.TotalHours + (nlCommute > 0 ? nlCommute : 0m);
+                }
+                return 0m;
+            }
             // 社保・年金基数：優先使用指定的社保基数、なければ基本給を使用
             if (key.Equals("healthBase", StringComparison.OrdinalIgnoreCase)) return nlInsuranceBase > 0 ? nlInsuranceBase : (nlBase > 0 ? nlBase : 0m);
             if (key.Equals("pensionBase", StringComparison.OrdinalIgnoreCase)) return nlInsuranceBase > 0 ? nlInsuranceBase : (nlBase > 0 ? nlBase : 0m);
