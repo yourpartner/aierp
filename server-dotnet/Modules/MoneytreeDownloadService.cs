@@ -256,15 +256,95 @@ public sealed class MoneytreeDownloadService
             await page.ClickAsync("//button[contains(text(), '残高データ')]");
             await Task.Delay(1000);
 
-            // 检查下载按钮状态 - 如果显示"（0件）"则表示没有数据
-            var downloadButton = page.Locator(DownloadButtonXPath);
-            var buttonText = await downloadButton.TextContentAsync();
-            _logger.LogInformation("[Moneytree] 下载按钮文本: {Text}", buttonText);
+            // ========== 增强的「0件」检测逻辑 ==========
+            // 配置开关：设为 true 使用增强检测，设为 false 使用原有逻辑
+            // 如果增强逻辑出现问题，可将此值改为 false 立即恢复原有行为
+            var useEnhancedEmptyCheck = _configuration.GetValue<bool?>("Moneytree:UseEnhancedEmptyCheck") ?? true;
             
-            if (!string.IsNullOrWhiteSpace(buttonText) && buttonText.Contains("（0件）"))
+            var downloadButton = page.Locator(DownloadButtonXPath);
+            
+            if (useEnhancedEmptyCheck)
             {
-                _logger.LogInformation("[Moneytree] 指定日期范围内没有新的银行明细（0件），无需下载");
-                return new MoneytreeDownloadResult(Array.Empty<byte>(), "empty.csv", "text/csv", IsEmpty: true);
+                // ===== 增强逻辑（2026-02-03 添加）=====
+                // 增强检测：先等待按钮可见，检查文本和禁用状态，避免超时等待
+                
+                // 等待按钮可见
+                try
+                {
+                    await downloadButton.WaitForAsync(new LocatorWaitForOptions 
+                    { 
+                        State = WaitForSelectorState.Visible, 
+                        Timeout = 10_000 
+                    });
+                }
+                catch (TimeoutException)
+                {
+                    _logger.LogWarning("[Moneytree] 下载按钮未找到，可能页面加载问题");
+                }
+                
+                // 等待一小段时间让按钮完全渲染（包括文本和状态）
+                await Task.Delay(1000);
+                
+                // 获取按钮文本
+                var buttonText = await downloadButton.TextContentAsync();
+                _logger.LogInformation("[Moneytree] 下载按钮文本: {Text}", buttonText);
+                
+                // 检查按钮是否被禁用
+                var isDisabled = await downloadButton.IsDisabledAsync();
+                _logger.LogInformation("[Moneytree] 下载按钮禁用状态: {IsDisabled}", isDisabled);
+                
+                // 如果文本包含「0件」或按钮被禁用，则认为没有数据
+                var hasZeroItems = !string.IsNullOrWhiteSpace(buttonText) && 
+                    (buttonText.Contains("（0件）") || buttonText.Contains("(0件)") || buttonText.Contains("0件"));
+                
+                if (hasZeroItems || isDisabled)
+                {
+                    _logger.LogInformation("[Moneytree] 指定日期范围内没有新的银行明细（按钮文本={Text}, 禁用={IsDisabled}），无需下载", 
+                        buttonText, isDisabled);
+                    return new MoneytreeDownloadResult(Array.Empty<byte>(), "empty.csv", "text/csv", IsEmpty: true);
+                }
+
+                // 等待按钮可点击（enabled 状态）
+                try
+                {
+                    await downloadButton.WaitForAsync(new LocatorWaitForOptions 
+                    { 
+                        State = WaitForSelectorState.Visible, 
+                        Timeout = 30_000 
+                    });
+                    
+                    // 额外检查：等待按钮变为 enabled
+                    var waitStart = DateTime.UtcNow;
+                    while (await downloadButton.IsDisabledAsync())
+                    {
+                        if ((DateTime.UtcNow - waitStart).TotalSeconds > 30)
+                        {
+                            _logger.LogWarning("[Moneytree] 下载按钮持续处于禁用状态，判定为无数据");
+                            return new MoneytreeDownloadResult(Array.Empty<byte>(), "empty.csv", "text/csv", IsEmpty: true);
+                        }
+                        await Task.Delay(500);
+                    }
+                }
+                catch (TimeoutException)
+                {
+                    _logger.LogWarning("[Moneytree] 等待下载按钮启用超时，判定为无数据");
+                    return new MoneytreeDownloadResult(Array.Empty<byte>(), "empty.csv", "text/csv", IsEmpty: true);
+                }
+                // ===== 增强逻辑结束 =====
+            }
+            else
+            {
+                // ===== 原有逻辑（保留用于回退）=====
+                // 检查下载按钮状态 - 如果显示"（0件）"则表示没有数据
+                var buttonText = await downloadButton.TextContentAsync();
+                _logger.LogInformation("[Moneytree] 下载按钮文本: {Text}", buttonText);
+                
+                if (!string.IsNullOrWhiteSpace(buttonText) && buttonText.Contains("（0件）"))
+                {
+                    _logger.LogInformation("[Moneytree] 指定日期范围内没有新的银行明细（0件），无需下载");
+                    return new MoneytreeDownloadResult(Array.Empty<byte>(), "empty.csv", "text/csv", IsEmpty: true);
+                }
+                // ===== 原有逻辑结束 =====
             }
 
             // 等待下载

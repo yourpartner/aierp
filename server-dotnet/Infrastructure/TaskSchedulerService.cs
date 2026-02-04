@@ -650,11 +650,32 @@ WHERE u.company_code=$1";
             var attempts = ReadRetryAttempts(task.Payload) + 1;
 
             DateTimeOffset? retryAt = null;
+            DateTimeOffset? nextRun = null;
             var finalStatus = "failed";
+            var hasSchedule = schedule != null && schedule.TryGetPropertyValue("kind", out var kindNode) 
+                && kindNode is JsonValue kv && kv.TryGetValue<string>(out var kind) 
+                && !string.Equals(kind, "once", StringComparison.OrdinalIgnoreCase);
+
             if (attempts < maxAttempts)
             {
+                // 重试未耗尽：设置重试时间
                 retryAt = DateTimeOffset.UtcNow.AddMinutes(intervalMinutes);
+                nextRun = retryAt;
                 finalStatus = "pending";
+            }
+            else if (hasSchedule)
+            {
+                // 重试已耗尽，但有定期计划：重置状态为 pending，等待下次定期执行
+                // 计算下次定期执行时间
+                nextRun = SchedulerPlanHelper.ComputeNextOccurrence(schedule, DateTimeOffset.UtcNow);
+                finalStatus = "pending"; // 关键修改：保持 pending 状态，让调度器能继续拾取
+                _logger?.LogInformation("[TaskScheduler] Moneytree sync retries exhausted for {Company}, scheduling next regular run at {NextRun}", 
+                    task.CompanyCode, nextRun?.ToString("O") ?? "null");
+            }
+            else
+            {
+                // 重试已耗尽且无定期计划：标记为失败
+                nextRun = null;
             }
 
             // 失败时保留上一次成功的 lastSuccessEnd，避免重试时日期范围回退
@@ -665,7 +686,8 @@ WHERE u.company_code=$1";
                 ["error"] = ex.Message,
                 ["retry"] = new JsonObject
                 {
-                    ["attempts"] = attempts,
+                    // 如果是定期任务且重试耗尽，重置 attempts 为 0，以便下次执行时能重新重试
+                    ["attempts"] = (attempts >= maxAttempts && hasSchedule) ? 0 : attempts,
                     ["maxAttempts"] = maxAttempts,
                     ["intervalMinutes"] = intervalMinutes,
                     ["nextRunAt"] = retryAt?.ToString("O")
@@ -676,7 +698,9 @@ WHERE u.company_code=$1";
                     ["endDate"] = endDate.ToString("yyyy-MM-dd"),
                     ["startedAt"] = startedAt.ToString("O"),
                     ["finishedAt"] = finishedAt.ToString("O"),
-                    ["durationMs"] = (finishedAt - startedAt).TotalMilliseconds
+                    ["durationMs"] = (finishedAt - startedAt).TotalMilliseconds,
+                    ["retriesExhausted"] = attempts >= maxAttempts,
+                    ["willRetryOnSchedule"] = attempts >= maxAttempts && hasSchedule
                 }
             };
 
@@ -686,14 +710,18 @@ WHERE u.company_code=$1";
                 result["lastSuccessEnd"] = previousLastSuccessEnd.Value.ToString("yyyy-MM-dd");
             }
 
-            if (finalStatus == "failed")
+            // 只有当重试耗尽且无定期计划时才发送失败邮件
+            if (attempts >= maxAttempts && !hasSchedule)
             {
                 await SendMoneytreeFailureEmailAsync(task.CompanyCode, ex.Message, startDate, endDate, attempts, maxAttempts, ct);
             }
+            else if (attempts >= maxAttempts && hasSchedule)
+            {
+                // 有定期计划时，发送一封通知邮件（非严重错误）
+                _logger?.LogWarning("[TaskScheduler] Moneytree sync failed for {Company} after {Attempts} retries, will retry on next schedule", 
+                    task.CompanyCode, attempts);
+            }
 
-            var nextRun = finalStatus == "pending"
-                ? retryAt
-                : SchedulerPlanHelper.ComputeNextOccurrence(schedule, DateTimeOffset.UtcNow);
             return new TaskExecutionOutcome(finalStatus, result, nextRun, finalStatus == "failed");
         }
 

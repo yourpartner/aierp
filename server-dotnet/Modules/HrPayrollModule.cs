@@ -3298,7 +3298,7 @@ LIMIT @pageSize OFFSET @offset";
             trace?.Add(new { step="input.employee", employeeId = employeeId.ToString(), month, nl = empNlDescription });
         }
 
-        decimal nlBase = 0m; decimal nlCommute = 0m;
+        decimal nlBase = 0m; decimal nlCommute = 0m; decimal nlInsuranceBase = 0m;
         try
         {
             string? empNl = empNlDescription;
@@ -3328,6 +3328,12 @@ LIMIT @pageSize OFFSET @offset";
                 }
                 nlBase = ParseAmountNearLocal(empNl, new[]{"基本给","基本給","月給","月给","固定","基本工资","月薪"});
                 nlCommute = ParseAmountNearLocal(empNl, CommuteKeywords);
+                // 社保・年金の計算基数（標準報酬月額）を独立して指定可能
+                // 例: "基本給35万円、標準報酬30万円" → 給与は35万、社保・年金は30万で計算
+                nlInsuranceBase = ParseAmountNearLocal(empNl, new[]{
+                    "標準報酬", "標準報酬月額", "報酬月額", "算定基礎",  // 日本語正式用語
+                    "社保基数", "保険基数", "社会保険基数", "年金基数"   // 中国語表現
+                });
             }
         } catch {}
         
@@ -3335,7 +3341,7 @@ LIMIT @pageSize OFFSET @offset";
         // 后端不再硬编码时薪关键词，由 Policy 规则的 activation.salaryDescriptionContains 定义
         decimal nlHourlyRate = 0m;
         
-        if (debug) trace?.Add(new { step="input.employee.nlParsed", baseAmount = nlBase, commuteAmount = nlCommute, salaryDescription = empNlDescription });
+        if (debug) trace?.Add(new { step="input.employee.nlParsed", baseAmount = nlBase, commuteAmount = nlCommute, insuranceBase = nlInsuranceBase, salaryDescription = empNlDescription });
 
         // 先加载 Policy，因为需要从 Policy 规则中判断时薪条件
         JsonElement? policy = null;
@@ -3748,14 +3754,18 @@ LIMIT @pageSize OFFSET @offset";
             }
             if (wantsHealth)
             {
-                object baseExpr; if (nlBase>0) baseExpr = new { _const = nlBase }; else baseExpr = new { baseRef = "employee.healthBase" };
+                // 社保基数が指定されている場合はそれを使用、なければ基本給を使用
+                var insuranceBaseVal = nlInsuranceBase > 0 ? nlInsuranceBase : nlBase;
+                object baseExpr; if (insuranceBaseVal > 0) baseExpr = new { _const = insuranceBaseVal }; else baseExpr = new { baseRef = "employee.healthBase" };
                 compiled.Add(new { item = "HEALTH_INS", type = "deduction", formula = new { _base = baseExpr, rate = "policy.law.health.rate" } });
                 // 介护保险：40岁~64岁员工自动计算
                 compiled.Add(new { item = "CARE_INS", type = "deduction", formula = new { _base = baseExpr, rate = "policy.law.care.rate" } });
             }
             if (wantsPension)
             {
-                object baseExpr; if (nlBase>0) baseExpr = new { _const = nlBase }; else baseExpr = new { baseRef = "employee.pensionBase" };
+                // 社保基数が指定されている場合はそれを使用、なければ基本給を使用
+                var insuranceBaseVal = nlInsuranceBase > 0 ? nlInsuranceBase : nlBase;
+                object baseExpr; if (insuranceBaseVal > 0) baseExpr = new { _const = insuranceBaseVal }; else baseExpr = new { baseRef = "employee.pensionBase" };
                 compiled.Add(new { item = "PENSION", type = "deduction", formula = new { _base = baseExpr, rate = "policy.law.pension.rate" } });
             }
             if (wantsEmployment)
@@ -3990,6 +4000,7 @@ LIMIT @pageSize OFFSET @offset";
                 nlBase,
                 nlCommute,
                 nlHourlyRate,
+                nlInsuranceBase,
                 debug,
                 trace,
                 law,
@@ -4574,6 +4585,7 @@ LIMIT @pageSize OFFSET @offset";
         decimal nlBase,
         decimal nlCommute,
         decimal nlHourlyRate,
+        decimal nlInsuranceBase,
         bool debug,
         List<object>? trace,
         LawDatasetService law,
@@ -4732,8 +4744,9 @@ LIMIT @pageSize OFFSET @offset";
             if (key.Equals("baseSalaryMonth", StringComparison.OrdinalIgnoreCase)) return nlBase > 0 ? nlBase : 0m;
             if (key.Equals("commuteAllowance", StringComparison.OrdinalIgnoreCase)) return nlCommute > 0 ? nlCommute : 0m;
             if (key.Equals("salaryTotal", StringComparison.OrdinalIgnoreCase)) return (nlBase > 0 ? nlBase : 0m) + (nlCommute > 0 ? nlCommute : 0m);
-            if (key.Equals("healthBase", StringComparison.OrdinalIgnoreCase)) return nlBase > 0 ? nlBase : 0m;
-            if (key.Equals("pensionBase", StringComparison.OrdinalIgnoreCase)) return nlBase > 0 ? nlBase : 0m;
+            // 社保・年金基数：優先使用指定的社保基数、なければ基本給を使用
+            if (key.Equals("healthBase", StringComparison.OrdinalIgnoreCase)) return nlInsuranceBase > 0 ? nlInsuranceBase : (nlBase > 0 ? nlBase : 0m);
+            if (key.Equals("pensionBase", StringComparison.OrdinalIgnoreCase)) return nlInsuranceBase > 0 ? nlInsuranceBase : (nlBase > 0 ? nlBase : 0m);
             if (key.Equals("hourlyRate", StringComparison.OrdinalIgnoreCase)) return nlHourlyRate > 0 ? nlHourlyRate : 0m;
                     return 0m;
                 }
