@@ -215,8 +215,8 @@
             <el-button size="small" type="primary" @click="addLine">{{ voucherText.actions.addLine }}</el-button>
           </div>
 
-          <!-- 附件上传区域 -->
-          <div class="attachments-section">
+          <!-- 附件上传区域（凭证保存成功后才显示） -->
+          <div v-if="savedVoucherId" class="attachments-section">
             <div class="attachments-header">
               <span class="attachments-title">添付ファイル</span>
               <el-upload
@@ -233,16 +233,79 @@
                 <el-button size="small" type="primary" :icon="Upload">ファイル追加</el-button>
               </el-upload>
             </div>
-            <div v-if="attachments.length > 0" class="attachments-list">
-              <div v-for="(att, idx) in attachments" :key="att.id || idx" class="attachment-item">
-                <el-icon class="attachment-icon"><Document /></el-icon>
-                <span class="attachment-name" :title="att.name">{{ att.name }}</span>
-                <span class="attachment-size">{{ formatFileSize(att.size) }}</span>
-                <el-button size="small" type="danger" :icon="Delete" circle @click="removeAttachment(idx)" />
+            <div v-if="attachments.length > 0" class="attachments-grid">
+              <div 
+                v-for="(att, idx) in attachments" 
+                :key="att.id || idx" 
+                class="attachment-card"
+                :class="{ clickable: !!att.url }"
+              >
+                <!-- 图片类型显示缩略图 -->
+                <template v-if="isImageAttachment(att)">
+                  <div class="attachment-thumb" @click="handleAttachmentClick(att)">
+                    <img :src="att.url" :alt="att.name" @error="onImageError($event)" />
+                  </div>
+                </template>
+                <!-- 非图片类型显示图标 -->
+                <template v-else>
+                  <div class="attachment-thumb file-icon" @click="handleAttachmentClick(att)">
+                    <el-icon :size="32"><Document /></el-icon>
+                    <span class="file-ext">{{ getFileExtension(att.name) }}</span>
+                  </div>
+                </template>
+                <div class="attachment-info">
+                  <div class="attachment-name" :title="att.name">{{ att.name }}</div>
+                  <div class="attachment-meta">
+                    <span class="attachment-size">{{ formatFileSize(att.size) }}</span>
+                    <el-button size="small" type="danger" :icon="Delete" circle @click.stop="removeAttachment(idx)" />
+                  </div>
+                </div>
               </div>
             </div>
             <div v-else class="attachments-empty">添付ファイルはありません</div>
           </div>
+
+          <!-- 图片预览弹窗 -->
+          <el-dialog 
+            v-model="imagePreviewVisible" 
+            :title="imagePreviewName || '画像プレビュー'"
+            width="auto"
+            append-to-body
+            destroy-on-close
+            class="voucher-image-preview-dialog"
+          >
+            <img v-if="imagePreviewUrl" :src="imagePreviewUrl" :alt="imagePreviewName" class="preview-image" />
+          </el-dialog>
+
+          <!-- 文件预览弹窗（PDF、Office、其他） -->
+          <el-dialog 
+            v-model="filePreviewVisible" 
+            :title="filePreviewName || 'ファイル プレビュー'"
+            width="min(1200px, 96vw)"
+            top="2vh"
+            append-to-body
+            destroy-on-close
+            class="voucher-file-preview-dialog"
+          >
+            <!-- PDF 和 Office 文件：用 iframe 预览 -->
+            <div v-if="filePreviewType === 'iframe' || filePreviewType === 'office'" class="file-preview-container">
+              <iframe 
+                :src="filePreviewUrl" 
+                class="file-preview-iframe"
+                frameborder="0"
+              />
+            </div>
+            <!-- 其他文件：显示下载提示 -->
+            <div v-else-if="filePreviewType === 'download'" class="file-download-prompt">
+              <el-icon :size="64" color="#909399"><Document /></el-icon>
+              <p class="file-name">{{ filePreviewName }}</p>
+              <p class="file-hint">このファイル形式はプレビューできません</p>
+              <el-button type="primary" @click="downloadFile">
+                <el-icon><Download /></el-icon>
+                ダウンロード
+              </el-button>
+            </div>
+          </el-dialog>
 
           <div class="totals" :class="{ warn: sumDebit !== sumCredit }">
             {{ totalsText }}
@@ -262,7 +325,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch, onBeforeUnmount } from 'vue'
-import { Upload, Delete, Document } from '@element-plus/icons-vue'
+import { Upload, Delete, Document, Download } from '@element-plus/icons-vue'
 import api from '../api'
 import { useI18n } from '../i18n'
 import type { Messages } from '../i18n/messages'
@@ -498,10 +561,24 @@ interface Attachment {
 }
 const attachments = ref<Attachment[]>([])
 const uploadRef = ref<any>(null)
-const uploadUrl = '/voucher-attachments/upload'
-const uploadHeaders = computed(() => ({
-  'x-company-code': sessionStorage.getItem('currentCompany') || 'JP01'
-}))
+function getStored(key: string) {
+  try { return localStorage.getItem(key) } catch {}
+  try { return sessionStorage.getItem(key) } catch {}
+  return null
+}
+const uploadUrl = computed(() => {
+  const base = String((api as any)?.defaults?.baseURL || '').trim()
+  if (!base || base === '/') return '/voucher-attachments/upload'
+  return `${base.replace(/\/$/, '')}/voucher-attachments/upload`
+})
+const uploadHeaders = computed(() => {
+  const headers: Record<string, string> = {
+    'x-company-code': getStored('company_code') || sessionStorage.getItem('currentCompany') || 'JP01'
+  }
+  const token = getStored('auth_token')
+  if (token) headers.Authorization = `Bearer ${token}`
+  return headers
+})
 const acceptTypes = '.pdf,.jpg,.jpeg,.png,.gif,.xlsx,.xls,.doc,.docx,.csv'
 const maxFileSize = 10 * 1024 * 1024 // 10MB
 
@@ -543,6 +620,81 @@ function formatFileSize(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
+
+// 附件预览相关
+const imagePreviewVisible = ref(false)
+const imagePreviewUrl = ref('')
+const imagePreviewName = ref('')
+const filePreviewVisible = ref(false)
+const filePreviewUrl = ref('')
+const filePreviewName = ref('')
+const filePreviewType = ref<'iframe' | 'office' | 'download'>('iframe')
+
+const imageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']
+
+function isImageAttachment(att: any) {
+  if (!att) return false
+  if (att.contentType && imageTypes.includes(att.contentType.toLowerCase())) return true
+  const name = (att.name || '').toLowerCase()
+  return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(name)
+}
+
+function isPdfAttachment(att: any) {
+  if (!att) return false
+  if (att.contentType && att.contentType.toLowerCase() === 'application/pdf') return true
+  const name = (att.name || '').toLowerCase()
+  return /\.pdf$/i.test(name)
+}
+
+function isOfficeAttachment(att: any) {
+  if (!att) return false
+  const name = (att.name || '').toLowerCase()
+  return /\.(doc|docx|xls|xlsx|ppt|pptx)$/i.test(name)
+}
+
+function getFileExtension(filename: string) {
+  if (!filename) return ''
+  const ext = filename.split('.').pop()?.toUpperCase() || ''
+  return ext.length > 4 ? ext.substring(0, 4) : ext
+}
+
+function handleAttachmentClick(att: any) {
+  if (!att.url) return
+  
+  if (isImageAttachment(att)) {
+    imagePreviewUrl.value = att.url
+    imagePreviewName.value = att.name || 'プレビュー'
+    imagePreviewVisible.value = true
+  } else if (isPdfAttachment(att)) {
+    filePreviewUrl.value = att.url
+    filePreviewName.value = att.name || 'PDF プレビュー'
+    filePreviewType.value = 'iframe'
+    filePreviewVisible.value = true
+  } else if (isOfficeAttachment(att)) {
+    const encodedUrl = encodeURIComponent(att.url)
+    filePreviewUrl.value = `https://view.officeapps.live.com/op/embed.aspx?src=${encodedUrl}`
+    filePreviewName.value = att.name || 'ファイル プレビュー'
+    filePreviewType.value = 'office'
+    filePreviewVisible.value = true
+  } else {
+    filePreviewUrl.value = att.url
+    filePreviewName.value = att.name || 'ファイル'
+    filePreviewType.value = 'download'
+    filePreviewVisible.value = true
+  }
+}
+
+function downloadFile() {
+  if (filePreviewUrl.value) {
+    window.open(filePreviewUrl.value, '_blank')
+  }
+}
+
+function onImageError(event: Event) {
+  const img = event.target as HTMLImageElement
+  if (img) img.style.display = 'none'
+}
+
 // 抬头各字段布局（span=24 栅格）
 const headerSpans: Record<string, number> = {
   'header.companyCode': 6,
@@ -1191,6 +1343,31 @@ async function save() {
       lastVerifiedInvoiceNo.value = model.header.invoiceRegistrationNo || ''
       updateInvoiceStatusFromHeader(model.header, savedHeader)
     }
+
+    // 保存成功后，用数据库返回的展开后的行数据替换当前行
+    // 这样税金行会作为独立行显示，再次更新时借贷平衡计算就正确了
+    const savedLines = data?.payload?.lines
+    if (Array.isArray(savedLines) && savedLines.length > 0) {
+      model.lines.splice(0, model.lines.length)
+      savedLines.forEach((line: any) => {
+        const normalized = ensureLineShape({
+          accountCode: line.accountCode || '',
+          drcr: line.drcr || 'DR',
+          grossAmount: line.amount || 0,
+          taxAmount: 0,
+          taxRate: line.taxRate || 0,
+          taxType: line.isTaxLine ? 'NON_TAX' : (line.taxType || 'NON_TAX'),
+          departmentId: line.departmentId ?? null,
+          employeeId: line.employeeId ?? null,
+          customerId: line.customerId ?? null,
+          vendorId: line.vendorId ?? null,
+          paymentDate: line.paymentDate ?? null,
+          note: line.note ?? ''
+        })
+        model.lines.push(normalized)
+      })
+    }
+
     const savedTpl = voucherText.value.messages.saved || ''
     message.value = savedTpl ? savedTpl.replace('{no}', no) : no
     try {
@@ -1368,7 +1545,7 @@ defineExpose({ applyIntent })
 .attachments-section {
   margin-top: 24px;
   padding: 16px;
-  background: #fafafa;
+  background: #fafbfc;
   border-radius: 8px;
   border: 1px solid #e8e8e8;
 }
@@ -1386,41 +1563,83 @@ defineExpose({ applyIntent })
   color: #333;
 }
 
-.attachments-list {
+.attachments-grid {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
-.attachment-item {
+.attachment-card {
+  width: 120px;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.attachment-card.clickable {
+  cursor: pointer;
+}
+
+.attachment-card.clickable:hover {
+  border-color: #409eff;
+  box-shadow: 0 2px 8px rgba(64, 158, 255, 0.15);
+  transform: translateY(-2px);
+}
+
+.attachment-thumb {
+  width: 100%;
+  height: 80px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: #fff;
-  border-radius: 4px;
-  border: 1px solid #e0e0e0;
+  justify-content: center;
+  background: #f5f7fa;
+  overflow: hidden;
 }
 
-.attachment-icon {
-  color: #666;
-  font-size: 18px;
+.attachment-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attachment-thumb.file-icon {
+  flex-direction: column;
+  gap: 4px;
+  color: #909399;
+}
+
+.attachment-thumb .file-ext {
+  font-size: 10px;
+  font-weight: 600;
+  color: #606266;
+  text-transform: uppercase;
+}
+
+.attachment-info {
+  padding: 8px;
 }
 
 .attachment-name {
-  flex: 1;
+  font-size: 12px;
+  color: #333;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
-  color: #333;
+  margin-bottom: 4px;
+}
+
+.attachment-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
 }
 
 .attachment-size {
-  font-size: 12px;
+  font-size: 11px;
   color: #999;
-  min-width: 60px;
-  text-align: right;
 }
 
 .attachments-empty {
@@ -1428,6 +1647,69 @@ defineExpose({ applyIntent })
   color: #999;
   font-size: 13px;
   padding: 12px 0;
+}
+
+/* 图片预览弹窗样式 */
+.voucher-image-preview-dialog {
+  text-align: center;
+}
+
+.voucher-image-preview-dialog .preview-image {
+  max-width: 80vw;
+  max-height: 80vh;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* 文件预览弹窗样式 */
+:deep(.voucher-file-preview-dialog) {
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+:deep(.voucher-file-preview-dialog .el-dialog) {
+  max-height: 96vh;
+}
+
+:deep(.voucher-file-preview-dialog .el-dialog__body) {
+  padding: 0 !important;
+}
+
+.file-preview-container {
+  height: 88vh;
+  width: 100%;
+  background: #111827;
+}
+
+.file-preview-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+.file-download-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
+  padding: 40px;
+  text-align: center;
+}
+
+.file-download-prompt .file-name {
+  margin-top: 16px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+  word-break: break-all;
+}
+
+.file-download-prompt .file-hint {
+  margin: 8px 0 24px;
+  font-size: 14px;
+  color: #909399;
 }
 </style>
 

@@ -1974,29 +1974,47 @@ static bool LocalizeUiLabelsToJa(System.Text.Json.Nodes.JsonObject root)
     return changed;
 }
 
-// Lists all schema names with their latest version (for frontend/Agent enumeration only).
+// Lists all schema names (for frontend/Agent enumeration only).
 app.MapGet("/schemas", async (HttpContext ctx, NpgsqlDataSource ds) =>
 {
+    var ccHeader = ctx.Request.Headers.TryGetValue("x-company-code", out var h) ? h.ToString() : null;
     await using var conn = await ds.OpenConnectionAsync();
     await using var cmd = conn.CreateCommand();
     cmd.CommandText = @"
-      WITH latest AS (
-        SELECT name, MAX(version) AS version
+      WITH ranked AS (
+        SELECT
+          name,
+          company_code,
+          ROW_NUMBER() OVER (
+            PARTITION BY name
+            ORDER BY
+              CASE
+                WHEN $1::text IS NOT NULL AND company_code = $1 THEN 0
+                WHEN company_code IS NULL THEN 1
+                ELSE 2
+              END
+          ) AS rn
         FROM schemas
-        GROUP BY name
+        WHERE (
+          $1::text IS NOT NULL AND (company_code = $1 OR company_code IS NULL)
+        ) OR (
+          $1::text IS NULL AND company_code IS NULL
+        )
       )
       SELECT COALESCE(
-        jsonb_agg(jsonb_build_object('name', l.name, 'version', l.version)),
+        jsonb_agg(jsonb_build_object('name', name, 'company_code', company_code)),
         '[]'::jsonb
       )
-      FROM latest l;";
+      FROM ranked
+      WHERE rn = 1;";
+    cmd.Parameters.AddWithValue((object?)ccHeader ?? DBNull.Value);
     var json = (string?)await cmd.ExecuteScalarAsync();
     ctx.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
     ctx.Response.Headers["Pragma"] = "no-cache";
     ctx.Response.Headers["Expires"] = "0";
     return Results.Text(json ?? "[]", "application/json; charset=utf-8");
 });
-// Save schema: create a new version and mark it active. The previous version is deactivated first.
+// Save schema (upsert: insert or update if exists).
 // Schema structure validation is expected to occur client-side or during load.
 app.MapPost("/schemas/{name}", async (HttpRequest req, string name, NpgsqlDataSource ds) =>
 {
