@@ -4998,11 +4998,15 @@ LIMIT @pageSize OFFSET @offset";
                         if (geMin && ltMax)
                         {
                             var tax = tableEntry.TaxAmount;
+                            var totalDependents = dependents + extraDependents;
+                            var extraDeduction = extraDependents > 0 ? extraDependents * 1610m : 0m;
                             if (extraDependents > 0)
                             {
-                                tax = Math.Max(0m, tax - (extraDependents * 1610m));
+                                tax = Math.Max(0m, tax - extraDeduction);
                             }
-                            return new FormulaEvalResult(tax, null, taxable, tableEntry.Version, "withholding");
+                            var note = $"withholding:扶養親族{totalDependents}人";
+                            if (extraDependents > 0) note += $"(7人超{extraDependents}人×1610円控除)";
+                            return new FormulaEvalResult(tax, null, taxable, tableEntry.Version, note);
                         }
                     }
                     // 高額帯は算式（公式）で計算（同表内の formula 行を利用）
@@ -5020,11 +5024,15 @@ LIMIT @pageSize OFFSET @offset";
                             }
                             var tax = formula.BaseTax.Value + (taxable - formula.Min) * formula.Rate.Value;
                             tax = ApplyRounding(Math.Max(0m, tax), "round", 0);
+                            var totalDependents = dependents + extraDependents;
+                            var extraDeduction = extraDependents > 0 ? extraDependents * 1610m : 0m;
                             if (extraDependents > 0)
                             {
-                                tax = Math.Max(0m, tax - (extraDependents * 1610m));
+                                tax = Math.Max(0m, tax - extraDeduction);
                             }
-                            return new FormulaEvalResult(tax, formula.Rate, taxable, formula.Version, "withholding:formula");
+                            var note = $"withholding:formula:扶養親族{totalDependents}人";
+                            if (extraDependents > 0) note += $"(7人超{extraDependents}人×1610円控除)";
+                            return new FormulaEvalResult(tax, formula.Rate, taxable, formula.Version, note);
                         }
                     }
                     // 警告：未找到匹配的税额表记录，可能是数据不完整或扶养人数超出范围
