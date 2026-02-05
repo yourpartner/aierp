@@ -4912,14 +4912,69 @@ LIMIT @pageSize OFFSET @offset";
                     if (taxable < 0) taxable = 0;
                     
                     // 获取扶养人数（从公式配置或员工信息中读取，默认0）
+                    // 支持数组形式（扶養親族リスト）或数字形式（直接指定人数）
                     int dependents = 0;
                     if (wht.TryGetProperty("dependents", out var depNode) && depNode.ValueKind == JsonValueKind.Number)
                     {
                         dependents = depNode.GetInt32();
                     }
-                    else if (emp.TryGetProperty("dependents", out var empDep) && empDep.ValueKind == JsonValueKind.Number)
+                    else if (emp.TryGetProperty("dependents", out var empDep))
                     {
-                        dependents = empDep.GetInt32();
+                        if (empDep.ValueKind == JsonValueKind.Array)
+                        {
+                            // 扶養親族リストの場合、控除対象の人数を計算
+                            int CountEligibleDependents(JsonElement list)
+                            {
+                                var count = 0;
+                                var cutoffDate = new DateTime(monthDate.Year, 12, 31);
+                                foreach (var dep in list.EnumerateArray())
+                                {
+                                    if (dep.ValueKind != JsonValueKind.Object) continue;
+                                    var nameKana = dep.TryGetProperty("nameKana", out var nk) ? nk.GetString() : null;
+                                    var nameKanji = dep.TryGetProperty("nameKanji", out var nj) ? nj.GetString() : null;
+                                    var birthDate = dep.TryGetProperty("birthDate", out var bd) ? bd.GetString() : null;
+                                    var gender = dep.TryGetProperty("gender", out var gd) ? gd.GetString() : null;
+                                    var relation = dep.TryGetProperty("relation", out var rl) ? rl.GetString() : null;
+                                    var address = dep.TryGetProperty("address", out var ad) ? ad.GetString() : null;
+
+                                    // 空行はスキップ
+                                    if (string.IsNullOrWhiteSpace(nameKana)
+                                        && string.IsNullOrWhiteSpace(nameKanji)
+                                        && string.IsNullOrWhiteSpace(birthDate)
+                                        && string.IsNullOrWhiteSpace(gender)
+                                        && string.IsNullOrWhiteSpace(relation)
+                                        && string.IsNullOrWhiteSpace(address))
+                                    {
+                                        continue;
+                                    }
+
+                                    // 必須項目が欠けている場合は控除対象外
+                                    if ((string.IsNullOrWhiteSpace(nameKana) && string.IsNullOrWhiteSpace(nameKanji))
+                                        || string.IsNullOrWhiteSpace(birthDate)
+                                        || string.IsNullOrWhiteSpace(gender)
+                                        || string.IsNullOrWhiteSpace(relation)
+                                        || string.IsNullOrWhiteSpace(address))
+                                    {
+                                        continue;
+                                    }
+
+                                    // 年齢判定：12/31 時点で 16 歳未満は控除対象外
+                                    if (!DateTime.TryParse(birthDate, out var bdDate)) continue;
+                                    var age = cutoffDate.Year - bdDate.Year;
+                                    if (bdDate > cutoffDate.AddYears(-age)) age--;
+                                    if (age < 16) continue;
+
+                                    count++;
+                                }
+                                return count;
+                            }
+
+                            dependents = CountEligibleDependents(empDep);
+                        }
+                        else if (empDep.ValueKind == JsonValueKind.Number)
+                        {
+                            dependents = empDep.GetInt32();
+                        }
                     }
                     else if (emp.TryGetProperty("扶養人数", out var empDepJp) && empDepJp.ValueKind == JsonValueKind.Number)
                     {

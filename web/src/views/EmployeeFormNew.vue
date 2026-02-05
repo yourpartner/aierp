@@ -329,31 +329,82 @@
           </div>
         </div>
 
-        <!-- 添付書類カード -->
-        <div class="emp-card">
+        <!-- 扶養親族カード -->
+        <div class="emp-card emp-card--compact">
           <div class="emp-card__header">
-            <el-icon><Folder /></el-icon>
-            <span>添付書類</span>
-            <el-button size="small" text type="primary" @click="triggerUpload" class="emp-card__add" :disabled="!empId">
-              <el-icon><Upload /></el-icon>
-              アップロード
+            <el-icon><UserFilled /></el-icon>
+            <span>扶養親族</span>
+            <el-button size="small" text type="primary" @click="addDependent" class="emp-card__add">
+              <el-icon><Plus /></el-icon>
             </el-button>
           </div>
           <div class="emp-card__body">
-            <div v-if="!model.attachments?.length" class="emp-empty">
-              添付ファイルがありません
+            <div v-if="!model.dependents?.length" class="emp-empty">
+              扶養親族がありません
             </div>
-            <div v-else class="emp-attach-grid">
+            <div v-else class="emp-bank-list">
               <div 
-                v-for="(item, idx) in model.attachments" 
+                v-for="(item, idx) in model.dependents" 
                 :key="idx" 
-                class="emp-attach-item"
+                class="emp-bank-item"
               >
-                <el-icon><Document /></el-icon>
-                <span class="emp-attach-item__name" @click="openAttachment(item)">{{ item.fileName }}</span>
-                <el-button size="small" text type="danger" @click="removeAttachment(idx)">
-                  <el-icon><Delete /></el-icon>
-                </el-button>
+                <div class="emp-bank-item__header">
+                  <span class="emp-bank-item__title">扶養親族 {{ idx + 1 }}</span>
+                  <el-button size="small" text type="danger" @click="removeDependent(idx)">
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </div>
+                <div class="emp-row-compact">
+                  <div class="emp-field emp-field--stacked" style="flex:0 0 150px">
+                    <label>氏名（カナ）</label>
+                    <el-input v-model="item.nameKana" size="small" placeholder="ヤマダ ハナコ" />
+                  </div>
+                  <div class="emp-field emp-field--stacked" style="flex:0 0 150px">
+                    <label>氏名（漢字）</label>
+                    <el-input v-model="item.nameKanji" size="small" placeholder="山田 花子" />
+                  </div>
+                  <div class="emp-field emp-field--stacked" style="flex:0 0 130px">
+                    <label>生年月日</label>
+                    <el-date-picker v-model="item.birthDate" type="date" size="small" placeholder="選択" value-format="YYYY-MM-DD" style="width:100%" />
+                  </div>
+                  <div class="emp-field emp-field--stacked" style="flex:0 0 80px">
+                    <label>性別</label>
+                    <el-select v-model="item.gender" size="small" style="width:100%">
+                      <el-option label="男" value="M" />
+                      <el-option label="女" value="F" />
+                    </el-select>
+                  </div>
+                  <div class="emp-field emp-field--stacked" style="flex:1">
+                    <label>関係</label>
+                    <el-select v-model="item.relation" size="small" filterable allow-create style="width:100%">
+                      <el-option label="配偶者" value="配偶者" />
+                      <el-option label="子" value="子" />
+                      <el-option label="父" value="父" />
+                      <el-option label="母" value="母" />
+                      <el-option label="祖父" value="祖父" />
+                      <el-option label="祖母" value="祖母" />
+                      <el-option label="兄弟姉妹" value="兄弟姉妹" />
+                      <el-option label="夫の父" value="夫の父" />
+                      <el-option label="夫の母" value="夫の母" />
+                      <el-option label="妻の父" value="妻の父" />
+                      <el-option label="妻の母" value="妻の母" />
+                      <el-option label="その他" value="その他" />
+                    </el-select>
+                  </div>
+                </div>
+                <div class="emp-row-compact">
+                  <div class="emp-field emp-field--stacked" style="flex:0 0 70px">
+                    <label>同居</label>
+                    <el-select v-model="item.cohabiting" size="small" style="width:100%">
+                      <el-option label="あり" :value="true" />
+                      <el-option label="なし" :value="false" />
+                    </el-select>
+                  </div>
+                  <div class="emp-field emp-field--stacked" style="flex:1">
+                    <label>住所</label>
+                    <el-input v-model="item.address" size="small" placeholder="住所" />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -519,6 +570,36 @@
           </div>
         </div>
 
+        <!-- 添付書類カード -->
+        <div class="emp-card">
+          <div class="emp-card__header">
+            <el-icon><Folder /></el-icon>
+            <span>添付書類</span>
+            <el-button size="small" text type="primary" @click="triggerUpload" class="emp-card__add" :disabled="!empId">
+              <el-icon><Upload /></el-icon>
+              アップロード
+            </el-button>
+          </div>
+          <div class="emp-card__body">
+            <div v-if="!model.attachments?.length" class="emp-empty">
+              添付ファイルがありません
+            </div>
+            <div v-else class="emp-attach-grid">
+              <div 
+                v-for="(item, idx) in model.attachments" 
+                :key="idx" 
+                class="emp-attach-item"
+              >
+                <el-icon><Document /></el-icon>
+                <span class="emp-attach-item__name" @click="openAttachment(item)">{{ item.fileName }}</span>
+                <el-button size="small" text type="danger" @click="removeAttachment(idx)">
+                  <el-icon><Delete /></el-icon>
+                </el-button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         </div>
       </div>
     </el-card>
@@ -629,7 +710,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { 
   User, Phone, Document, OfficeBuilding, FirstAidKit, 
   CreditCard, Warning, Folder, Plus, Delete, Upload, Check,
-  Setting, Edit, InfoFilled, Money
+  Setting, Edit, InfoFilled, Money, UserFilled
 } from '@element-plus/icons-vue'
 import api from '../api'
 import BankBranchPicker from '../components/BankBranchPicker.vue'
@@ -684,6 +765,7 @@ const model = reactive({
   bankAccounts: [] as any[],
   emergencies: [] as any[],
   attachments: [] as any[],
+  dependents: [] as any[],
   primaryDepartmentName: ''
 })
 
@@ -790,6 +872,7 @@ async function loadEmployee() {
     bankAccounts: Array.isArray(data.bankAccounts) ? data.bankAccounts : [],
     emergencies: Array.isArray(data.emergencies) ? data.emergencies : [],
     attachments: Array.isArray(data.attachments) ? data.attachments : [],
+    dependents: Array.isArray(data.dependents) ? data.dependents : [],
     primaryDepartmentName: data.primaryDepartmentName || ''
   })
   
@@ -1163,6 +1246,21 @@ function removeEmergency(idx: number) {
   model.emergencies.splice(idx, 1)
 }
 
+function addDependent() {
+  model.dependents.push({
+    nameKana: '',
+    nameKanji: '',
+    birthDate: '',
+    gender: '',
+    cohabiting: true,
+    relation: '',
+    address: ''
+  })
+}
+function removeDependent(idx: number) {
+  model.dependents.splice(idx, 1)
+}
+
 function removeAttachment(idx: number) {
   model.attachments.splice(idx, 1)
 }
@@ -1236,6 +1334,30 @@ function openAttachment(item: any) {
   }
 }
 
+function normalizeDependents() {
+  const cleaned = (model.dependents || []).map(d => ({
+    ...d,
+    nameKana: (d.nameKana || '').trim(),
+    nameKanji: (d.nameKanji || '').trim(),
+    relation: (d.relation || '').trim(),
+    address: (d.address || '').trim(),
+    birthDate: d.birthDate || '',
+    gender: d.gender || '',
+    cohabiting: typeof d.cohabiting === 'boolean' ? d.cohabiting : true
+  }))
+  const isEmpty = (d: any) =>
+    !d.nameKana && !d.nameKanji && !d.birthDate && !d.gender && !d.relation && !d.address
+  const filtered = cleaned.filter(d => !isEmpty(d))
+  const invalidIndexes = filtered
+    .map((d, idx) => {
+      const hasName = !!(d.nameKana || d.nameKanji)
+      const missing = !hasName || !d.birthDate || !d.gender || !d.relation || !d.address
+      return missing ? idx + 1 : 0
+    })
+    .filter(n => n > 0)
+  return { filtered, invalidIndexes }
+}
+
 // 校验
 function validate(): string[] {
   const errs: string[] = []
@@ -1255,6 +1377,15 @@ function validate(): string[] {
 
 // 保存
 async function handleSave() {
+  const { filtered, invalidIndexes } = normalizeDependents()
+  if (invalidIndexes.length > 0) {
+    ElMessage.error(`扶養親族の入力が不足しています（行: ${invalidIndexes.join(', ')}）。すべて入力してから保存してください`)
+    return
+  }
+  if (filtered.length !== model.dependents.length) {
+    model.dependents = filtered
+  }
+
   const errs = validate()
   if (errs.length > 0) {
     ElMessage.error(errs[0])
@@ -1317,7 +1448,15 @@ function buildPayload() {
     })),
     bankAccounts: [...model.bankAccounts],
     emergencies: [...model.emergencies],
-    attachments: [...model.attachments]
+    attachments: [...model.attachments],
+    dependents: model.dependents.map(d => ({
+      ...d,
+      nameKana: (d.nameKana || '').trim(),
+      nameKanji: (d.nameKanji || '').trim(),
+      relation: (d.relation || '').trim(),
+      address: (d.address || '').trim(),
+      birthDate: toYmd(d.birthDate)
+    }))
   }
 }
 
