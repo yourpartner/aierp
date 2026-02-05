@@ -3768,10 +3768,12 @@ LIMIT @pageSize OFFSET @offset";
                 object baseExpr; if (insuranceBaseVal > 0) baseExpr = new { _const = insuranceBaseVal }; else baseExpr = new { baseRef = "employee.pensionBase" };
                 compiled.Add(new { item = "PENSION", type = "deduction", formula = new { _base = baseExpr, rate = "policy.law.pension.rate" } });
             }
+            // 雇用保険：計算基数 = 賃金 + 通勤手当（日本の雇用保険法に基づく）
             if (wantsEmployment)
             {
+                // 明示的に基本給・通勤手当がある場合は sum 式、なければ salaryTotal（時給制も対応）
                 object baseExpr; if (nlBase>0 || nlCommute>0) baseExpr = new { sum = new object[]{ new { _const = nlBase }, new { _const = nlCommute } } }; else baseExpr = new { baseRef = "employee.salaryTotal" };
-                compiled.Add(new { item = "EMP_INS", type = "deduction", formula = new { _base = baseExpr, rate = "policy.law.employment.rate" } });
+                compiled.Add(new { item = "EMP_INS", type = "deduction", formula = new { _base = baseExpr, rate = "policy.law.employment.rate" }, description = "雇用保険（基数=賃金+通勤手当）" });
             }
 
             if (wantsWithholding)
@@ -4743,11 +4745,14 @@ LIMIT @pageSize OFFSET @offset";
             key ??= string.Empty;
             if (key.Equals("baseSalaryMonth", StringComparison.OrdinalIgnoreCase)) return nlBase > 0 ? nlBase : 0m;
             if (key.Equals("commuteAllowance", StringComparison.OrdinalIgnoreCase)) return nlCommute > 0 ? nlCommute : 0m;
+            // salaryTotal: 雇用保険計算基数 = 賃金 + 通勤手当（日本の雇用保険法に基づく）
+            // 月給制：基本給 + 通勤手当
+            // 時給制：時給 × 工時 + 通勤手当
             if (key.Equals("salaryTotal", StringComparison.OrdinalIgnoreCase))
             {
                 var baseFromNl = (nlBase > 0 ? nlBase : 0m) + (nlCommute > 0 ? nlCommute : 0m);
                 if (baseFromNl > 0) return baseFromNl;
-                // 時給制員工：使用 時給 × 工時 作為 salaryTotal（用於雇用保険計算）
+                // 時給制員工：使用 時給 × 工時 + 通勤手当 作為 salaryTotal（用於雇用保険計算）
                 if (nlHourlyRate > 0 && workHours.HasData)
                 {
                     return nlHourlyRate * workHours.TotalHours + (nlCommute > 0 ? nlCommute : 0m);
