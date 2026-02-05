@@ -246,6 +246,7 @@
                     </template>
                   </el-table-column>
                   <el-table-column prop="lawVersion" label="法令Ver" width="150" />
+                  <el-table-column prop="lawNote" label="法令備考" min-width="120" />
                   <el-table-column prop="note" label="備考" min-width="100" />
                 </el-table>
               </div>

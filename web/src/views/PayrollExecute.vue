@@ -346,6 +346,7 @@
                   <el-table-column prop="base" label="基数" width="90" />
                   <el-table-column prop="rate" label="料率" width="70" />
                   <el-table-column prop="lawVersion" label="法令Ver" width="130" />
+                  <el-table-column prop="lawNote" label="法令備考" min-width="120" />
                   <el-table-column prop="note" label="備考" min-width="100" />
               </el-table>
               </div>
