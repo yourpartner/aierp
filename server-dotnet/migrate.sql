@@ -2769,3 +2769,51 @@ CREATE TABLE IF NOT EXISTS resident_tax_schedules (
 CREATE INDEX IF NOT EXISTS idx_resident_tax_company_year ON resident_tax_schedules(company_code, fiscal_year);
 CREATE INDEX IF NOT EXISTS idx_resident_tax_employee ON resident_tax_schedules(company_code, employee_id);
 CREATE INDEX IF NOT EXISTS idx_resident_tax_status ON resident_tax_schedules(company_code, status);
+
+-- ============================================================
+-- AI Skills + Learning Framework (Phase 1)
+-- ============================================================
+
+-- AI 学习事件表：记录 AI 执行结果和用户修正行为
+CREATE TABLE IF NOT EXISTS ai_learning_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_code TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  session_id TEXT,
+  skill_id TEXT,
+  context JSONB NOT NULL DEFAULT '{}',
+  ai_output JSONB,
+  user_action JSONB,
+  outcome TEXT NOT NULL DEFAULT 'pending_review',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_learning_company_type ON ai_learning_events(company_code, event_type);
+CREATE INDEX IF NOT EXISTS idx_ai_learning_outcome ON ai_learning_events(company_code, outcome);
+CREATE INDEX IF NOT EXISTS idx_ai_learning_created ON ai_learning_events(created_at);
+
+-- AI 已学习模式表：从学习事件中凝练出的规则
+CREATE TABLE IF NOT EXISTS ai_learned_patterns (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_code TEXT NOT NULL,
+  pattern_type TEXT NOT NULL,
+  conditions JSONB NOT NULL DEFAULT '{}',
+  recommendation JSONB NOT NULL DEFAULT '{}',
+  confidence DECIMAL NOT NULL DEFAULT 0.5,
+  sample_count INT NOT NULL DEFAULT 0,
+  last_updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- 用于 ON CONFLICT 的唯一约束
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'uq_ai_learned_patterns_key'
+  ) THEN
+    ALTER TABLE ai_learned_patterns
+      ADD CONSTRAINT uq_ai_learned_patterns_key UNIQUE (company_code, pattern_type, conditions);
+  END IF;
+EXCEPTION WHEN others THEN
+  NULL;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_ai_patterns_company_type ON ai_learned_patterns(company_code, pattern_type);
+CREATE INDEX IF NOT EXISTS idx_ai_patterns_confidence ON ai_learned_patterns(confidence DESC);

@@ -2349,7 +2349,7 @@ static string? ReadString(JsonNode? node)
     return node.ToString();
 }
 
-static async Task<IResult> HandleVoucherUpdate(HttpRequest req, Guid id, FinanceService finance)
+static async Task<IResult> HandleVoucherUpdate(HttpRequest req, Guid id, FinanceService finance, AzureBlobService blobService)
 {
     if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
         return Results.BadRequest(new { error = "Missing x-company-code" });
@@ -2362,7 +2362,22 @@ static async Task<IResult> HandleVoucherUpdate(HttpRequest req, Guid id, Finance
     try
     {
         var json = await finance.UpdateVoucherAsync(cc.ToString(), id, payloadEl, user);
-        return Results.Text(json, "application/json");
+        // Enrich attachment URLs so the frontend can preview files (e.g. PDF) immediately after save.
+        // Without this, the response lacks SAS URLs because FinanceService strips them before persisting.
+        try
+        {
+            var node = JsonNode.Parse(json);
+            if (node is JsonObject rowObj && rowObj.TryGetPropertyValue("payload", out var payloadNode) && payloadNode is not null)
+            {
+                AddAttachmentUrlsPreserveBlob(payloadNode, blobService);
+            }
+            return Results.Text(node?.ToJsonString() ?? json, "application/json");
+        }
+        catch
+        {
+            // If enrichment fails, still return the raw json so the save is not lost.
+            return Results.Text(json, "application/json");
+        }
     }
     catch (Exception ex)
     {

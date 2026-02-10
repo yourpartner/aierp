@@ -290,15 +290,24 @@ public class FinanceService
             string? StateOf(string field) => meta.FieldRules.TryGetValue(field, out var s) ? s : null;
             bool IsMissing(string field)
                 => !line.TryGetProperty(field, out var v) || v.ValueKind == JsonValueKind.Null || (v.ValueKind == JsonValueKind.String && string.IsNullOrEmpty(v.GetString()));
+            var fieldLabelMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["customerId"] = "得意先",
+                ["vendorId"] = "仕入先",
+                ["employeeId"] = "従業員",
+                ["departmentId"] = "部門",
+                ["paymentDate"] = "支払日"
+            };
+            string FieldLabel(string f) => fieldLabelMap.TryGetValue(f, out var l) ? l : f;
             void Require(string f)
             {
                 if (violation is null && StateOf(f) == "required" && IsMissing(f))
-                    violation = $"lines[{idx}].{f} required by account {accountCode}";
+                    violation = $"明細行 {idx + 1}（勘定科目 {accountCode}）：{FieldLabel(f)} は必須です";
             }
             void Forbid(string f)
             {
                 if (violation is null && StateOf(f) == "hidden" && !IsMissing(f))
-                    violation = $"lines[{idx}].{f} must be empty for account {accountCode}";
+                    violation = $"明細行 {idx + 1}（勘定科目 {accountCode}）：{FieldLabel(f)} は入力できません";
             }
 
             Require("customerId"); Require("vendorId"); Require("employeeId"); Require("departmentId"); Require("paymentDate");
@@ -1787,15 +1796,24 @@ public class FinanceService
                 string? StateOf(string field) => meta.FieldRules.TryGetValue(field, out var s) ? s : null;
                 bool IsMissing(string field)
                     => !line.TryGetProperty(field, out var v) || v.ValueKind == JsonValueKind.Null || (v.ValueKind == JsonValueKind.String && string.IsNullOrEmpty(v.GetString()));
+                var fieldLabelMap2 = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["customerId"] = "得意先",
+                    ["vendorId"] = "仕入先",
+                    ["employeeId"] = "従業員",
+                    ["departmentId"] = "部門",
+                    ["paymentDate"] = "支払日"
+                };
+                string FieldLabel2(string f) => fieldLabelMap2.TryGetValue(f, out var l) ? l : f;
                 void Require(string f)
                 {
                     if (violation is null && StateOf(f) == "required" && IsMissing(f))
-                        violation = $"lines[{idx}].{f} required by account {accountCode}";
+                        violation = $"明細行 {idx + 1}（勘定科目 {accountCode}）：{FieldLabel2(f)} は必須です";
                 }
                 void Forbid(string f)
                 {
                     if (violation is null && StateOf(f) == "hidden" && !IsMissing(f))
-                        violation = $"lines[{idx}].{f} must be empty for account {accountCode}";
+                        violation = $"明細行 {idx + 1}（勘定科目 {accountCode}）：{FieldLabel2(f)} は入力できません";
                 }
 
                 Require("customerId"); Require("vendorId"); Require("employeeId"); Require("departmentId"); Require("paymentDate");

@@ -16,6 +16,7 @@ using Microsoft.Extensions.Logging;
 using Npgsql;
 using NpgsqlTypes;
 using Server.Infrastructure;
+using Server.Infrastructure.Skills;
 using Server.Modules.AgentKit;
 using Server.Modules.AgentKit.Tools;
 
@@ -34,6 +35,8 @@ public sealed class AgentKitService
     private readonly IConfiguration _configuration;
     private readonly ILogger<AgentKitService> _logger;
     private readonly AgentToolRegistry _toolRegistry;
+    private readonly SkillContextBuilder _skillContextBuilder;
+    private readonly LearningEventCollector _learningCollector;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -94,7 +97,9 @@ public sealed class AgentKitService
         GetPayrollHistoryTool getPayrollHistoryTool,
         GetMyPayrollTool getMyPayrollTool,
         GetPayrollComparisonTool getPayrollComparisonTool,
-        GetDepartmentSummaryTool getDepartmentSummaryTool)
+        GetDepartmentSummaryTool getDepartmentSummaryTool,
+        SkillContextBuilder skillContextBuilder,
+        LearningEventCollector learningCollector)
     {
         _ds = ds;
         _finance = finance;
@@ -107,6 +112,8 @@ public sealed class AgentKitService
         _configuration = configuration;
         _logger = logger;
         _toolRegistry = toolRegistry;
+        _skillContextBuilder = skillContextBuilder;
+        _learningCollector = learningCollector;
         
         // 注册工具到 Registry
         _toolRegistry.Register(checkAccountingPeriodTool);
@@ -253,6 +260,34 @@ public sealed class AgentKitService
         }
 
         var messages = BuildInitialMessages(request.CompanyCode, selectedScenarios, accountingRules, history, tokens, language);
+
+        // === AI Skills Phase 1: 注入历史模式增强上下文（用户消息模式）===
+        if (primaryDoc?.Analysis is JsonObject msgAnalysis)
+        {
+            try
+            {
+                var enriched = await _skillContextBuilder.BuildInvoiceContextAsync(request.CompanyCode, msgAnalysis, language, ct);
+                if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints) || !string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions))
+                {
+                    var enrichedContent = new StringBuilder();
+                    if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints))
+                        enrichedContent.Append(enriched.HistoricalHints);
+                    if (!string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions))
+                        enrichedContent.Append(enriched.ConfidenceInstructions);
+                    messages.Add(new Dictionary<string, object?>
+                    {
+                        ["role"] = "system",
+                        ["content"] = enrichedContent.ToString()
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[AgentKit] 用户消息模式构建增强上下文失败");
+            }
+        }
+        // === 增强上下文注入结束 ===
+
         if (documentLabelEntries.Count > 0)
         {
             var groupSummary = new StringBuilder();
@@ -538,6 +573,30 @@ public sealed class AgentKitService
 
         var messages = BuildInitialMessages(request.CompanyCode, selectedScenarios, accountingRules, history, tokens, language);
 
+        // === AI Skills Phase 1: 注入历史模式增强上下文（任务模式）===
+        try
+        {
+            var enriched = await _skillContextBuilder.BuildInvoiceContextAsync(request.CompanyCode, task.Analysis as JsonObject, language, ct);
+            if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints) || !string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions))
+            {
+                var enrichedContent = new StringBuilder();
+                if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints))
+                    enrichedContent.Append(enriched.HistoricalHints);
+                if (!string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions))
+                    enrichedContent.Append(enriched.ConfidenceInstructions);
+                messages.Add(new Dictionary<string, object?>
+                {
+                    ["role"] = "system",
+                    ["content"] = enrichedContent.ToString()
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[AgentKit] 任务模式构建增强上下文失败，继续标准流程");
+        }
+        // === 增强上下文注入结束 ===
+
         // 如果票据中已经识别出人数，则无需再询问人数，仅询问姓名并直接计算人均
         if (clarification is null && task.Analysis is JsonObject autoAnalysis)
         {
@@ -772,6 +831,32 @@ public sealed class AgentKitService
         }
 
         var messages = BuildInitialMessages(request.CompanyCode, selectedScenarios, accountingRules, history, tokens, language);
+
+        // === AI Skills Phase 1: 注入历史模式增强上下文 ===
+        try
+        {
+            var enriched = await _skillContextBuilder.BuildInvoiceContextAsync(request.CompanyCode, parsedData, language, ct);
+            if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints) || !string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions))
+            {
+                var enrichedContent = new StringBuilder();
+                if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints))
+                    enrichedContent.Append(enriched.HistoricalHints);
+                if (!string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions))
+                    enrichedContent.Append(enriched.ConfidenceInstructions);
+                messages.Add(new Dictionary<string, object?>
+                {
+                    ["role"] = "system",
+                    ["content"] = enrichedContent.ToString()
+                });
+                _logger.LogInformation("[AgentKit] 已注入增强上下文, confidence={Confidence:F2}", enriched.EstimatedConfidence);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[AgentKit] 构建增强上下文失败，继续使用标准流程");
+        }
+        // === 增强上下文注入结束 ===
+
         var highlight = BuildAnalysisHighlight(parsedData, language);
         var summaryBuilder = new StringBuilder();
         summaryBuilder.Append($"{documentLabel}：{request.FileName}");
@@ -1979,10 +2064,10 @@ public sealed class AgentKitService
             "1. 請求書／領収書の画像を受け取ったら、まず extract_invoice_data を呼び出して構造化データを取得すること。",
             "2. 勘定科目を特定する必要がある場合は lookup_account を利用し、名称や別名から社内コードを検索すること。",
             "3. 伝票起票前に check_accounting_period で会計期間が開いているか確認し、必要に応じて verify_invoice_registration で適格請求書登録番号を検証すること。",
-            "4. create_voucher を呼び出す際は documentSessionId を必ず指定し、借方・貸方が一致するよう調整すること。情報が不足または不明な場合はユーザーへ確認すること。",
+            "4. create_voucher を呼び出す際は documentSessionId を必ず指定し、借方・貸方が一致するよう調整すること。システムが歴史参照データを提供し確信度が高い場合は、推奨案で直接仕訳を作成し、逐一確認は不要。情報が本当に不足している場合のみユーザーへ確認すること。",
             "5. ツールがエラーを返した場合は、欠落している項目や次のステップをユーザーへ明確に伝えること。",
             "6. すべての回答は簡潔な日本語で記載し、実行結果や伝票番号などの重要情報を明示すること。",
-            "7. 追加情報が必要な場合は request_clarification ツールで questionId 付きカードを生成し、テキストだけで質問しないこと。",
+            "7. 追加情報が必要な場合は request_clarification ツールで questionId 付きカードを生成し、テキストだけで質問しないこと。確認事項はまとめて1回で質問すること。",
             "8. 証憑や質問を参照する際は必ず票据グループ番号（例: #1）を示し、ツール引数にも document_id と documentSessionId を渡すこと。",
             "9. ファイルを扱うツールでは必ずシステムが提供する fileId（32 桁 GUID など）を使用し、元のファイル名を使わないこと。"
         };
@@ -1994,10 +2079,10 @@ public sealed class AgentKitService
             "1. 对于发票/收据类图片，先调用 extract_invoice_data 获取结构化信息。",
             "2. 需要确定会计科目时，使用 lookup_account 以名称或别名检索内部科目编码。",
             "3. 创建会计凭证前，务必调用 check_accounting_period 确认会计期间处于打开状态，必要时调用 verify_invoice_registration 校验发票登记号。",
-            "4. 调用 create_voucher 时必须带上 documentSessionId，并确保借贷金额一致；若信息缺失或不确定，应先向用户确认。",
+            "4. 调用 create_voucher 时必须带上 documentSessionId，并确保借贷金额一致。若系统提供了历史参照数据且置信度较高，可直接使用推荐方案创建凭证，无需逐项确认；仅在信息确实缺失时向用户确认。",
             "5. 工具返回错误时要及时反馈用户，并说明缺失的字段或下一步建议。",
             "6. 所有回复请使用简洁的中文，明确列出操作结果、凭证编号等关键信息。",
-            "7. 需要向用户确认信息时，必须调用 request_clarification 工具生成 questionId 卡片，禁止仅输出纯文本提问。",
+            "7. 需要向用户确认信息时，必须调用 request_clarification 工具生成 questionId 卡片，禁止仅输出纯文本提问。将所有待确认项合并在一次提问中，禁止分多轮逐项确认。",
             "8. 提及票据或提问时，务必引用票据分组编号（例如 #1），并在工具参数中携带 document_id 和 documentSessionId。",
             "9. 调用任何需要文件的工具时，document_id 必须使用系统提供的 fileId（如 32 位 GUID），禁止使用文件原始名称。"
         };
@@ -3473,6 +3558,14 @@ public sealed class AgentKitService
                         rewrittenArgsDoc?.Dispose();
                     }
                 }
+                case "update_voucher":
+                {
+                    var voucherNo = args.TryGetProperty("voucher_no", out var uvEl) ? uvEl.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(voucherNo))
+                        throw new Exception(Localize(context.Language, "voucher_no を指定してください。", "voucher_no 不能为空", "voucher_no is required"));
+                    _logger.LogInformation("[AgentKit] 调用工具 update_voucher，voucherNo={VoucherNo}", voucherNo);
+                    return await UpdateVoucherViaAgentAsync(context, voucherNo!, args, ct);
+                }
                 case "create_sales_order":
                 {
                     _logger.LogInformation("[AgentKit] 调用工具 create_sales_order");
@@ -4237,6 +4330,52 @@ public sealed class AgentKitService
                 _logger.LogWarning(ex, "[AgentKit] 更新票据任务状态失败 taskId={TaskId}", context.TaskId.Value);
             }
         }
+
+        // === AI Skills Phase 1: 记录凭证创建事件，供学习引擎使用 ===
+        try
+        {
+            var learningContext = new JsonObject
+            {
+                ["voucherId"] = voucherId.ToString(),
+                ["voucherNo"] = voucherNo,
+                ["vendorName"] = headerNode?["summary"]?.GetValue<string>()
+            };
+            // 提取借方贷方科目信息
+            string? debitAccount = null, creditAccount = null;
+            if (root["lines"] is JsonArray learningLines)
+            {
+                foreach (var l in learningLines)
+                {
+                    if (l is JsonObject lo)
+                    {
+                        var drcr = lo["drcr"]?.GetValue<string>();
+                        var acctCode = lo["accountCode"]?.GetValue<string>();
+                        if (string.Equals(drcr, "DR", StringComparison.OrdinalIgnoreCase) && debitAccount == null)
+                            debitAccount = acctCode;
+                        else if (string.Equals(drcr, "CR", StringComparison.OrdinalIgnoreCase) && creditAccount == null)
+                            creditAccount = acctCode;
+                    }
+                }
+            }
+            var aiOutput = new JsonObject
+            {
+                ["debitAccount"] = debitAccount,
+                ["creditAccount"] = creditAccount,
+                ["summary"] = headerNode?["summary"]?.GetValue<string>()
+            };
+            await _learningCollector.RecordVoucherCreationAsync(
+                context.CompanyCode,
+                context.SessionId.ToString(),
+                "invoice_processing",
+                learningContext,
+                aiOutput,
+                ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[AgentKit] 记录学习事件失败（不影响凭证创建）");
+        }
+        // === 学习事件记录结束 ===
 
         var message = new AgentResultMessage("assistant", content, "success", tag);
 
@@ -5200,6 +5339,140 @@ public sealed class AgentKitService
     }
 
     /// <summary>
+    /// AI 修改已有凭证。先读取现有凭证，合并用户指定的修改，然后调用 FinanceService.UpdateVoucherAsync。
+    /// </summary>
+    private async Task<ToolExecutionResult> UpdateVoucherViaAgentAsync(AgentExecutionContext context, string voucherNo, JsonElement args, CancellationToken ct)
+    {
+        // 1. 根据凭证号查找凭证 ID 和现有数据
+        Guid voucherId;
+        JsonObject existingPayload;
+        await using (var conn = await _ds.OpenConnectionAsync(ct))
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT id, payload FROM vouchers WHERE company_code=$1 AND payload->'header'->>'voucherNo' = $2 LIMIT 1";
+            cmd.Parameters.AddWithValue(context.CompanyCode);
+            cmd.Parameters.AddWithValue(voucherNo);
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            if (!await rd.ReadAsync(ct))
+                throw new Exception(Localize(context.Language, $"伝票 {voucherNo} が見つかりません。", $"未找到凭证 {voucherNo}", $"Voucher {voucherNo} not found"));
+            voucherId = rd.GetGuid(0);
+            var payloadJson = rd.GetString(1);
+            existingPayload = JsonNode.Parse(payloadJson)?.AsObject() ?? new JsonObject();
+        }
+
+        var existingHeader = existingPayload.TryGetPropertyValue("header", out var ehNode) && ehNode is JsonObject ehObj
+            ? ehObj : new JsonObject();
+        var existingLines = existingPayload.TryGetPropertyValue("lines", out var elNode) && elNode is JsonArray elArr
+            ? elArr : new JsonArray();
+        var existingAttachments = existingPayload.TryGetPropertyValue("attachments", out var eaNode) && eaNode is JsonArray eaArr
+            ? eaArr : new JsonArray();
+
+        // 2. 合并 header 修改
+        if (args.TryGetProperty("header", out var newHeaderEl) && newHeaderEl.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in newHeaderEl.EnumerateObject())
+            {
+                existingHeader[prop.Name] = JsonNode.Parse(prop.Value.GetRawText());
+            }
+        }
+
+        // 3. 如果提供了新的 lines，则替换整个分录列表
+        JsonArray finalLines;
+        if (args.TryGetProperty("lines", out var newLinesEl) && newLinesEl.ValueKind == JsonValueKind.Array)
+        {
+            finalLines = JsonNode.Parse(newLinesEl.GetRawText())?.AsArray() ?? new JsonArray();
+            
+            // 为每条行补充科目名称（通过 lookup）
+            foreach (var line in finalLines)
+            {
+                if (line is JsonObject lineObj)
+                {
+                    var accountCode = lineObj.TryGetPropertyValue("accountCode", out var acNode) && acNode is JsonValue acVal
+                        ? acVal.GetValue<string>() : null;
+                    // 标准化 side → drcr
+                    if (lineObj.TryGetPropertyValue("side", out var sideNode) && sideNode is JsonValue sideVal)
+                    {
+                        var side = sideVal.GetValue<string>()?.Trim().ToUpperInvariant();
+                        if (string.Equals(side, "DEBIT", StringComparison.OrdinalIgnoreCase)) side = "DR";
+                        if (string.Equals(side, "CREDIT", StringComparison.OrdinalIgnoreCase)) side = "CR";
+                        lineObj["drcr"] = side;
+                        lineObj.Remove("side");
+                    }
+                    // 查科目名称
+                    if (!string.IsNullOrWhiteSpace(accountCode) && !lineObj.ContainsKey("accountName"))
+                    {
+                        try
+                        {
+                            var accountName = await LookupAccountNameAsync(context.CompanyCode, accountCode!, ct);
+                            if (!string.IsNullOrWhiteSpace(accountName))
+                                lineObj["accountName"] = accountName;
+                        }
+                        catch { /* ignore lookup failures */ }
+                    }
+                }
+            }
+        }
+        else
+        {
+            // 没有提供新 lines，使用现有的
+            finalLines = JsonNode.Parse(existingLines.ToJsonString())?.AsArray() ?? new JsonArray();
+        }
+
+        // 4. 构建更新用的 payload
+        var updatePayload = new JsonObject
+        {
+            ["header"] = JsonNode.Parse(existingHeader.ToJsonString()),
+            ["lines"] = finalLines,
+            ["attachments"] = JsonNode.Parse(existingAttachments.ToJsonString())
+        };
+
+        var payloadJsonStr = updatePayload.ToJsonString();
+        _logger.LogInformation("[AgentKit] update_voucher payload: {Payload}", payloadJsonStr);
+        using var payloadDoc = JsonDocument.Parse(payloadJsonStr);
+
+        // 5. 调用 FinanceService 执行更新
+        var updatedJson = await _finance.UpdateVoucherAsync(context.CompanyCode, voucherId, payloadDoc.RootElement, context.UserCtx);
+        using var updatedDoc = JsonDocument.Parse(updatedJson);
+        var updatedPayload = updatedDoc.RootElement.TryGetProperty("payload", out var up) ? up : updatedDoc.RootElement;
+
+        var content = Localize(context.Language,
+            $"伝票 {voucherNo} を更新しました。",
+            $"已更新凭证 {voucherNo}",
+            $"Updated voucher {voucherNo}");
+
+        var tag = new
+        {
+            label = voucherNo,
+            action = "openEmbed",
+            key = "vouchers.list",
+            payload = new { voucherNo, detailOnly = true }
+        };
+
+        var message = new AgentResultMessage("assistant", content, "success", tag);
+        var modelPayload = new
+        {
+            status = "success",
+            voucherNo,
+            voucherId,
+            payload = JsonSerializer.Deserialize<object>(updatedPayload.GetRawText(), JsonOptions)
+        };
+        return ToolExecutionResult.FromModel(modelPayload, new List<AgentResultMessage> { message });
+    }
+
+    /// <summary>
+    /// 根据科目代码查找科目名称
+    /// </summary>
+    private async Task<string?> LookupAccountNameAsync(string companyCode, string accountCode, CancellationToken ct)
+    {
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT payload->>'name' FROM accounts WHERE company_code=$1 AND payload->>'code' = $2 LIMIT 1";
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue(accountCode);
+        return await cmd.ExecuteScalarAsync(ct) as string;
+    }
+
+    /// <summary>
     /// 创建取引先（业务伙伴）主数据，并自动匹配インボイス登録番号
     /// </summary>
     private async Task<ToolExecutionResult> CreateBusinessPartnerAsync(AgentExecutionContext context, JsonElement args, CancellationToken ct)
@@ -5921,6 +6194,64 @@ public sealed class AgentKitService
                             documentSessionId = new { type = "string", description = "当前文档上下文标识，必须匹配已注册的文件会话" }
                         },
                         required = new[] { "documentSessionId", "header", "lines" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "update_voucher",
+                    description = "修改已创建的会计凭证。支持修改科目、金额、摘要、日期等信息。需提供凭证号和要修改的字段。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            voucher_no = new { type = "string", description = "要修改的凭证编号" },
+                            header = new
+                            {
+                                type = "object",
+                                description = "要更新的凭证头信息（仅提供需要修改的字段）",
+                                properties = new
+                                {
+                                    postingDate = new { type = "string", description = "YYYY-MM-DD" },
+                                    summary = new { type = "string" },
+                                    currency = new { type = "string" },
+                                    partnerName = new { type = "string" },
+                                    invoiceRegistrationNo = new { type = "string" }
+                                }
+                            },
+                            lines = new
+                            {
+                                type = "array",
+                                description = "替换后的完整分录列表（提供时会替换所有分录），需保持借贷平衡。",
+                                items = new
+                                {
+                                    type = "object",
+                                    properties = new
+                                    {
+                                        accountCode = new { type = "string" },
+                                        amount = new { type = "number" },
+                                        side = new { type = "string", description = "DR/CR" },
+                                        note = new { type = "string" },
+                                        tax = new
+                                        {
+                                            type = "object",
+                                            properties = new
+                                            {
+                                                amount = new { type = "number" },
+                                                accountCode = new { type = "string" },
+                                                side = new { type = "string" }
+                                            }
+                                        }
+                                    },
+                                    required = new[] { "accountCode", "amount", "side" }
+                                }
+                            }
+                        },
+                        required = new[] { "voucher_no" }
                     }
                 }
             },

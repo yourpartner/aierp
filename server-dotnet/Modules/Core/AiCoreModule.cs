@@ -1,4 +1,5 @@
 using Server.Infrastructure.Modules;
+using Server.Infrastructure.Skills;
 using Server.Modules.AgentKit.Tools;
 
 namespace Server.Modules.Core;
@@ -60,6 +61,11 @@ public class AiCoreModule : ModuleBase
         services.AddScoped<WorkflowRulesService>();
         services.AddScoped<AiChatbotService>();
         services.AddScoped<AiLearningService>();
+        
+        // AI Skills + Learning Framework (Phase 1)
+        services.AddScoped<HistoricalPatternService>();
+        services.AddScoped<LearningEventCollector>();
+        services.AddScoped<SkillContextBuilder>();
     }
 }
 
