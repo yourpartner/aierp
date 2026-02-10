@@ -4,7 +4,7 @@
       <template #header>
         <div class="page-header detail-header">
           <div class="page-header-left">
-            <div class="page-header-title">{{ empId ? '社員編集' : '社員登録' }}</div>
+            <div class="page-header-title">{{ isReadonly ? '社員照会' : (empId ? '社員編集' : '社員登録') }}</div>
             <div class="page-header-meta" v-if="!loading && (model.nameKanji || model.code)">
               <el-tag v-if="model.code" size="small" type="info">{{ model.code }}</el-tag>
               <span class="page-header-name">{{ model.nameKanji }}</span>
@@ -15,7 +15,11 @@
             </div>
           </div>
           <div class="detail-header-actions">
-            <el-button type="primary" @click="handleSave" :loading="saving">保存</el-button>
+            <el-button v-if="isReadonly" type="primary" @click="emit('switchToEdit')">
+              <el-icon><Edit /></el-icon>
+              編集モードに切替
+            </el-button>
+            <el-button v-else type="primary" @click="handleSave" :loading="saving">保存</el-button>
           </div>
         </div>
       </template>
@@ -32,7 +36,7 @@
         </el-result>
       </div>
 
-      <div v-else class="emp-content">
+      <div v-else :class="['emp-content', { 'emp-content--readonly': isReadonly }]">
       <!-- 左侧主要信息 -->
       <div class="emp-main">
         <!-- 基本情報カード -->
@@ -335,7 +339,7 @@
             <el-icon><UserFilled /></el-icon>
             <span>扶養親族</span>
             <el-button size="small" text type="primary" @click="addDependent" class="emp-card__add">
-              <el-icon><Plus /></el-icon>
+              <el-icon><Plus /></el-icon>追加
             </el-button>
           </div>
           <div class="emp-card__body">
@@ -459,7 +463,7 @@
             <el-icon><CreditCard /></el-icon>
             <span>銀行口座</span>
             <el-button size="small" text type="primary" @click="addBankAccount" class="emp-card__add">
-              <el-icon><Plus /></el-icon>
+              <el-icon><Plus /></el-icon>追加
             </el-button>
           </div>
           <div class="emp-card__body">
@@ -524,7 +528,7 @@
             <el-icon><Warning /></el-icon>
             <span>緊急連絡先</span>
             <el-button size="small" text type="primary" @click="addEmergency" class="emp-card__add">
-              <el-icon><Plus /></el-icon>
+              <el-icon><Plus /></el-icon>追加
             </el-button>
           </div>
           <div class="emp-card__body">
@@ -717,17 +721,20 @@ import BankBranchPicker from '../components/BankBranchPicker.vue'
 
 const props = defineProps<{ 
   empId?: string
-  bare?: boolean 
+  bare?: boolean
+  readonly?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'saved', id?: string): void
+  (e: 'switchToEdit'): void
 }>()
 
 const route = useRoute()
 const id = computed(() => props.empId || (route.params as any).id)
 const empId = computed(() => id.value)
 const bare = computed(() => props.bare === true)
+const isReadonly = computed(() => props.readonly === true)
 
 const loading = ref(false)
 const saving = ref(false)
@@ -1819,6 +1826,30 @@ onMounted(reload)
 }
 .master-hint .el-icon {
   font-size: 14px;
+}
+
+/* 只读模式样式 */
+.emp-content--readonly {
+  pointer-events: none;
+}
+.emp-content--readonly :deep(.el-input__wrapper),
+.emp-content--readonly :deep(.el-textarea__inner),
+.emp-content--readonly :deep(.el-select .el-input__wrapper),
+.emp-content--readonly :deep(.el-date-editor .el-input__wrapper) {
+  background-color: #f5f7fa;
+  cursor: default;
+}
+.emp-content--readonly :deep(.el-button),
+.emp-content--readonly :deep(.el-checkbox),
+.emp-content--readonly :deep(.el-radio) {
+  pointer-events: none;
+  opacity: 0.8;
+}
+.emp-content--readonly :deep(.contract-remove-btn),
+.emp-content--readonly :deep(.dept-remove-btn),
+.emp-content--readonly :deep(.add-contract-btn),
+.emp-content--readonly :deep(.add-dept-btn) {
+  display: none;
 }
 </style>
 

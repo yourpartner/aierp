@@ -4577,6 +4577,13 @@ function onModalDone(result:any){
     const summary = interpretModalResult(result)
     if (!summary) return
     pushEventMessage(summary.content, { status: summary.status, tag: summary.tag })
+    // 凭证新建成功后，自动关闭当前弹窗，并跳转到凭证详情编辑画面
+    if (result?.kind === 'voucher.created' && result?.status === 'success' && result?.voucherNo) {
+      modalOpen.value = false
+      nextTick(() => {
+        openInModal('vouchers.list', getTitle('vouchers.list'), { voucherNo: result.voucherNo, detailOnly: true, autoEdit: true })
+      })
+    }
   }catch{}
 }
 function onModalClosed(){

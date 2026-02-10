@@ -851,7 +851,37 @@ async function saveResults(){
     }
   }
   
-  await doSave(false)
+  // 既存データの上書き確認：対象員工に既存データがある場合のみ確認ダイアログを表示
+  const existingEmployeeIds: string[] = runResult.value.existingEmployeeIds || []
+  const currentEmployeeIds = runResult.value.entries.map((e: any) => e.employeeId)
+  const overlappingEmployees = currentEmployeeIds.filter((id: string) => existingEmployeeIds.includes(id))
+  
+  if (overlappingEmployees.length > 0) {
+    // 既存データがある員工がいる場合、確認ダイアログを表示
+    const overlappingNames = runResult.value.entries
+      .filter((e: any) => overlappingEmployees.includes(e.employeeId))
+      .map((e: any) => e.employeeName || e.employeeCode || e.employeeId)
+      .join('、')
+    
+    try {
+      await ElMessageBox.confirm(
+        `以下の社員の給与データは既に保存されています。上書きしますか？\n\n${overlappingNames}`,
+        '確認',
+        {
+          confirmButtonText: '上書きする',
+          cancelButtonText: 'キャンセル',
+          type: 'warning'
+        }
+      )
+      // 用户确认覆盖
+      await doSave(true)
+    } catch {
+      // 用户取消
+    }
+  } else {
+    // 既存データがない場合、直接保存（overwrite=true で既存 run があっても追加可能に）
+    await doSave(true)
+  }
 }
 
 // 実際の保存処理
@@ -923,24 +953,9 @@ async function doSave(overwrite: boolean) {
       runResult.value.hasExisting = true
     }
   }catch(e:any){
-    // 409 冲突：询问用户是否覆盖
-    if (e?.response?.status === 409 && !overwrite) {
-      saving.value = false
-      try {
-        await ElMessageBox.confirm(
-          '該当月の給与データが既に保存されています。上書きしますか？',
-          '確認',
-          {
-            confirmButtonText: '上書きする',
-            cancelButtonText: 'キャンセル',
-            type: 'warning'
-          }
-        )
-        // 用户确认覆盖
-        await doSave(true)
-      } catch {
-        // 用户取消
-      }
+    // 409 冲突：既存データとの競合（通常は saveResults で事前確認済みなのでここには来ない）
+    if (e?.response?.status === 409) {
+      error.value = '保存に失敗しました。給与データが他のユーザーによって更新された可能性があります。再計算してからやり直してください。'
       return
     }
     const resp = e?.response?.data

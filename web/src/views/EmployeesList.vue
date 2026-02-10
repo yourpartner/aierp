@@ -139,9 +139,12 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="" width="80" align="center" fixed="right">
+        <el-table-column label="" width="100" align="center" fixed="right">
           <template #default="{ row }">
-            <el-button type="primary" text size="small" @click="openEdit(row.id)">
+            <el-button type="info" text size="small" @click="openView(row.id)" title="照会">
+              <el-icon><View /></el-icon>
+            </el-button>
+            <el-button type="primary" text size="small" @click="openEdit(row.id)" title="編集">
               <el-icon><Edit /></el-icon>
             </el-button>
           </template>
@@ -163,6 +166,25 @@
       </div>
     </el-card>
 
+    <!-- 照会ダイアログ -->
+    <el-dialog 
+      v-model="showView" 
+      width="auto" 
+      append-to-body 
+      destroy-on-close 
+      class="voucher-detail-dialog"
+    >
+      <template #header></template>
+      <div class="employee-dialog-wrap">
+        <EmployeeFormNew 
+          v-if="showView" 
+          :emp-id="viewId || undefined" 
+          :readonly="true"
+          @switch-to-edit="switchToEdit" 
+        />
+      </div>
+    </el-dialog>
+
     <!-- 編集ダイアログ -->
     <el-dialog 
       v-model="showEdit" 
@@ -181,12 +203,14 @@
 
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
-import { User, Plus, Search, Check, Close, Edit } from '@element-plus/icons-vue'
+import { User, Plus, Search, Check, Close, Edit, View } from '@element-plus/icons-vue'
 import EmployeeFormNew from './EmployeeFormNew.vue'
 import api from '../api'
 
 const showEdit = ref(false)
 const editId = ref<string>('')
+const showView = ref(false)
+const viewId = ref<string>('')
 
 const rows = ref<any[]>([])
 const page = ref(1)
@@ -297,6 +321,8 @@ onMounted(async () => {
 
 function openEdit(id:string){ editId.value = id; showEdit.value = true }
 function openNew(){ editId.value = ''; showEdit.value = true }
+function openView(id:string){ viewId.value = id; showView.value = true }
+function switchToEdit(){ showView.value = false; openEdit(viewId.value) }
 function onSaved(){ showEdit.value = false; load() }
 
 async function applyIntent(payload: any) {

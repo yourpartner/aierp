@@ -1344,29 +1344,9 @@ async function save() {
       updateInvoiceStatusFromHeader(model.header, savedHeader)
     }
 
-    // 保存成功后，用数据库返回的展开后的行数据替换当前行
-    // 这样税金行会作为独立行显示，再次更新时借贷平衡计算就正确了
-    const savedLines = data?.payload?.lines
-    if (Array.isArray(savedLines) && savedLines.length > 0) {
-      model.lines.splice(0, model.lines.length)
-      savedLines.forEach((line: any) => {
-        const normalized = ensureLineShape({
-          accountCode: line.accountCode || '',
-          drcr: line.drcr || 'DR',
-          grossAmount: line.amount || 0,
-          taxAmount: 0,
-          taxRate: line.taxRate || 0,
-          taxType: line.isTaxLine ? 'NON_TAX' : (line.taxType || 'NON_TAX'),
-          departmentId: line.departmentId ?? null,
-          employeeId: line.employeeId ?? null,
-          customerId: line.customerId ?? null,
-          vendorId: line.vendorId ?? null,
-          paymentDate: line.paymentDate ?? null,
-          note: line.note ?? ''
-        })
-        model.lines.push(normalized)
-      })
-    }
+    // 保存成功後、フォームをリセットして閉じる
+    // 後続の編集は凭証一覧の詳細編集画面（VoucherDetailBody）で行う
+    reset()
 
     const savedTpl = voucherText.value.messages.saved || ''
     message.value = savedTpl ? savedTpl.replace('{no}', no) : no

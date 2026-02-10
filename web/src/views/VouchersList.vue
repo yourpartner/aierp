@@ -975,6 +975,7 @@ async function applyIntent(payload:any){
     const voucherNo = payload.voucherNo || payload.voucher_no || payload.number
     if (!voucherId && !voucherNo) return
     const detailOnly = payload.detailOnly === true || payload.mode === 'detail'
+    const autoEdit = payload.autoEdit === true
     detailOnlyMode.value = detailOnly
     if (detailOnly){
       detailLoading.value = true
@@ -987,6 +988,10 @@ async function applyIntent(payload:any){
           : await fetchVoucherByNo(String(voucherNo))
         if (row){
           await openDetail(row)
+          // 凭证新建后自动进入编辑模式
+          if (autoEdit && detail.value) {
+            enterEditMode()
+          }
         } else {
           const displayKey = voucherId || voucherNo
           detailError.value = `${listText.number || '凭证'} ${displayKey} 未找到`
