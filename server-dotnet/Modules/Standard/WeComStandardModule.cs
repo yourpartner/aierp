@@ -1,4 +1,5 @@
 using Server.Infrastructure.Modules;
+using Server.Infrastructure.Skills;
 
 namespace Server.Modules.Standard;
 
@@ -11,7 +12,7 @@ public class WeComStandardModule : ModuleBase
     {
         Id = "wecom",
         Name = "企业微信集成",
-        Description = "企业微信消息推送、AI客服等功能",
+        Description = "企业微信消息推送、AI客服、员工AI Gateway等功能",
         Category = ModuleCategory.Standard,
         Version = "1.0.0",
         Dependencies = new[] { "ai_core" },
@@ -22,6 +23,11 @@ public class WeComStandardModule : ModuleBase
     {
         services.AddScoped<WeChatCustomerMappingService>();
         services.AddHostedService<AiLearningBackgroundService>();
+        
+        // 员工 AI Gateway 服务
+        services.AddScoped<WeComIntentClassifier>();
+        services.AddScoped<TimesheetAiParser>();
+        services.AddScoped<WeComEmployeeGateway>();
     }
     
     public override void MapEndpoints(WebApplication app)

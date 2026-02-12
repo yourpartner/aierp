@@ -66,6 +66,7 @@ public class AiCoreModule : ModuleBase
         services.AddScoped<HistoricalPatternService>();
         services.AddScoped<LearningEventCollector>();
         services.AddScoped<SkillContextBuilder>();
+        services.AddScoped<MessageTaskRouter>();
     }
 }
 

@@ -1283,7 +1283,7 @@ app.MapPost("/auth/login", async (HttpRequest req, NpgsqlDataSource ds) =>
 
     await using var conn = await ds.OpenConnectionAsync();
     await using var cmd = conn.CreateCommand();
-    cmd.CommandText = @"SELECT id, password_hash, name, dept_id FROM users WHERE company_code=$1 AND employee_code=$2 LIMIT 1";
+    cmd.CommandText = @"SELECT id, password_hash, name, dept_id, employee_id FROM users WHERE company_code=$1 AND employee_code=$2 LIMIT 1";
     cmd.Parameters.AddWithValue(companyCode);
     cmd.Parameters.AddWithValue(employeeCode);
     await using var rd = await cmd.ExecuteReaderAsync();
@@ -1292,6 +1292,7 @@ app.MapPost("/auth/login", async (HttpRequest req, NpgsqlDataSource ds) =>
     var hash = rd.GetString(1);
     var name = rd.IsDBNull(2) ? null : rd.GetString(2);
     var deptId = rd.IsDBNull(3) ? null : rd.GetString(3);
+    var employeeId = rd.IsDBNull(4) ? null : rd.GetGuid(4).ToString();
     if (!BCrypt.Net.BCrypt.Verify(password, hash)) return Results.Unauthorized();
 
     // Fetch role assignments.
@@ -1313,7 +1314,19 @@ app.MapPost("/auth/login", async (HttpRequest req, NpgsqlDataSource ds) =>
         while (await rc.ReadAsync()) caps.Add(rc.GetString(0));
     }
 
-    var claims = new[]
+    // Lookup resource_id from stf_resources if employee_id is present
+    string? resourceId = null;
+    if (!string.IsNullOrEmpty(employeeId))
+    {
+        await using var cmdRes = conn.CreateCommand();
+        cmdRes.CommandText = @"SELECT id FROM stf_resources WHERE company_code=$1 AND employee_id=$2 LIMIT 1";
+        cmdRes.Parameters.AddWithValue(companyCode);
+        cmdRes.Parameters.AddWithValue(Guid.Parse(employeeId));
+        var resObj = await cmdRes.ExecuteScalarAsync();
+        if (resObj is Guid resGuid) resourceId = resGuid.ToString();
+    }
+
+    var claimsList = new List<System.Security.Claims.Claim>
     {
         new System.Security.Claims.Claim("uid", userId.ToString()),
         new System.Security.Claims.Claim("companyCode", companyCode),
@@ -1323,6 +1336,11 @@ app.MapPost("/auth/login", async (HttpRequest req, NpgsqlDataSource ds) =>
         new System.Security.Claims.Claim("roles", string.Join(',', roles)),
         new System.Security.Claims.Claim("caps", string.Join(',', caps))
     };
+    if (!string.IsNullOrEmpty(employeeId))
+        claimsList.Add(new System.Security.Claims.Claim("employee_id", employeeId));
+    if (!string.IsNullOrEmpty(resourceId))
+        claimsList.Add(new System.Security.Claims.Claim("resource_id", resourceId));
+    var claims = claimsList.ToArray();
     var token = new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(
         issuer: jwtIssuer,
         audience: null,

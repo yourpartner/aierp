@@ -107,6 +107,8 @@ export const staffingPortalRoutes: RouteRecordRaw[] = [
   { path: '/portal/timesheet', component: () => import('../views/portal/PortalTimesheet.vue'), meta: { requiresAuth: true } },
   { path: '/portal/payslip', component: () => import('../views/portal/PortalPayslips.vue'), meta: { requiresAuth: true } },
   { path: '/portal/certificates', component: () => import('../views/portal/PortalCertificates.vue'), meta: { requiresAuth: true } },
+  // 企业微信AI助手测试
+  { path: '/portal/wecom-chat', component: () => import('../views/portal/PortalWeComChat.vue'), meta: { requiresAuth: true } },
   // 个人事业主专属
   { path: '/portal/orders', component: () => import('../views/portal/PortalOrders.vue'), meta: { requiresAuth: true } },
   { path: '/portal/invoices', component: () => import('../views/portal/PortalInvoices.vue'), meta: { requiresAuth: true } },

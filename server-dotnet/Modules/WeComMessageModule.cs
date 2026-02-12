@@ -130,6 +130,98 @@ public static class WeComMessageModule
             }
         });
         
+        // ========== 员工自建应用回调（独立路径） ==========
+        
+        // 员工自建应用 - 回调验证（GET请求）
+        app.MapGet("/wecom/employee-callback", (HttpRequest req) =>
+        {
+            var section = config.GetSection("WeComEmployee");
+            var token = section["Token"] ?? config.GetSection("WeComCallback")["Token"] ?? "";
+            var encodingAesKey = section["EncodingAESKey"] ?? config.GetSection("WeComCallback")["EncodingAESKey"] ?? "";
+            
+            var msgSignature = req.Query["msg_signature"].ToString();
+            var timestamp = req.Query["timestamp"].ToString();
+            var nonce = req.Query["nonce"].ToString();
+            var echoStr = req.Query["echostr"].ToString();
+            
+            logger.LogInformation("[WeCom Employee Callback] Verification request");
+            
+            if (!VerifySignature(token, timestamp, nonce, echoStr, msgSignature))
+            {
+                logger.LogWarning("[WeCom Employee Callback] Signature verification failed");
+                return Results.BadRequest("Invalid signature");
+            }
+            
+            try
+            {
+                var decrypted = DecryptMessage(encodingAesKey, echoStr);
+                return Results.Text(decrypted);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "[WeCom Employee Callback] Decrypt failed");
+                return Results.BadRequest("Decryption failed");
+            }
+        });
+        
+        // 员工自建应用 - 消息回调（POST请求）→ 路由到 WeComEmployeeGateway
+        app.MapPost("/wecom/employee-callback", async (HttpRequest req, NpgsqlDataSource ds, IServiceProvider sp) =>
+        {
+            var section = config.GetSection("WeComEmployee");
+            var token = section["Token"] ?? config.GetSection("WeComCallback")["Token"] ?? "";
+            var encodingAesKey = section["EncodingAESKey"] ?? config.GetSection("WeComCallback")["EncodingAESKey"] ?? "";
+            var companyCode = section["DefaultCompanyCode"] ?? config.GetSection("WeComCallback")["DefaultCompanyCode"] ?? "JP01";
+            
+            var msgSignature = req.Query["msg_signature"].ToString();
+            var timestamp = req.Query["timestamp"].ToString();
+            var nonce = req.Query["nonce"].ToString();
+            
+            using var bodyReader = new StreamReader(req.Body);
+            var body = await bodyReader.ReadToEndAsync();
+            
+            try
+            {
+                var xml = XDocument.Parse(body);
+                var encryptedMsg = xml.Root?.Element("Encrypt")?.Value;
+                
+                if (string.IsNullOrEmpty(encryptedMsg)) return Results.Ok();
+                
+                if (!VerifySignature(token, timestamp, nonce, encryptedMsg, msgSignature))
+                    return Results.BadRequest("Invalid signature");
+                
+                var decryptedXml = DecryptMessage(encodingAesKey, encryptedMsg);
+                var msgXml = XDocument.Parse(decryptedXml);
+                var message = ParseMessage(msgXml);
+                
+                if (message != null)
+                {
+                    // 路由到员工 Gateway（异步处理，立即返回）
+                    var gateway = sp.GetRequiredService<WeComEmployeeGateway>();
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await gateway.HandleEmployeeMessageAsync(companyCode, message, CancellationToken.None);
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogError(ex, "[WeCom Employee Callback] Failed to process employee message");
+                        }
+                    });
+                }
+                
+                return Results.Ok();
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "[WeCom Employee Callback] Failed to process callback");
+                return Results.Ok();
+            }
+        });
+
+        // ========== 智能路由：现有回调自动区分内部/外部消息 ==========
+        // 如果只配置了一个回调 URL，可以通过用户类型自动路由
+        
         // 测试端点：模拟接收消息（开发时使用）
         app.MapPost("/wecom/test-message", async (HttpRequest req, NpgsqlDataSource ds, IServiceProvider sp) =>
         {
@@ -138,6 +230,8 @@ public static class WeComMessageModule
             
             using var doc = await JsonDocument.ParseAsync(req.Body);
             var root = doc.RootElement;
+            
+            var isEmployee = root.TryGetProperty("isEmployee", out var ie) && ie.GetBoolean();
             
             var message = new WeComMessage
             {
@@ -152,10 +246,20 @@ public static class WeComMessageModule
                 IsGroup = root.TryGetProperty("isGroup", out var ig) && ig.GetBoolean()
             };
             
-            var chatbotService = sp.GetRequiredService<AiChatbotService>();
-            var response = await chatbotService.HandleIncomingMessageAsync(cc.ToString(), message, req.HttpContext.RequestAborted);
-            
-            return Results.Ok(new { received = message, response });
+            if (isEmployee)
+            {
+                // 路由到员工 Gateway
+                var gateway = sp.GetRequiredService<WeComEmployeeGateway>();
+                var response = await gateway.HandleEmployeeMessageAsync(cc.ToString(), message, req.HttpContext.RequestAborted);
+                return Results.Ok(new { received = message, response = new { intent = response.Intent, reply = response.Reply, sessionId = response.SessionId } });
+            }
+            else
+            {
+                // 路由到客户 AI Chatbot
+                var chatbotService = sp.GetRequiredService<AiChatbotService>();
+                var response = await chatbotService.HandleIncomingMessageAsync(cc.ToString(), message, req.HttpContext.RequestAborted);
+                return Results.Ok(new { received = message, response });
+            }
         }).RequireAuthorization();
     }
     

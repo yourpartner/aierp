@@ -37,6 +37,7 @@ public sealed class AgentKitService
     private readonly AgentToolRegistry _toolRegistry;
     private readonly SkillContextBuilder _skillContextBuilder;
     private readonly LearningEventCollector _learningCollector;
+    private readonly MessageTaskRouter _messageRouter;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -99,7 +100,8 @@ public sealed class AgentKitService
         GetPayrollComparisonTool getPayrollComparisonTool,
         GetDepartmentSummaryTool getDepartmentSummaryTool,
         SkillContextBuilder skillContextBuilder,
-        LearningEventCollector learningCollector)
+        LearningEventCollector learningCollector,
+        MessageTaskRouter messageRouter)
     {
         _ds = ds;
         _finance = finance;
@@ -114,6 +116,7 @@ public sealed class AgentKitService
         _toolRegistry = toolRegistry;
         _skillContextBuilder = skillContextBuilder;
         _learningCollector = learningCollector;
+        _messageRouter = messageRouter;
         
         // 注册工具到 Registry
         _toolRegistry.Register(checkAccountingPeriodTool);
@@ -147,7 +150,27 @@ public sealed class AgentKitService
         {
             return await ProcessTaskMessageAsync(request, ct);
         }
+
+        // === 消息路由: 当前端未指定 taskId 时，自动判断消息归属 ===
         var sessionId = await EnsureSessionAsync(request.SessionId, request.CompanyCode, request.UserCtx, ct);
+        if (!string.IsNullOrWhiteSpace(request.Message))
+        {
+            try
+            {
+                var routeResult = await _messageRouter.ResolveTaskAsync(sessionId, request.CompanyCode, request.Message, ct);
+                if (routeResult is not null)
+                {
+                    _logger.LogInformation("[AgentKit] 消息路由: 自动匹配到任务 {TaskId}, 原因={Reason}", routeResult.TaskId, routeResult.Reason);
+                    var routedRequest = request with { TaskId = routeResult.TaskId, SessionId = sessionId };
+                    return await ProcessTaskMessageAsync(routedRequest, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[AgentKit] 消息路由失败，回退到通用处理");
+            }
+        }
+        // === 消息路由结束 ===
         var latestUpload = await GetLatestUploadAsync(sessionId, ct);
         var storedDocumentSessionId = await GetSessionActiveDocumentAsync(sessionId, ct);
         var historySince = latestUpload?.CreatedAt;
@@ -667,6 +690,31 @@ public sealed class AgentKitService
             ["role"] = "system",
             ["content"] = summaryBuilder.ToString().TrimEnd()
         });
+
+        // === 关键修复: 注入已创建凭证的信息，防止 AI 重复创建 ===
+        var existingVoucherNo = task.Metadata?.TryGetPropertyValue("voucherNo", out var vnNode) == true
+            ? (vnNode is JsonValue vnVal && vnVal.TryGetValue<string>(out var vn) ? vn : null)
+            : null;
+        if (!string.IsNullOrWhiteSpace(existingVoucherNo) &&
+            string.Equals(task.Status, "completed", StringComparison.OrdinalIgnoreCase))
+        {
+            messages.Add(new Dictionary<string, object?>
+            {
+                ["role"] = "system",
+                ["content"] = Localize(language,
+                    $"[重要] このタスクではすでに会計伝票 {existingVoucherNo} が作成済みです。" +
+                    $"ユーザーが修正を要求した場合は、新しい伝票を作成せず update_voucher ツールで既存の伝票 {existingVoucherNo} を更新してください。" +
+                    "create_voucher は絶対に使用しないでください。",
+                    $"[重要] 此任务已创建凭证 {existingVoucherNo}。" +
+                    $"用户如果要求修改，请使用 update_voucher 工具更新现有凭证 {existingVoucherNo}，不要创建新凭证。" +
+                    "严禁调用 create_voucher。",
+                    $"[IMPORTANT] Voucher {existingVoucherNo} was already created for this task. " +
+                    $"If the user requests changes, use update_voucher to modify {existingVoucherNo}. " +
+                    "Do NOT call create_voucher.")
+            });
+            _logger.LogInformation("[AgentKit] 任务已有凭证 {VoucherNo}，注入 update_voucher 指引", existingVoucherNo);
+        }
+        // === 凭证修改指引结束 ===
         if (clarification is not null)
         {
             var clarifyNote = new StringBuilder();

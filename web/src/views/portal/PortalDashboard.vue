@@ -137,6 +137,12 @@
           </div>
           <span>入金確認</span>
         </router-link>
+        <router-link to="/portal/wecom-chat" class="quick-link">
+          <div class="link-icon" style="background: linear-gradient(135deg, #07c160 0%, #10b981 100%)">
+            <el-icon><ChatDotRound /></el-icon>
+          </div>
+          <span>AI助手</span>
+        </router-link>
       </div>
     </div>
   </div>
@@ -144,7 +150,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Calendar, Document, Bell, Warning, Money, Tickets, List, Wallet } from '@element-plus/icons-vue'
+import { Calendar, Document, Bell, Warning, Money, Tickets, List, Wallet, ChatDotRound } from '@element-plus/icons-vue'
 import api from '../../api'
 
 const loading = ref(false)

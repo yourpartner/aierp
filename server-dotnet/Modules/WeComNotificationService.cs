@@ -537,5 +537,60 @@ public class WeComNotificationService
         }
     }
     #endregion
+
+    #region 媒体文件下载
+
+    /// <summary>
+    /// 从企业微信下载临时素材（图片/文件/语音等）
+    /// </summary>
+    /// <param name="mediaId">企业微信 media_id</param>
+    /// <returns>(文件字节, MIME类型, 文件名) 或 null</returns>
+    public async Task<(byte[] data, string mimeType, string? fileName)?> DownloadMediaAsync(
+        string mediaId, CancellationToken ct = default)
+    {
+        if (!IsConfigured || string.IsNullOrEmpty(mediaId))
+        {
+            _logger.LogWarning("[WeCom] Cannot download media: not configured or empty mediaId");
+            return null;
+        }
+
+        try
+        {
+            var token = await GetAccessTokenAsync(ct);
+            if (string.IsNullOrEmpty(token)) return null;
+
+            var url = $"https://qyapi.weixin.qq.com/cgi-bin/media/get?access_token={token}&media_id={mediaId}";
+            var response = await _httpClient.GetAsync(url, ct);
+            response.EnsureSuccessStatusCode();
+
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+            
+            // 检查是否返回了错误 JSON（非文件内容）
+            if (contentType.Contains("json"))
+            {
+                var errorJson = await response.Content.ReadAsStringAsync(ct);
+                _logger.LogWarning("[WeCom] Media download returned JSON error: {Error}", errorJson);
+                return null;
+            }
+
+            var data = await response.Content.ReadAsByteArrayAsync(ct);
+            
+            // 尝试从 Content-Disposition 提取文件名
+            var cd = response.Content.Headers.ContentDisposition;
+            var fileName = cd?.FileNameStar ?? cd?.FileName?.Trim('"');
+
+            _logger.LogInformation("[WeCom] Media downloaded: mediaId={MediaId}, size={Size}, type={Type}",
+                mediaId, data.Length, contentType);
+
+            return (data, contentType, fileName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[WeCom] Failed to download media: {MediaId}", mediaId);
+            return null;
+        }
+    }
+
+    #endregion
 }
 
