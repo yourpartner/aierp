@@ -38,6 +38,10 @@ public sealed class AgentKitService
     private readonly SkillContextBuilder _skillContextBuilder;
     private readonly LearningEventCollector _learningCollector;
     private readonly MessageTaskRouter _messageRouter;
+    private readonly SkillRouter _skillRouter;
+    private readonly AgentSkillService _agentSkillService;
+    private readonly SkillPromptBuilder2 _skillPromptBuilder2;
+    private readonly SkillMatcher _skillMatcher;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -99,9 +103,17 @@ public sealed class AgentKitService
         GetMyPayrollTool getMyPayrollTool,
         GetPayrollComparisonTool getPayrollComparisonTool,
         GetDepartmentSummaryTool getDepartmentSummaryTool,
+        // 银行明细记账工具
+        IdentifyBankCounterpartyTool identifyBankCounterpartyTool,
+        SearchBankOpenItemsTool searchBankOpenItemsTool,
+        ResolveBankAccountTool resolveBankAccountTool,
         SkillContextBuilder skillContextBuilder,
         LearningEventCollector learningCollector,
-        MessageTaskRouter messageRouter)
+        MessageTaskRouter messageRouter,
+        SkillRouter skillRouter,
+        AgentSkillService agentSkillService,
+        SkillPromptBuilder2 skillPromptBuilder2,
+        SkillMatcher skillMatcher)
     {
         _ds = ds;
         _finance = finance;
@@ -117,6 +129,10 @@ public sealed class AgentKitService
         _skillContextBuilder = skillContextBuilder;
         _learningCollector = learningCollector;
         _messageRouter = messageRouter;
+        _skillRouter = skillRouter;
+        _agentSkillService = agentSkillService;
+        _skillPromptBuilder2 = skillPromptBuilder2;
+        _skillMatcher = skillMatcher;
         
         // 注册工具到 Registry
         _toolRegistry.Register(checkAccountingPeriodTool);
@@ -138,6 +154,10 @@ public sealed class AgentKitService
         _toolRegistry.Register(getMyPayrollTool);
         _toolRegistry.Register(getPayrollComparisonTool);
         _toolRegistry.Register(getDepartmentSummaryTool);
+        // 银行明细记账工具
+        _toolRegistry.Register(identifyBankCounterpartyTool);
+        _toolRegistry.Register(searchBankOpenItemsTool);
+        _toolRegistry.Register(resolveBankAccountTool);
     }
 
     internal async Task<AgentRunResult> ProcessUserMessageAsync(AgentMessageRequest request, CancellationToken ct)
@@ -151,8 +171,31 @@ public sealed class AgentKitService
             return await ProcessTaskMessageAsync(request, ct);
         }
 
-        // === 消息路由: 当前端未指定 taskId 时，自动判断消息归属 ===
+        // === SkillRouter: 跟进判断（Context Engine） ===
         var sessionId = await EnsureSessionAsync(request.SessionId, request.CompanyCode, request.UserCtx, ct);
+        if (!string.IsNullOrWhiteSpace(request.Message))
+        {
+            try
+            {
+                var skillRoute = await _skillRouter.TryRouteAsFollowUpAsync(
+                    sessionId, request.CompanyCode, request.UserCtx.UserId ?? "",
+                    request.Message, "text", "web", ct);
+                if (skillRoute is not null && skillRoute.TaskId.HasValue)
+                {
+                    _logger.LogInformation("[AgentKit] SkillRouter 跟进路由: skill={Skill}, taskId={TaskId}, reason=follow-up",
+                        skillRoute.SkillName, skillRoute.TaskId);
+                    var routedRequest = request with { TaskId = skillRoute.TaskId, SessionId = sessionId };
+                    return await ProcessTaskMessageAsync(routedRequest, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[AgentKit] SkillRouter 跟进路由失败，回退到 MessageTaskRouter");
+            }
+        }
+        // === SkillRouter 结束，回退到原有 MessageTaskRouter ===
+
+        // === 消息路由: 当前端未指定 taskId 时，自动判断消息归属 ===
         if (!string.IsNullOrWhiteSpace(request.Message))
         {
             try
@@ -160,7 +203,7 @@ public sealed class AgentKitService
                 var routeResult = await _messageRouter.ResolveTaskAsync(sessionId, request.CompanyCode, request.Message, ct);
                 if (routeResult is not null)
                 {
-                    _logger.LogInformation("[AgentKit] 消息路由: 自动匹配到任务 {TaskId}, 原因={Reason}", routeResult.TaskId, routeResult.Reason);
+                    _logger.LogInformation("[AgentKit] MessageTaskRouter 路由: 自动匹配到任务 {TaskId}, 原因={Reason}", routeResult.TaskId, routeResult.Reason);
                     var routedRequest = request with { TaskId = routeResult.TaskId, SessionId = sessionId };
                     return await ProcessTaskMessageAsync(routedRequest, ct);
                 }
@@ -171,12 +214,53 @@ public sealed class AgentKitService
             }
         }
         // === 消息路由结束 ===
+
+        // === Unified Agent Skills: 匹配 Skill（纯 Skill 驱动，无回退） ===
         var latestUpload = await GetLatestUploadAsync(sessionId, ct);
+        string? fileContentType = null;
+        if (latestUpload is not null)
+        {
+            var firstDoc = latestUpload.Documents?.FirstOrDefault();
+            var fn = firstDoc?.FileName?.ToLowerInvariant() ?? "";
+            if (fn.EndsWith(".jpg") || fn.EndsWith(".jpeg")) fileContentType = "image/jpeg";
+            else if (fn.EndsWith(".png")) fileContentType = "image/png";
+            else if (fn.EndsWith(".gif")) fileContentType = "image/gif";
+            else if (fn.EndsWith(".webp")) fileContentType = "image/webp";
+            else if (fn.EndsWith(".pdf")) fileContentType = "application/pdf";
+            else if (string.Equals(latestUpload.Kind, "image", StringComparison.OrdinalIgnoreCase))
+                fileContentType = "image/jpeg";
+        }
+
+        AgentSkillService.AgentSkillRecord? matchedSkill = null;
+        try
+        {
+            var skillMatch = await _skillMatcher.MatchAsync(request.CompanyCode, request.Message ?? "", fileContentType, "web", ct);
+            if (skillMatch is not null && skillMatch.Score >= 0.3)
+            {
+                matchedSkill = skillMatch.Skill;
+                _logger.LogInformation("[AgentKit] Skill 匹配: skill={SkillKey}, score={Score:F2}, reason={Reason}",
+                    matchedSkill.SkillKey, skillMatch.Score, skillMatch.Reason);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[AgentKit] Skill 匹配异常");
+        }
+        // 无匹配时加载 general_assistant 兜底 Skill
+        matchedSkill ??= await _skillMatcher.GetSkillAsync(request.CompanyCode, "general_assistant", ct);
+        if (matchedSkill is null)
+        {
+            _logger.LogError("[AgentKit] 严重错误：general_assistant Skill 未找到，请确认数据库种子数据已导入");
+            throw new InvalidOperationException("系统配置错误：未找到通用助手技能，请联系管理员。");
+        }
+        _logger.LogInformation("[AgentKit] 最终使用 Skill: {SkillKey}", matchedSkill.SkillKey);
+        // === Skill 匹配结束 ===
+
         var storedDocumentSessionId = await GetSessionActiveDocumentAsync(sessionId, ct);
         var historySince = latestUpload?.CreatedAt;
         var history = await LoadHistoryAsync(sessionId, historySince, 20, request.TaskId, ct);
+        // allScenarios 仅用于 AgentExecutionContext 构造（后续可完全移除）
         var allScenarios = await _scenarioService.ListActiveAsync(request.CompanyCode, ct);
-        var accountingRules = (await _ruleService.ListAsync(request.CompanyCode, includeInactive: false, ct)).Take(20).ToArray();
         var selectedScenarios = SelectScenariosForMessage(allScenarios, request.ScenarioKey, request.Message);
 
         var documentLabelEntries = latestUpload is not null
@@ -282,14 +366,53 @@ public sealed class AgentKitService
             tokens["activeDocumentSessionId"] = activeDocumentSessionId;
         }
 
-        var messages = BuildInitialMessages(request.CompanyCode, selectedScenarios, accountingRules, history, tokens, language);
+        // === 纯 Skill 驱动的 Prompt 构建（无回退） ===
+        var activeSkillKey = matchedSkill.SkillKey;
+        var modelCfg = SkillPromptBuilder2.GetModelConfig(matchedSkill);
+        var activeSkillModel = modelCfg.Model;
+        var activeSkillTemperature = modelCfg.Temperature;
+        var activeSkillEnabledTools = matchedSkill.EnabledTools;
+        var activeSkillExtractionPrompt = matchedSkill.ExtractionPrompt;
 
-        // === AI Skills Phase 1: 注入历史模式增强上下文（用户消息模式）===
-        if (primaryDoc?.Analysis is JsonObject msgAnalysis)
+        // 构建历史上下文（用于 {history} 模板变量）
+        string? historicalContext = null;
+        if (primaryDoc?.Analysis is JsonObject skillAnalysis)
         {
             try
             {
-                var enriched = await _skillContextBuilder.BuildInvoiceContextAsync(request.CompanyCode, msgAnalysis, language, ct);
+                var enriched = await BuildSkillContextAsync(activeSkillKey, request.CompanyCode, skillAnalysis, language, ct);
+                var hc = new StringBuilder();
+                if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints)) hc.Append(enriched.HistoricalHints);
+                if (!string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions)) hc.Append(enriched.ConfidenceInstructions);
+                historicalContext = hc.Length > 0 ? hc.ToString() : null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[AgentKit] 构建历史上下文失败");
+            }
+        }
+
+        var skillSystemPrompt = await _skillPromptBuilder2.BuildSystemPromptAsync(
+            matchedSkill, request.CompanyCode, language, historicalContext, ct);
+
+        var messages = new List<Dictionary<string, object?>>
+        {
+            new() { ["role"] = "system", ["content"] = skillSystemPrompt }
+        };
+        foreach (var (role, content) in history)
+        {
+            messages.Add(new Dictionary<string, object?> { ["role"] = role, ["content"] = content });
+        }
+
+        _logger.LogInformation("[AgentKit] 纯 Skill 模式: skill={SkillKey}, model={Model}, tools={ToolCount}",
+            activeSkillKey, activeSkillModel, activeSkillEnabledTools?.Length ?? 0);
+
+        // 注入历史模式增强上下文（所有 Skill 统一处理）
+        if (primaryDoc?.Analysis is JsonObject msgAnalysis && historicalContext is null)
+        {
+            try
+            {
+                var enriched = await BuildSkillContextAsync(activeSkillKey, request.CompanyCode, msgAnalysis, language, ct);
                 if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints) || !string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions))
                 {
                     var enrichedContent = new StringBuilder();
@@ -418,6 +541,12 @@ public sealed class AgentKitService
         });
 
         var context = new AgentExecutionContext(sessionId, request.CompanyCode, request.UserCtx, request.ApiKey, language, selectedScenarios, request.FileResolver ?? (_ => null));
+        // === 始终从 Skill 注入执行上下文 ===
+        context.SkillKey = activeSkillKey;
+        context.SkillModel = activeSkillModel;
+        context.SkillTemperature = activeSkillTemperature;
+        context.SkillEnabledTools = activeSkillEnabledTools;
+        context.SkillExtractionPrompt = activeSkillExtractionPrompt;
         foreach (var entry in documentLabelEntries)
         {
             context.AssignDocumentLabel(entry.SessionId, entry.Label);
@@ -534,9 +663,20 @@ public sealed class AgentKitService
 
         var sessionId = await EnsureSessionAsync(task.SessionId, request.CompanyCode, request.UserCtx, ct);
         var history = await LoadHistoryAsync(sessionId, null, 20, task.Id, ct);
+        // allScenarios 仅用于 AgentExecutionContext 构造（后续可完全移除）
         var allScenarios = await _scenarioService.ListActiveAsync(request.CompanyCode, ct);
-        var accountingRules = (await _ruleService.ListAsync(request.CompanyCode, includeInactive: false, ct)).Take(20).ToArray();
         var selectedScenarios = SelectScenariosForMessage(allScenarios, request.ScenarioKey, request.Message);
+
+        // === 纯 Skill 驱动：加载任务对应的 Skill（无回退） ===
+        var taskSkill = await _skillMatcher.GetSkillAsync(request.CompanyCode, "invoice_booking", ct)
+                     ?? await _skillMatcher.GetSkillAsync(request.CompanyCode, "general_assistant", ct);
+        if (taskSkill is null)
+        {
+            _logger.LogError("[AgentKit] 严重错误：任务模式未找到可用 Skill");
+            throw new InvalidOperationException("系统配置错误：未找到可用技能，请联系管理员。");
+        }
+        _logger.LogInformation("[AgentKit] 任务模式使用 Skill: {SkillKey}", taskSkill.SkillKey);
+        // === Skill 加载结束 ===
 
         var tokens = new Dictionary<string, string?>
         {
@@ -594,49 +734,67 @@ public sealed class AgentKitService
             }
         }
 
-        var messages = BuildInitialMessages(request.CompanyCode, selectedScenarios, accountingRules, history, tokens, language);
-
-        // === AI Skills Phase 1: 注入历史模式增强上下文（任务模式）===
+        // === 纯 Skill 驱动的 Prompt 构建（无回退） ===
+        string? historicalContext = null;
         try
         {
-            var enriched = await _skillContextBuilder.BuildInvoiceContextAsync(request.CompanyCode, task.Analysis as JsonObject, language, ct);
-            if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints) || !string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions))
-            {
-                var enrichedContent = new StringBuilder();
-                if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints))
-                    enrichedContent.Append(enriched.HistoricalHints);
-                if (!string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions))
-                    enrichedContent.Append(enriched.ConfidenceInstructions);
-                messages.Add(new Dictionary<string, object?>
-                {
-                    ["role"] = "system",
-                    ["content"] = enrichedContent.ToString()
-                });
-            }
+            var enriched = await BuildSkillContextAsync(taskSkill.SkillKey, request.CompanyCode, task.Analysis as JsonObject, language, ct);
+            var hc = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints)) hc.Append(enriched.HistoricalHints);
+            if (!string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions)) hc.Append(enriched.ConfidenceInstructions);
+            historicalContext = hc.Length > 0 ? hc.ToString() : null;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[AgentKit] 任务模式构建增强上下文失败，继续标准流程");
+            _logger.LogWarning(ex, "[AgentKit] 任务模式构建历史上下文失败");
         }
-        // === 增强上下文注入结束 ===
+
+        var skillSystemPrompt = await _skillPromptBuilder2.BuildSystemPromptAsync(
+            taskSkill, request.CompanyCode, language, historicalContext, ct);
+        var messages = new List<Dictionary<string, object?>>
+        {
+            new() { ["role"] = "system", ["content"] = skillSystemPrompt }
+        };
+        foreach (var (role, content) in history)
+        {
+            messages.Add(new Dictionary<string, object?> { ["role"] = role, ["content"] = content });
+        }
+
+        // 从 Skill behavior_config 读取餐饮费阈值
+        var diningAmountThreshold = 20000m;
+        var perPersonThreshold = 10000m;
+        if (taskSkill.BehaviorConfig is not null)
+        {
+            var bc = taskSkill.BehaviorConfig;
+            if (bc.TryGetPropertyValue("diningExpenseThreshold", out var detNode) && detNode is JsonValue detVal)
+            {
+                if (detVal.TryGetValue<decimal>(out var det)) diningAmountThreshold = det;
+                else if (detVal.TryGetValue<double>(out var detD)) diningAmountThreshold = (decimal)detD;
+            }
+            if (bc.TryGetPropertyValue("perPersonThreshold", out var pptNode) && pptNode is JsonValue pptVal)
+            {
+                if (pptVal.TryGetValue<decimal>(out var ppt)) perPersonThreshold = ppt;
+                else if (pptVal.TryGetValue<double>(out var pptD)) perPersonThreshold = (decimal)pptD;
+            }
+        }
 
         // 如果票据中已经识别出人数，则无需再询问人数，仅询问姓名并直接计算人均
         if (clarification is null && task.Analysis is JsonObject autoAnalysis)
         {
             var netAmount = TryGetJsonDecimal(autoAnalysis, "totalAmount") - (TryGetJsonDecimal(autoAnalysis, "taxAmount") ?? 0m);
-            if (netAmount >= 20000)
+            if (netAmount >= diningAmountThreshold)
             {
                 var detectedCount = TryGetPersonCount(autoAnalysis);
                 if (detectedCount is not null && detectedCount.Value > 0)
                 {
                     var perPerson = netAmount.Value / detectedCount.Value;
-                    var suggestedAccount = perPerson > 10000 ? "交際費" : "会議費";
+                    var suggestedAccount = perPerson > perPersonThreshold ? "交際費" : "会議費";
                     var partnerName = ReadString(autoAnalysis, "partnerName") ?? task.FileName;
                     messages.Add(new Dictionary<string, object?>
                     {
                         ["role"] = "system",
                         ["content"] =
-                            $"[SYSTEM CALCULATION] 票据中已识别用餐人数 = {detectedCount.Value}人。人均金额 = {perPerson:N0} JPY ({netAmount:N0} / {detectedCount.Value}人)。根据 10,000 JPY 规则，科目判定应为：【{suggestedAccount}】。" +
+                            $"[SYSTEM CALCULATION] 票据中已识别用餐人数 = {detectedCount.Value}人。人均金额 = {perPerson:N0} JPY ({netAmount:N0} / {detectedCount.Value}人)。根据 {perPersonThreshold:N0} JPY 规则，科目判定应为：【{suggestedAccount}】。" +
                             "请不要再询问人数，只需向用户确认“参加者氏名”。" +
                             "请调用 lookup_account 获取该科目的最新代码，并在凭证摘要中体现人数与参加者信息。" +
                             $" 凭证摘要建议：{suggestedAccount} | {partnerName} ({detectedCount.Value}人, 参加者: 未确认)"
@@ -649,14 +807,14 @@ public sealed class AgentKitService
         if (clarification is not null && task.Analysis is JsonObject analysis)
         {
             var netAmount = TryGetJsonDecimal(analysis, "totalAmount") - (TryGetJsonDecimal(analysis, "taxAmount") ?? 0m);
-            if (netAmount >= 20000)
+            if (netAmount >= diningAmountThreshold)
             {
                 // 尝试从回答中提取数字
                 var match = Regex.Match(request.Message, @"(\d+)");
                 if (match.Success && int.TryParse(match.Groups[1].Value, out var personCount) && personCount > 0)
                 {
                     var perPerson = netAmount.Value / personCount;
-                    var suggestedAccount = perPerson > 10000 ? "交際費" : "会議費";
+                    var suggestedAccount = perPerson > perPersonThreshold ? "交際費" : "会議費";
                     
                     // 尝试获取商户名
                     var partnerName = ReadString(analysis, "partnerName") ?? task.FileName;
@@ -665,7 +823,7 @@ public sealed class AgentKitService
                     {
                         ["role"] = "system",
                         ["content"] = $"[SYSTEM INFO] 当前正在处理的文件 ID 为：\"{task.FileId}\" (标签: {task.DocumentLabel ?? "无"})。如果需要再次提取数据，请务必使用此 ID。\n" + 
-                                     $"[SYSTEM CALCULATION] 人均金额 = {perPerson:N0} JPY ({netAmount:N0} / {personCount}人)。根据 10,000 JPY 规则，科目判定应为：【{suggestedAccount}】。请调用 lookup_account 获取该科目的最新代码。同时，请将凭证摘要（header.summary）更新为：「{suggestedAccount} | {partnerName} ({request.Message})」。"
+                                     $"[SYSTEM CALCULATION] 人均金额 = {perPerson:N0} JPY ({netAmount:N0} / {personCount}人)。根据 {perPersonThreshold:N0} JPY 规则，科目判定应为：【{suggestedAccount}】。请调用 lookup_account 获取该科目的最新代码。同时，请将凭证摘要（header.summary）更新为：「{suggestedAccount} | {partnerName} ({request.Message})」。"
                     });
                 }
             }
@@ -746,6 +904,15 @@ public sealed class AgentKitService
 
         var resolver = CreateTaskFileResolver(task, request.UserCtx);
         var context = new AgentExecutionContext(sessionId, request.CompanyCode, request.UserCtx, request.ApiKey, language, selectedScenarios, resolver, task.Id);
+        // === 始终从 Skill 注入执行上下文 ===
+        {
+            var taskModelCfg = SkillPromptBuilder2.GetModelConfig(taskSkill);
+            context.SkillKey = taskSkill.SkillKey;
+            context.SkillModel = taskModelCfg.Model;
+            context.SkillTemperature = taskModelCfg.Temperature;
+            context.SkillEnabledTools = taskSkill.EnabledTools;
+            context.SkillExtractionPrompt = taskSkill.ExtractionPrompt;
+        }
         context.AssignDocumentLabel(task.DocumentSessionId, task.DocumentLabel);
         var analysisClone = task.Analysis is not null ? task.Analysis.DeepClone().AsObject() : null;
         context.RegisterDocument(task.FileId, analysisClone, task.DocumentSessionId);
@@ -796,7 +963,6 @@ public sealed class AgentKitService
         var sessionId = await EnsureSessionAsync(request.SessionId, request.CompanyCode, request.UserCtx, ct);
         var history = Array.Empty<(string Role, string Content)>();
         var allScenarios = await _scenarioService.ListActiveAsync(request.CompanyCode, ct);
-        var accountingRules = (await _ruleService.ListAsync(request.CompanyCode, includeInactive: false, ct)).Take(20).ToArray();
 
         var fileRecord = request.FileResolver?.Invoke(request.FileId);
 
@@ -878,32 +1044,32 @@ public sealed class AgentKitService
             tokens["userMessage"] = request.UserMessage;
         }
 
-        var messages = BuildInitialMessages(request.CompanyCode, selectedScenarios, accountingRules, history, tokens, language);
+        // === 纯 Skill 驱动的 Prompt 构建 ===
+        string? fileContentType = request.ContentType;
+        var fileSkill = (await _skillMatcher.MatchAsync(request.CompanyCode, request.UserMessage ?? request.FileName ?? "", fileContentType, "web", ct))?.Skill;
+        fileSkill ??= await _skillMatcher.GetSkillAsync(request.CompanyCode, "invoice_booking", ct)
+                   ?? await _skillMatcher.GetSkillAsync(request.CompanyCode, "general_assistant", ct);
+        if (fileSkill is null) throw new InvalidOperationException("系统配置错误：未找到可用技能。");
 
-        // === AI Skills Phase 1: 注入历史模式增强上下文 ===
+        string? historicalCtx = null;
         try
         {
-            var enriched = await _skillContextBuilder.BuildInvoiceContextAsync(request.CompanyCode, parsedData, language, ct);
-            if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints) || !string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions))
-            {
-                var enrichedContent = new StringBuilder();
-                if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints))
-                    enrichedContent.Append(enriched.HistoricalHints);
-                if (!string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions))
-                    enrichedContent.Append(enriched.ConfidenceInstructions);
-                messages.Add(new Dictionary<string, object?>
-                {
-                    ["role"] = "system",
-                    ["content"] = enrichedContent.ToString()
-                });
-                _logger.LogInformation("[AgentKit] 已注入增强上下文, confidence={Confidence:F2}", enriched.EstimatedConfidence);
-            }
+            var enriched = await BuildSkillContextAsync(fileSkill.SkillKey, request.CompanyCode, parsedData, language, ct);
+            var hcBuf = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints)) hcBuf.Append(enriched.HistoricalHints);
+            if (!string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions)) hcBuf.Append(enriched.ConfidenceInstructions);
+            historicalCtx = hcBuf.Length > 0 ? hcBuf.ToString() : null;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[AgentKit] 构建增强上下文失败，继续使用标准流程");
+            _logger.LogWarning(ex, "[AgentKit] 文件模式构建历史上下文失败");
         }
-        // === 增强上下文注入结束 ===
+        var fileSystemPrompt = await _skillPromptBuilder2.BuildSystemPromptAsync(fileSkill, request.CompanyCode, language, historicalCtx, ct);
+        var messages = new List<Dictionary<string, object?>>
+        {
+            new() { ["role"] = "system", ["content"] = fileSystemPrompt }
+        };
+        _logger.LogInformation("[AgentKit] 文件模式使用 Skill: {SkillKey}", fileSkill.SkillKey);
 
         var highlight = BuildAnalysisHighlight(parsedData, language);
         var summaryBuilder = new StringBuilder();
@@ -934,6 +1100,15 @@ public sealed class AgentKitService
         var context = new AgentExecutionContext(sessionId, request.CompanyCode, request.UserCtx, request.ApiKey, language,
             selectedScenarios,
             request.FileResolver ?? (_ => null));
+        // 始终从 Skill 注入
+        {
+            var fmc = SkillPromptBuilder2.GetModelConfig(fileSkill);
+            context.SkillKey = fileSkill.SkillKey;
+            context.SkillModel = fmc.Model;
+            context.SkillTemperature = fmc.Temperature;
+            context.SkillEnabledTools = fileSkill.EnabledTools;
+            context.SkillExtractionPrompt = fileSkill.ExtractionPrompt;
+        }
         context.AssignDocumentLabel(documentSessionId, documentLabel);
         if (parsedData is not null)
         {
@@ -2056,6 +2231,7 @@ public sealed class AgentKitService
         return new UploadContext(kind ?? "user.upload", createdAtOffset, docs, activeDocumentSessionId);
     }
 
+    [Obsolete("仅供 PreviewScenariosAsync 使用。核心流程已迁移至 SkillPromptBuilder2.BuildSystemPromptAsync")]
     private static List<Dictionary<string, object?>> BuildInitialMessages(
         string companyCode,
         IReadOnlyList<AgentScenarioService.AgentScenario> scenarios,
@@ -2097,6 +2273,7 @@ public sealed class AgentKitService
         return messages;
     }
 
+    [Obsolete("仅供 PreviewScenariosAsync 使用。核心流程已迁移至 SkillPromptBuilder2.BuildSystemPromptAsync")]
     private static string BuildSystemPrompt(
         string companyCode,
         IReadOnlyList<AgentScenarioService.AgentScenario> scenarios,
@@ -2969,7 +3146,6 @@ public sealed class AgentKitService
         var language = NormalizeLanguage(request.Language);
         var allMessages = new List<AgentResultMessage>();
         var scenarios = await _scenarioService.ListActiveAsync(request.CompanyCode, ct);
-        var accountingRules = (await _ruleService.ListAsync(request.CompanyCode, includeInactive: false, ct)).Take(20).ToArray();
         var clarification = request.Clarification;
         if (clarification is not null)
         {
@@ -3083,7 +3259,47 @@ public sealed class AgentKitService
                 if (!string.IsNullOrWhiteSpace(clarification.DocumentLabel)) tokens["answerDocumentLabel"] = clarification.DocumentLabel;
             }
 
-            var messages = BuildInitialMessages(request.CompanyCode, new[] { scenarioDef }, accountingRules, Array.Empty<(string Role, string Content)>(), tokens, language);
+            // === 纯 Skill 驱动 Prompt 构建（含学习上下文注入） ===
+            var groupSkill = await _skillMatcher.GetSkillAsync(request.CompanyCode, "invoice_booking", ct)
+                          ?? await _skillMatcher.GetSkillAsync(request.CompanyCode, "general_assistant", ct);
+            List<Dictionary<string, object?>> messages;
+            if (groupSkill is not null)
+            {
+                // 从任务组的文档中提取解析数据，构建学习上下文
+                string? groupHistoricalCtx = null;
+                try
+                {
+                    JsonObject? groupParsedData = null;
+                    foreach (var docId in plan.DocumentIds)
+                    {
+                        var doc = request.Documents.FirstOrDefault(d => string.Equals(d.FileId, docId, StringComparison.OrdinalIgnoreCase));
+                        if (doc?.Data is not null)
+                        {
+                            groupParsedData = doc.Data;
+                            break;
+                        }
+                    }
+                    if (groupParsedData is not null)
+                    {
+                        var enriched = await BuildSkillContextAsync(groupSkill?.SkillKey ?? "invoice_booking", request.CompanyCode, groupParsedData, language, ct);
+                        var hcBuf = new StringBuilder();
+                        if (!string.IsNullOrWhiteSpace(enriched.HistoricalHints)) hcBuf.Append(enriched.HistoricalHints);
+                        if (!string.IsNullOrWhiteSpace(enriched.ConfidenceInstructions)) hcBuf.Append(enriched.ConfidenceInstructions);
+                        groupHistoricalCtx = hcBuf.Length > 0 ? hcBuf.ToString() : null;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[AgentKit] 任务组构建历史上下文失败");
+                }
+                var gsPrompt = await _skillPromptBuilder2.BuildSystemPromptAsync(groupSkill, request.CompanyCode, language, groupHistoricalCtx, ct);
+                messages = new List<Dictionary<string, object?>> { new() { ["role"] = "system", ["content"] = gsPrompt } };
+            }
+            else
+            {
+                // 安全回退：理论上不应到达此处
+                messages = new List<Dictionary<string, object?>> { new() { ["role"] = "system", ["content"] = "你是 ERP 系统助手。" } };
+            }
 
             var summaryBuilder = new StringBuilder();
             var includeClarification = clarification is not null &&
@@ -3207,6 +3423,16 @@ public sealed class AgentKitService
             };
 
             var context = new AgentExecutionContext(request.SessionId, request.CompanyCode, request.UserCtx, request.ApiKey, language, new[] { scenarioDef }, resolver, taskInfo?.TaskId);
+            // 从 Skill 注入执行上下文
+            if (groupSkill is not null)
+            {
+                var gmc = SkillPromptBuilder2.GetModelConfig(groupSkill);
+                context.SkillKey = groupSkill.SkillKey;
+                context.SkillModel = gmc.Model;
+                context.SkillTemperature = gmc.Temperature;
+                context.SkillEnabledTools = groupSkill.EnabledTools;
+                context.SkillExtractionPrompt = groupSkill.ExtractionPrompt;
+            }
             foreach (var entry in documentLabelEntries)
             {
                 context.AssignDocumentLabel(entry.SessionId, entry.Label);
@@ -3322,14 +3548,40 @@ public sealed class AgentKitService
         var http = _httpClientFactory.CreateClient("openai");
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", context.ApiKey);
 
-        var tools = BuildToolDefinitions();
+        var allTools = BuildToolDefinitions();
+        // Filter tools if skill specifies enabled_tools
+        object[] tools;
+        if (context.SkillEnabledTools is { Length: > 0 })
+        {
+            var enabledSet = new HashSet<string>(context.SkillEnabledTools, StringComparer.OrdinalIgnoreCase);
+            tools = allTools.Where(t =>
+            {
+                try
+                {
+                    var json = JsonSerializer.Serialize(t, JsonOptions);
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.TryGetProperty("function", out var fn) && fn.TryGetProperty("name", out var name))
+                        return enabledSet.Contains(name.GetString() ?? "");
+                }
+                catch { }
+                return true; // keep if cannot determine
+            }).ToArray();
+        }
+        else
+        {
+            tools = allTools;
+        }
+
+        // Skill 模式始终提供 model/temperature，?? 仅为编译安全
+        var agentModel = context.SkillModel ?? "gpt-4o";
+        var agentTemp = context.SkillTemperature ?? 0.1;
 
         for (var step = 0; step < 8; step++)
         {
             var requestBody = new
             {
-                model = "gpt-4o",
-                temperature = 0.1,
+                model = agentModel,
+                temperature = agentTemp,
                 tool_choice = "auto",
                 messages = openAiMessages,
                 tools
@@ -4382,14 +4634,27 @@ public sealed class AgentKitService
         // === AI Skills Phase 1: 记录凭证创建事件，供学习引擎使用 ===
         try
         {
+            // 从解析数据中提取品类和供应商信息
+            string? extractedCategory = null;
+            string? extractedVendor = null;
+            var defaultFileId = context.DefaultFileId;
+            if (!string.IsNullOrWhiteSpace(defaultFileId) && context.TryGetDocument(defaultFileId, out var parsedDoc) && parsedDoc is not null)
+            {
+                extractedCategory = parsedDoc.TryGetPropertyValue("category", out var catNode) && catNode is JsonValue catVal && catVal.TryGetValue<string>(out var catStr) ? catStr : null;
+                extractedVendor = parsedDoc.TryGetPropertyValue("partnerName", out var vnNode) && vnNode is JsonValue vnVal && vnVal.TryGetValue<string>(out var vnStr) ? vnStr : null;
+            }
+
             var learningContext = new JsonObject
             {
                 ["voucherId"] = voucherId.ToString(),
                 ["voucherNo"] = voucherNo,
-                ["vendorName"] = headerNode?["summary"]?.GetValue<string>()
+                ["vendorName"] = extractedVendor ?? headerNode?["summary"]?.GetValue<string>(),
+                ["category"] = extractedCategory,
+                ["summary"] = headerNode?["summary"]?.GetValue<string>()
             };
-            // 提取借方贷方科目信息
+            // 提取借方贷方科目信息（含科目名称）
             string? debitAccount = null, creditAccount = null;
+            string? debitAccountName = null, creditAccountName = null;
             if (root["lines"] is JsonArray learningLines)
             {
                 foreach (var l in learningLines)
@@ -4398,17 +4663,26 @@ public sealed class AgentKitService
                     {
                         var drcr = lo["drcr"]?.GetValue<string>();
                         var acctCode = lo["accountCode"]?.GetValue<string>();
+                        var acctName = lo["accountName"]?.GetValue<string>();
                         if (string.Equals(drcr, "DR", StringComparison.OrdinalIgnoreCase) && debitAccount == null)
+                        {
                             debitAccount = acctCode;
+                            debitAccountName = acctName;
+                        }
                         else if (string.Equals(drcr, "CR", StringComparison.OrdinalIgnoreCase) && creditAccount == null)
+                        {
                             creditAccount = acctCode;
+                            creditAccountName = acctName;
+                        }
                     }
                 }
             }
             var aiOutput = new JsonObject
             {
                 ["debitAccount"] = debitAccount,
+                ["debitAccountName"] = debitAccountName,
                 ["creditAccount"] = creditAccount,
+                ["creditAccountName"] = creditAccountName,
                 ["summary"] = headerNode?["summary"]?.GetValue<string>()
             };
             await _learningCollector.RecordVoucherCreationAsync(
@@ -4418,12 +4692,48 @@ public sealed class AgentKitService
                 learningContext,
                 aiOutput,
                 ct);
+
+            // === 即时学习：将品类→科目和供应商→科目映射写入 ai_learned_patterns ===
+            if (!string.IsNullOrWhiteSpace(debitAccount) && !string.IsNullOrWhiteSpace(creditAccount))
+            {
+                if (!string.IsNullOrWhiteSpace(extractedCategory))
+                {
+                    await _learningCollector.UpsertCategoryPatternAsync(
+                        context.CompanyCode, extractedCategory, debitAccount, debitAccountName, creditAccount, creditAccountName, ct);
+                }
+                var vendor = extractedVendor ?? headerNode?["summary"]?.GetValue<string>();
+                if (!string.IsNullOrWhiteSpace(vendor))
+                {
+                    await _learningCollector.UpsertVendorPatternAsync(
+                        context.CompanyCode, vendor, debitAccount, debitAccountName, creditAccount, creditAccountName, ct);
+                }
+            }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[AgentKit] 记录学习事件失败（不影响凭证创建）");
         }
         // === 学习事件记录结束 ===
+
+        // === Context Engine: 记录凭证创建到上下文 ===
+        try
+        {
+            if (context.SessionId != Guid.Empty && !string.IsNullOrWhiteSpace(voucherNo))
+            {
+                await _skillRouter.RecordActionAsync(
+                    context.SessionId, context.CompanyCode,
+                    context.UserCtx?.UserId ?? "", "web",
+                    "invoice.booking", context.TaskId,
+                    new Infrastructure.Skills.BusinessObjectRef("voucher", voucherNo, $"伝票 {voucherNo}"),
+                    ct);
+                _logger.LogInformation("[AgentKit] Context Engine: 记录凭证 {VoucherNo} 到上下文", voucherNo);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[AgentKit] Context Engine 记录失败（不影响凭证创建）");
+        }
+        // === Context Engine 结束 ===
 
         var message = new AgentResultMessage("assistant", content, "success", tag);
 
@@ -4532,8 +4842,20 @@ public sealed class AgentKitService
             userContent.Add(new { type = "image_url", image_url = new { url = $"data:{ctType};base64,{base64}" } });
         }
 
-        var extractPrompt = string.Equals(context.Language, "zh", StringComparison.OrdinalIgnoreCase)
-            ? @"你是会计票据解析助手。根据用户提供的票据（可能是图片或文字），请输出一个 JSON，字段包括：
+        // === 从 Skill 配置读取 extraction_prompt ===
+        string extractPrompt;
+        if (!string.IsNullOrWhiteSpace(context.SkillExtractionPrompt))
+        {
+            extractPrompt = context.SkillExtractionPrompt;
+        }
+        else
+        {
+            _logger.LogWarning("[AgentKit] Skill '{SkillKey}' 未配置 extraction_prompt，使用通用解析指令", context.SkillKey);
+            extractPrompt = "请从上传的文件中提取所有结构化信息，输出为 JSON 格式。若无法识别某字段，返回空字符串或 0。";
+            /* 旧硬编码已移至 seed_agent_skills.sql 中 invoice_booking Skill 的 extraction_prompt */
+#if false // 以下硬编码保留为注释，仅供参考 —— 实际运行时不会执行
+            extractPrompt = string.Equals(context.Language, "zh", StringComparison.OrdinalIgnoreCase)
+                ? @"你是会计票据解析助手。根据用户提供的票据（可能是图片或文字），请输出一个 JSON，字段包括：
 - documentType: 文档类型，诸如 'invoice'、'receipt'；
 - category: 发票类别（必须从 'dining'、'transportation'、'misc' 中选择其一）。请基于票据内容判断：餐饮/会食相关取 'dining'，交通费（乘车券、出租车、高速费、停车等）取 'transportation'，其余杂费取 'misc'；
 - issueDate: 开票或消费日期，格式 YYYY-MM-DD；
@@ -4577,10 +4899,30 @@ public sealed class AgentKitService
 - 昭和元年 = 1926年（昭和N年 = 1925 + N 年）
 
 判別できない項目は空文字または 0 を返し、決して推測で値を作らないこと。category は必ず上記のいずれかを設定してください。";
+#endif
+        }
+
+        // 从 Skill model_config 读取 extractionModel，否则按文件类型选择
+        var extractionModel = "gpt-4o";
+        if (context.SkillKey is not null)
+        {
+            // 尝试从 model_config 读取 extractionModel
+            try
+            {
+                var skill = await _skillMatcher.GetSkillAsync(context.CompanyCode, context.SkillKey, ct);
+                if (skill?.ModelConfig is not null && skill.ModelConfig.TryGetPropertyValue("extractionModel", out var emNode))
+                {
+                    var em = emNode?.GetValue<string>();
+                    if (!string.IsNullOrWhiteSpace(em)) extractionModel = em;
+                }
+            }
+            catch { /* 静默失败，使用默认 */ }
+        }
+        if (string.IsNullOrWhiteSpace(base64)) extractionModel = "gpt-4o-mini"; // 无图片时用轻量模型
 
         var body = new
         {
-            model = string.IsNullOrWhiteSpace(base64) ? "gpt-4o-mini" : "gpt-4o",
+            model = extractionModel,
             temperature = 0.1,
             response_format = new { type = "json_object" },
             messages = new object[]
@@ -5495,6 +5837,25 @@ public sealed class AgentKitService
             key = "vouchers.list",
             payload = new { voucherNo, detailOnly = true }
         };
+
+        // === Context Engine: 记录凭证修改到上下文 ===
+        try
+        {
+            if (context.SessionId != Guid.Empty && !string.IsNullOrWhiteSpace(voucherNo))
+            {
+                await _skillRouter.RecordActionAsync(
+                    context.SessionId, context.CompanyCode,
+                    context.UserCtx?.UserId ?? "", "web",
+                    "invoice.booking", context.TaskId,
+                    new Infrastructure.Skills.BusinessObjectRef("voucher", voucherNo, $"伝票 {voucherNo}"),
+                    ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[AgentKit] Context Engine 记录凭证修改失败");
+        }
+        // === Context Engine 结束 ===
 
         var message = new AgentResultMessage("assistant", content, "success", tag);
         var modelPayload = new
@@ -6615,6 +6976,14 @@ public sealed class AgentKitService
         public IReadOnlyDictionary<string, string> DocumentSessionLabels => _documentSessionLabels;
         public Guid? TaskId => _taskId;
 
+        // === Unified Agent Skills overrides ===
+        /// <summary>When set, RunAgentAsync uses these values instead of hardcoded defaults</summary>
+        public string? SkillModel { get; set; }
+        public double? SkillTemperature { get; set; }
+        public string[]? SkillEnabledTools { get; set; }
+        public string? SkillKey { get; set; }
+        public string? SkillExtractionPrompt { get; set; }
+
         public UploadedFileRecord? ResolveFile(string fileId) => _fileResolver(fileId);
 
         public void RegisterDocument(string? fileId, JsonObject? parsedData, string? documentSessionId = null)
@@ -6814,6 +7183,19 @@ public sealed class AgentKitService
     internal async Task LogAssistantMessageAsync(Guid sessionId, AgentResultMessage message, Guid? taskId, CancellationToken ct)
     {
         await PersistAssistantMessagesAsync(sessionId, taskId, new[] { message }, ct);
+    }
+
+    /// <summary>
+    /// 根据 skill_key 分发上下文构建：发票用 BuildInvoiceContextAsync，银行明细用 BuildBankContextAsync，其他走发票默认。
+    /// </summary>
+    private async Task<SkillContextBuilder.EnrichedContext> BuildSkillContextAsync(
+        string skillKey, string companyCode, JsonObject? analysisData, string language, CancellationToken ct)
+    {
+        return skillKey switch
+        {
+            "bank_auto_booking" => await _skillContextBuilder.BuildBankContextAsync(companyCode, analysisData, language, ct),
+            _ => await _skillContextBuilder.BuildInvoiceContextAsync(companyCode, analysisData, language, ct)
+        };
     }
 }
 

@@ -47,6 +47,7 @@ export interface Messages {
     workflowRules: string
     agentScenarios: string
     agentRules: string
+    agentSkills: string
     inventory: string
     inventoryMaterials: string
     inventoryMaterialNew: string
@@ -867,6 +868,7 @@ export const ja: Messages = {
     workflowRules: 'ワークフロールール',
     agentScenarios: 'エージェントシナリオ',
     agentRules: 'AI会計ルール',
+    agentSkills: 'AIスキル管理',
     inventory: '在庫管理',
     inventoryMaterials: '品目一覧',
     inventoryMaterialNew: '品目登録',
@@ -1897,6 +1899,7 @@ export const en: Messages = {
     workflowRules: 'Workflow Rules',
     agentScenarios: 'Agent Scenarios',
     agentRules: 'AI Accounting Rules',
+    agentSkills: 'AI Skill Management',
     inventory: 'Inventory',
     inventoryMaterials: 'Materials',
     inventoryMaterialNew: 'New Material',
@@ -2933,6 +2936,7 @@ zh.nav = {
   workflowRules: '工作流规则',
   agentScenarios: '智能代理场景',
   agentRules: 'AI 会计规则',
+  agentSkills: 'AI 技能管理',
   inventory: '库存管理',
   inventoryMaterials: '物料列表',
   inventoryMaterialNew: '新建物料',

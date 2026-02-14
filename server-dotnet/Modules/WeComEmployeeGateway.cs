@@ -1,8 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using Server.Infrastructure;
 using Server.Infrastructure.Skills;
 
 namespace Server.Modules;
@@ -26,6 +28,7 @@ public class WeComEmployeeGateway
     private readonly WeComNotificationService _wecomService;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly TimesheetAiParser _timesheetParser;
+    private readonly IServiceProvider _serviceProvider;
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web)
     {
@@ -40,7 +43,8 @@ public class WeComEmployeeGateway
         WeComIntentClassifier intentClassifier,
         WeComNotificationService wecomService,
         IHttpClientFactory httpClientFactory,
-        TimesheetAiParser timesheetParser)
+        TimesheetAiParser timesheetParser,
+        IServiceProvider serviceProvider)
     {
         _logger = logger;
         _ds = ds;
@@ -49,6 +53,7 @@ public class WeComEmployeeGateway
         _wecomService = wecomService;
         _httpClientFactory = httpClientFactory;
         _timesheetParser = timesheetParser;
+        _serviceProvider = serviceProvider;
     }
 
     /// <summary>
@@ -57,62 +62,446 @@ public class WeComEmployeeGateway
     public async Task<EmployeeGatewayResponse> HandleEmployeeMessageAsync(
         string companyCode, WeComMessage message, CancellationToken ct)
     {
-        var userId = message.FromUser;
+        var channelUserId = message.FromUser;
         _logger.LogInformation("[EmployeeGW] 收到员工消息: user={User}, type={Type}, content={Content}",
-            userId, message.MsgType, message.Content?.Length > 50 ? message.Content[..50] + "..." : message.Content);
+            channelUserId, message.MsgType, message.Content?.Length > 50 ? message.Content[..50] + "..." : message.Content);
 
         try
         {
-            // 1. 获取或创建会话 + 关联员工信息
-            var session = await GetOrCreateSessionAsync(companyCode, userId, ct);
+            // 1. 身份解析 → 查绑定表 + 加载权限
+            var session = await GetOrCreateSessionAsync(companyCode, channelUserId, ct);
 
-            // 2. 保存入站消息
-            await SaveMessageAsync(session.Id, companyCode, userId, "in", message.MsgType,
+            // 2. 未绑定 → 进入绑定引导流程
+            if (!session.IsBound)
+            {
+                var bindReply = await HandleBindingFlowAsync(companyCode, session, message, ct);
+                if (_wecomService.IsConfigured)
+                    await _wecomService.SendTextMessageAsync(bindReply, channelUserId, ct);
+                return new EmployeeGatewayResponse("binding", bindReply, session.Id);
+            }
+
+            // 3. 保存入站消息（密码消息不保存）
+            await SaveMessageAsync(session.Id, companyCode, channelUserId, "in", message.MsgType,
                 message.Content, null, null, ct);
 
-            // 3. 意图分类
+            // 4. 意图分类
             var intent = await _intentClassifier.ClassifyAsync(
                 message.Content ?? "", message.MsgType, session.CurrentIntent, ct);
 
             _logger.LogInformation("[EmployeeGW] 意图分类: intent={Intent}, confidence={Confidence:F2}",
                 intent.Intent, intent.Confidence);
 
-            // 4. 路由到对应处理器
+            // 5. 权限守卫 → 检查用户是否有执行该意图的能力
+            var permissionCheck = CheckPermission(session, intent.Intent);
+            if (!permissionCheck.Allowed)
+            {
+                var denyReply = permissionCheck.Message;
+                await SaveMessageAsync(session.Id, companyCode, channelUserId, "out", "text",
+                    denyReply, "permission_denied", null, ct);
+                if (_wecomService.IsConfigured)
+                    await _wecomService.SendTextMessageAsync(denyReply, channelUserId, ct);
+                return new EmployeeGatewayResponse("permission_denied", denyReply, session.Id);
+            }
+
+            // 6. 路由到对应处理器
             var reply = await RouteIntentAsync(companyCode, session, message, intent, ct);
 
-            // 5. 保存出站消息
-            await SaveMessageAsync(session.Id, companyCode, userId, "out", "text",
+            // 空回复 → 静默处理（如批次聚合中的非首张图片）
+            if (string.IsNullOrEmpty(reply))
+            {
+                return new EmployeeGatewayResponse(intent.Intent, "", session.Id);
+            }
+
+            // 7. 保存出站消息
+            await SaveMessageAsync(session.Id, companyCode, channelUserId, "out", "text",
                 reply, intent.Intent, null, ct);
 
-            // 6. 更新会话状态
+            // 8. 更新会话状态
             await UpdateSessionAsync(session, intent, ct);
 
-            // 7. 发送回复
+            // 9. 发送回复
             if (_wecomService.IsConfigured)
             {
-                await _wecomService.SendTextMessageAsync(reply, userId, ct);
+                await _wecomService.SendTextMessageAsync(reply, channelUserId, ct);
             }
 
             return new EmployeeGatewayResponse(intent.Intent, reply, session.Id);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[EmployeeGW] 处理消息失败: user={User}", userId);
+            _logger.LogError(ex, "[EmployeeGW] 处理消息失败: user={User}", channelUserId);
             var errorReply = "抱歉，系统暂时出现了问题，请稍后再试。如有紧急事项，请联系管理员。";
             if (_wecomService.IsConfigured)
             {
-                try { await _wecomService.SendTextMessageAsync(errorReply, userId, ct); } catch { /* 忽略 */ }
+                try { await _wecomService.SendTextMessageAsync(errorReply, channelUserId, ct); } catch { /* 忽略 */ }
             }
             return new EmployeeGatewayResponse("error", errorReply, null);
         }
     }
+
+    // ==================== 绑定引导流程 ====================
+
+    /// <summary>
+    /// 处理未绑定用户的自助绑定流程
+    /// 状态机：null → awaiting_employee_code → awaiting_password → bound
+    /// </summary>
+    private async Task<string> HandleBindingFlowAsync(
+        string companyCode, EmployeeSession session, WeComMessage message, CancellationToken ct)
+    {
+        var text = (message.Content ?? "").Trim();
+        var bindState = session.SessionState?["bind_step"]?.GetValue<string>();
+
+        // 检查是否被锁定
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        await using var cmdLock = conn.CreateCommand();
+        cmdLock.CommandText = @"
+            SELECT bind_fail_count, bind_locked_until 
+            FROM employee_channel_bindings 
+            WHERE channel = 'wecom' AND channel_user_id = $1 AND status = 'pending'
+            ORDER BY created_at DESC LIMIT 1";
+        cmdLock.Parameters.AddWithValue(session.WeComUserId);
+        await using var lockReader = await cmdLock.ExecuteReaderAsync(ct);
+        if (await lockReader.ReadAsync(ct))
+        {
+            var failCount = lockReader.GetInt32(0);
+            var lockedUntil = lockReader.IsDBNull(1) ? (DateTimeOffset?)null : lockReader.GetFieldValue<DateTimeOffset>(1);
+            if (lockedUntil.HasValue && lockedUntil.Value > DateTimeOffset.UtcNow)
+            {
+                await lockReader.CloseAsync();
+                return $"验证失败次数过多，已锁定至 {lockedUntil.Value.ToOffset(TimeSpan.FromHours(9)):HH:mm}。\n请联系管理员处理。";
+            }
+        }
+        await lockReader.CloseAsync();
+
+        // 状态机
+        switch (bindState)
+        {
+            case "awaiting_password":
+            {
+                // 用户输入的是密码 → 验证
+                var pendingCode = session.SessionState?["pending_employee_code"]?.GetValue<string>();
+                if (string.IsNullOrEmpty(pendingCode))
+                {
+                    await UpdateSessionStateAsync(session, "binding", new JsonObject(), ct);
+                    return "会话已过期，请重新发送：绑定 您的工号\n例如：绑定 E1106";
+                }
+
+                return await VerifyPasswordAndBindAsync(companyCode, session, pendingCode, text, ct);
+            }
+            default:
+            {
+                // 检查是否是"绑定 XXX"格式
+                var bindMatch = System.Text.RegularExpressions.Regex.Match(
+                    text, @"^(?:绑定|バインド|bind)\s+(\S+)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                if (bindMatch.Success)
+                {
+                    var employeeCode = bindMatch.Groups[1].Value;
+                    return await StartBindingAsync(companyCode, session, employeeCode, ct);
+                }
+
+                // 首次交互 / 其他消息 → 引导绑定
+                return "您好！首次使用需要绑定员工账号。\n\n请发送：绑定 您的工号\n例如：绑定 E1106\n\n如果您不知道自己的工号，请联系管理员。";
+            }
+        }
+    }
+
+    /// <summary>
+    /// 开始绑定流程 - 查找员工并要求输入密码
+    /// </summary>
+    private async Task<string> StartBindingAsync(
+        string companyCode, EmployeeSession session, string employeeCode, CancellationToken ct)
+    {
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT id, name, dept_id FROM users 
+            WHERE company_code = $1 AND employee_code = $2 AND is_active = true
+            LIMIT 1";
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue(employeeCode);
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            await reader.CloseAsync();
+            return $"未找到工号 {employeeCode} 对应的账号。\n请检查工号是否正确，或联系管理员。\n\n重新输入：绑定 您的工号";
+        }
+
+        var userId = reader.GetGuid(0);
+        var name = reader.IsDBNull(1) ? "従業員" : reader.GetString(1);
+        var deptId = reader.IsDBNull(2) ? null : reader.GetString(2);
+        await reader.CloseAsync();
+
+        // 姓名脱敏：田中太郎 → 田*太郎
+        var maskedName = name.Length > 2
+            ? name[0] + new string('*', name.Length - 2) + name[^1]
+            : name.Length == 2 ? name[0] + "*" : name;
+
+        // 查找部门名
+        string? deptName = null;
+        if (!string.IsNullOrEmpty(deptId))
+        {
+            await using var cmdDept = conn.CreateCommand();
+            cmdDept.CommandText = @"SELECT name FROM departments WHERE company_code = $1 AND department_code = $2 LIMIT 1";
+            cmdDept.Parameters.AddWithValue(companyCode);
+            cmdDept.Parameters.AddWithValue(deptId);
+            var dn = await cmdDept.ExecuteScalarAsync(ct);
+            deptName = dn as string;
+        }
+
+        // 保存待绑定状态
+        var state = new JsonObject
+        {
+            ["bind_step"] = "awaiting_password",
+            ["pending_employee_code"] = employeeCode,
+            ["pending_user_id"] = userId.ToString()
+        };
+        await UpdateSessionStateAsync(session, "binding", state, ct);
+
+        var deptInfo = !string.IsNullOrEmpty(deptName) ? $"（所属：{deptName}）" : "";
+        return $"找到员工：{maskedName}{deptInfo}\n\n确认是您本人吗？请发送您的系统登录密码进行验证。\n\n（密码仅用于一次性验证，不会被保存）";
+    }
+
+    /// <summary>
+    /// 验证密码并完成绑定
+    /// </summary>
+    private async Task<string> VerifyPasswordAndBindAsync(
+        string companyCode, EmployeeSession session, string employeeCode, string password, CancellationToken ct)
+    {
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+
+        // 查找用户和密码哈希
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT id, password_hash, name, employee_id FROM users 
+            WHERE company_code = $1 AND employee_code = $2 AND is_active = true
+            LIMIT 1";
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue(employeeCode);
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            await reader.CloseAsync();
+            await ClearSessionStateAsync(session, ct);
+            return "账号信息异常，请重新发送：绑定 您的工号";
+        }
+
+        var userId = reader.GetGuid(0);
+        var hash = reader.GetString(1);
+        var name = reader.IsDBNull(2) ? "従業員" : reader.GetString(2);
+        var employeeId = reader.IsDBNull(3) ? (Guid?)null : reader.GetGuid(3);
+        await reader.CloseAsync();
+
+        // BCrypt 验证密码
+        if (!BCrypt.Net.BCrypt.Verify(password, hash))
+        {
+            // 在 session_state 中维护失败计数（简单可靠）
+            var currentFail = session.SessionState?["bind_fail_count"]?.GetValue<int>() ?? 0;
+            currentFail++;
+
+            if (currentFail >= 3)
+            {
+                // 锁定：在绑定表中插入锁定记录
+                await using var cmdLockInsert = conn.CreateCommand();
+                cmdLockInsert.CommandText = @"
+                    INSERT INTO employee_channel_bindings 
+                    (company_code, user_id, channel, channel_user_id, status, bind_fail_count, bind_locked_until, bind_method)
+                    VALUES ($1, $2, 'wecom', $3, 'pending', $4, now() + interval '24 hours', 'self_service')
+                    ON CONFLICT DO NOTHING";
+                cmdLockInsert.Parameters.AddWithValue(companyCode);
+                cmdLockInsert.Parameters.AddWithValue(userId);
+                cmdLockInsert.Parameters.AddWithValue(session.WeComUserId);
+                cmdLockInsert.Parameters.AddWithValue(currentFail);
+                await cmdLockInsert.ExecuteNonQueryAsync(ct);
+
+                await ClearSessionStateAsync(session, ct);
+                return "验证失败次数过多，已锁定 24 小时。\n请联系管理员处理。";
+            }
+
+            // 更新 session state 中的失败计数
+            var failState = new JsonObject
+            {
+                ["bind_step"] = "awaiting_password",
+                ["pending_employee_code"] = employeeCode,
+                ["pending_user_id"] = userId.ToString(),
+                ["bind_fail_count"] = currentFail
+            };
+            await UpdateSessionStateAsync(session, "binding", failState, ct);
+
+            return $"密码不正确，请重试。（剩余 {3 - currentFail} 次机会）";
+        }
+
+        // 密码验证通过 → 创建绑定
+        // 先清理旧的 pending 记录
+        await using var cmdClean = conn.CreateCommand();
+        cmdClean.CommandText = @"
+            DELETE FROM employee_channel_bindings 
+            WHERE channel = 'wecom' AND channel_user_id = $1 AND status != 'active'";
+        cmdClean.Parameters.AddWithValue(session.WeComUserId);
+        await cmdClean.ExecuteNonQueryAsync(ct);
+
+        // 插入正式绑定
+        await using var cmdBind = conn.CreateCommand();
+        cmdBind.CommandText = @"
+            INSERT INTO employee_channel_bindings 
+            (company_code, user_id, channel, channel_user_id, channel_name, bind_method, status, bound_at)
+            VALUES ($1, $2, 'wecom', $3, $4, 'self_service', 'active', now())
+            ON CONFLICT DO NOTHING
+            RETURNING id";
+        cmdBind.Parameters.AddWithValue(companyCode);
+        cmdBind.Parameters.AddWithValue(userId);
+        cmdBind.Parameters.AddWithValue(session.WeComUserId);
+        cmdBind.Parameters.AddWithValue(name);
+        var bindId = await cmdBind.ExecuteScalarAsync(ct);
+
+        if (bindId == null)
+        {
+            return "绑定失败，该微信账号可能已绑定其他员工。\n请联系管理员处理。";
+        }
+
+        // 更新会话
+        session.UserId = userId;
+        session.EmployeeId = employeeId;
+        session.IsBound = true;
+        await using var cmdUpdateSession = conn.CreateCommand();
+        cmdUpdateSession.CommandText = @"
+            UPDATE wecom_employee_sessions 
+            SET employee_id = $2, session_state = '{}'::jsonb, updated_at = now()
+            WHERE id = $1";
+        cmdUpdateSession.Parameters.AddWithValue(session.Id);
+        cmdUpdateSession.Parameters.AddWithValue(employeeId.HasValue ? (object)employeeId.Value : DBNull.Value);
+        await cmdUpdateSession.ExecuteNonQueryAsync(ct);
+
+        // 加载权限
+        session.Caps = await LoadUserCapsAsync(conn, userId, companyCode, ct);
+
+        // 通知管理员
+        _logger.LogInformation("[EmployeeGW] 绑定成功: user={UserId}, employee={EmployeeCode}, channel=wecom:{ChannelUser}",
+            userId, employeeCode, session.WeComUserId);
+
+        // 构建功能列表
+        var features = BuildFeatureList(session.Caps);
+
+        return $"✅ 绑定成功！欢迎，{name}さん。\n\n您可以使用以下功能：\n{features}\n\n输入「帮助」查看完整功能列表。";
+    }
+
+    // ==================== 权限守卫 ====================
+
+    /// <summary>
+    /// 意图→所需权限映射表
+    /// </summary>
+    private static readonly Dictionary<string, string> IntentCapMap = new()
+    {
+        ["timesheet.entry"]     = "ai.timesheet.entry",
+        ["timesheet.upload"]    = "ai.timesheet.entry",
+        ["timesheet.query"]     = "ai.timesheet.query",
+        ["timesheet.submit"]    = "ai.timesheet.entry",
+        ["timesheet.approve"]   = "ai.timesheet.approve",
+        ["payroll.query"]       = "ai.payroll.query",
+        ["payroll.report"]      = "ai.payroll.report",
+        ["invoice.recognize"]   = "ai.invoice.recognize",
+        ["voucher.create"]      = "ai.voucher.create",
+        ["report.financial"]    = "ai.report.financial",
+        ["certificate.apply"]   = "ai.certificate.apply",
+        ["certificate.approve"] = "ai.certificate.approve",
+        ["leave.query"]         = "ai.leave.apply",
+        ["leave.approve"]       = "ai.leave.approve",
+        ["order.manage"]        = "ai.order.manage",
+        ["delivery.manage"]     = "ai.delivery.manage",
+    };
+
+    /// <summary>
+    /// 意图的中文友好名映射
+    /// </summary>
+    private static readonly Dictionary<string, string> IntentNameMap = new()
+    {
+        ["timesheet.entry"]     = "工时录入",
+        ["timesheet.upload"]    = "工时上传",
+        ["timesheet.query"]     = "工时查询",
+        ["timesheet.submit"]    = "工时提交",
+        ["timesheet.approve"]   = "工时审批",
+        ["payroll.query"]       = "薪资查询",
+        ["payroll.report"]      = "薪资报表",
+        ["invoice.recognize"]   = "发票识别",
+        ["voucher.create"]      = "记账",
+        ["report.financial"]    = "财务报表",
+        ["certificate.apply"]   = "证明书申请",
+        ["certificate.approve"] = "证明书审批",
+        ["leave.query"]         = "休假管理",
+        ["leave.approve"]       = "休假审批",
+        ["order.manage"]        = "订单管理",
+        ["delivery.manage"]     = "纳品书管理",
+    };
+
+    private static (bool Allowed, string Message) CheckPermission(EmployeeSession session, string intent)
+    {
+        // 通用意图、确认/取消不需要权限检查
+        if (intent is "general.question" or "confirm" or "deny" or "help" or "binding")
+            return (true, "");
+
+        if (!IntentCapMap.TryGetValue(intent, out var requiredCap))
+            return (true, "");  // 未知意图不拦截
+
+        if (session.Caps.Contains(requiredCap))
+            return (true, "");
+
+        var intentName = IntentNameMap.TryGetValue(intent, out var name) ? name : intent;
+        return (false, $"抱歉，您没有「{intentName}」的使用权限。\n如需开通，请联系管理员。\n\n输入「帮助」查看您可用的功能。");
+    }
+
+    /// <summary>
+    /// 根据用户能力构建功能列表
+    /// </summary>
+    private static string BuildFeatureList(List<string> caps)
+    {
+        var features = new List<string>();
+
+        if (caps.Contains("ai.timesheet.entry"))  features.Add("📝 工时录入/查询 - 发送 \"今天9点到18点\"");
+        if (caps.Contains("ai.payroll.query"))     features.Add("💰 薪资查询 - 发送 \"查看工资\"");
+        if (caps.Contains("ai.certificate.apply")) features.Add("📄 证明书申请 - 发送 \"申请在职证明\"");
+        if (caps.Contains("ai.leave.apply"))       features.Add("🏖 休假申请 - 发送 \"请假\"");
+        if (caps.Contains("ai.timesheet.approve")) features.Add("✅ 工时审批 - 发送 \"审批工时\"");
+        if (caps.Contains("ai.leave.approve"))     features.Add("✅ 休假审批 - 发送 \"审批休假\"");
+        if (caps.Contains("ai.invoice.recognize")) features.Add("🧾 发票识别 - 发送发票图片");
+        if (caps.Contains("ai.voucher.create"))    features.Add("📒 记账 - 发送 \"记账\"");
+        if (caps.Contains("ai.report.financial"))  features.Add("📊 财务报表 - 发送 \"查看报表\"");
+        if (caps.Contains("ai.order.manage"))      features.Add("📦 订单管理 - 发送 \"查看订单\"");
+        if (caps.Contains("ai.delivery.manage"))   features.Add("🚚 纳品书管理 - 发送 \"纳品书\"");
+
+        return features.Count > 0
+            ? string.Join("\n", features)
+            : "（暂无可用功能，请联系管理员分配权限）";
+    }
+
+    // ==================== 意图→技能映射 ====================
+
+    private static readonly Dictionary<string, string> IntentToSkillMap = new()
+    {
+        ["timesheet.entry"]     = "timesheet",
+        ["timesheet.upload"]    = "timesheet",
+        ["timesheet.query"]     = "timesheet",
+        ["timesheet.submit"]    = "timesheet",
+        ["payroll.query"]       = "payroll",
+        ["certificate.apply"]   = "certificate",
+        ["leave.query"]         = "leave",
+        ["invoice.recognize"]   = "invoice.booking",
+    };
 
     /// <summary>根据意图路由到对应处理器</summary>
     private async Task<string> RouteIntentAsync(
         string companyCode, EmployeeSession session, WeComMessage message,
         WeComIntentClassifier.IntentResult intent, CancellationToken ct)
     {
-        return intent.Intent switch
+        // 帮助命令
+        if (intent.Intent == "help" || (message.Content ?? "").Trim() is "帮助" or "ヘルプ" or "help")
+        {
+            var features = BuildFeatureList(session.Caps);
+            return $"📋 您可以使用以下功能：\n\n{features}\n\n直接发送对应的指令即可。";
+        }
+
+        var reply = intent.Intent switch
         {
             "timesheet.entry" => await HandleTimesheetEntryAsync(companyCode, session, message, intent, ct),
             "timesheet.upload" => await HandleTimesheetUploadAsync(companyCode, session, message, intent, ct),
@@ -121,10 +510,21 @@ public class WeComEmployeeGateway
             "payroll.query" => await HandlePayrollQueryAsync(companyCode, session, ct),
             "certificate.apply" => await HandleCertificateApplyAsync(companyCode, session, message, intent, ct),
             "leave.query" => await HandleLeaveAsync(companyCode, session, message, intent, ct),
+            "invoice.recognize" => await HandleInvoiceImageAsync(companyCode, session, message, ct),
             "confirm" => await HandleConfirmAsync(companyCode, session, intent, ct),
             "deny" => await HandleDenyAsync(session, ct),
             _ => await HandleGeneralAsync(companyCode, session, message, ct)
         };
+
+        // Context Engine: 记录活跃技能（用于后续跟进判断）
+        if (IntentToSkillMap.TryGetValue(intent.Intent, out var skillName))
+        {
+            session.SessionState ??= new JsonObject();
+            session.SessionState["activeSkill"] = skillName;
+            session.SessionState["lastActionTime"] = DateTimeOffset.UtcNow.ToString("O");
+        }
+
+        return reply;
     }
 
     // ==================== 工时录入 ====================
@@ -989,6 +1389,381 @@ public class WeComEmployeeGateway
                "处理完成后会通过企业微信通知您。";
     }
 
+    // ==================== 发票图片批次聚合 ====================
+
+    /// <summary>
+    /// 多图批次聚合机制
+    /// 
+    /// 问题：用户在微信中一次选择多张发票图片发送时，每张图片是独立消息。
+    /// 如果逐张处理，会导致：
+    ///   - 同一张多页发票的多张照片被当作不同发票处理（重复记账）
+    ///   - 用户收到多条"正在识别"和多条结果回复（体验差）
+    /// 
+    /// 解决方案：收到第一张图片后等待一个短窗口（5秒），将窗口内到达的所有图片
+    /// 聚合为一个批次，统一提交给 AgentKit 处理。
+    /// </summary>
+    private sealed class InvoiceBatch
+    {
+        public string CompanyCode { get; init; } = "";
+        public string ChannelUserId { get; init; } = "";
+        public Guid? SessionUserId { get; init; }
+        public HashSet<string> Caps { get; init; } = new();
+        public List<InvoiceBatchItem> Items { get; } = new();
+        public DateTimeOffset FirstImageAt { get; init; }
+        public TaskCompletionSource<string> Completion { get; } = new();
+        public CancellationTokenSource Cts { get; } = new();
+        public bool IsProcessing { get; set; }
+    }
+
+    private sealed class InvoiceBatchItem
+    {
+        public string FileId { get; init; } = "";
+        public string FileName { get; init; } = "";
+        public string MimeType { get; init; } = "";
+        public string StoredPath { get; init; } = "";
+        public string BlobName { get; init; } = "";
+        public long FileSize { get; init; }
+    }
+
+    /// <summary>用户 → 当前待处理批次（静态，跨请求共享）</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, InvoiceBatch>
+        _pendingBatches = new();
+
+    /// <summary>批次聚合等待窗口</summary>
+    private static readonly TimeSpan BatchWindow = TimeSpan.FromSeconds(5);
+
+    // ==================== 发票识别+自动记账 ====================
+
+    /// <summary>
+    /// 处理从 WeChat/LINE 发送的发票图片/文件
+    /// 支持多图批次聚合：5秒窗口内的多张图片合并为一个批次
+    /// </summary>
+    private async Task<string> HandleInvoiceImageAsync(
+        string companyCode, EmployeeSession session, WeComMessage message, CancellationToken ct)
+    {
+        // 1. 无媒体时给提示
+        if (string.IsNullOrEmpty(message.MediaId))
+        {
+            return "🧾 发票识别\n\n请直接拍照或发送发票图片/PDF，我来自动识别并记账。\n\n" +
+                   "💡 支持一次发送多张图片，系统会自动批量处理。\n" +
+                   "支持格式：图片(JPG/PNG)、PDF";
+        }
+
+        // 2. 下载媒体文件
+        var mediaResult = await _wecomService.DownloadMediaAsync(message.MediaId, ct);
+        if (mediaResult == null)
+        {
+            return "❌ 文件下载失败，请重新发送。";
+        }
+
+        var (fileData, mimeType, fileName) = mediaResult.Value;
+        fileName ??= $"invoice_{DateTime.UtcNow:yyyyMMdd_HHmmss}";
+
+        var ext = mimeType switch
+        {
+            "image/jpeg" => ".jpg",
+            "image/png" => ".png",
+            "image/gif" => ".gif",
+            "image/webp" => ".webp",
+            "application/pdf" => ".pdf",
+            _ when mimeType.StartsWith("image/") => ".jpg",
+            _ => Path.GetExtension(fileName)
+        };
+        if (string.IsNullOrEmpty(ext)) ext = ".bin";
+        if (!fileName.Contains('.')) fileName += ext;
+
+        // 3. 保存到本地 + 上传 Blob
+        var fileId = Guid.NewGuid().ToString("n");
+        var uploadRoot = Path.Combine(Path.GetTempPath(), "yanxia_uploads");
+        Directory.CreateDirectory(uploadRoot);
+        var storedPath = Path.Combine(uploadRoot, fileId + ext);
+        await File.WriteAllBytesAsync(storedPath, fileData, ct);
+
+        var blobName = $"{companyCode.ToLowerInvariant()}/{DateTime.UtcNow:yyyy/MM/dd}/{fileId}{ext}";
+        try
+        {
+            var blobService = _serviceProvider.GetRequiredService<AzureBlobService>();
+            await using var uploadStream = File.OpenRead(storedPath);
+            await blobService.UploadAsync(uploadStream, blobName, mimeType, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[EmployeeGW] Azure Blob 上传失败（继续使用本地文件）");
+            blobName = "";
+        }
+
+        var batchItem = new InvoiceBatchItem
+        {
+            FileId = fileId,
+            FileName = fileName,
+            MimeType = mimeType,
+            StoredPath = storedPath,
+            BlobName = blobName,
+            FileSize = fileData.Length
+        };
+
+        // 4. 批次聚合逻辑
+        var batchKey = $"{companyCode}:{message.FromUser}";
+        var isFirstInBatch = false;
+
+        var batch = _pendingBatches.AddOrUpdate(
+            batchKey,
+            // 新建批次（第一张图片）
+            _ =>
+            {
+                isFirstInBatch = true;
+                var b = new InvoiceBatch
+                {
+                    CompanyCode = companyCode,
+                    ChannelUserId = message.FromUser,
+                    SessionUserId = session.UserId,
+                    Caps = new HashSet<string>(session.Caps ?? new List<string>()),
+                    FirstImageAt = DateTimeOffset.UtcNow
+                };
+                b.Items.Add(batchItem);
+                return b;
+            },
+            // 追加到现有批次
+            (_, existing) =>
+            {
+                if (!existing.IsProcessing)
+                {
+                    existing.Items.Add(batchItem);
+                    _logger.LogInformation("[EmployeeGW] 图片加入批次: user={User}, batch_size={Count}",
+                        message.FromUser, existing.Items.Count);
+                }
+                else
+                {
+                    // 上一批已在处理中，创建新批次
+                    isFirstInBatch = true;
+                    var b = new InvoiceBatch
+                    {
+                        CompanyCode = companyCode,
+                        ChannelUserId = message.FromUser,
+                        SessionUserId = session.UserId,
+                        Caps = new HashSet<string>(session.Caps ?? new List<string>()),
+                        FirstImageAt = DateTimeOffset.UtcNow
+                    };
+                    b.Items.Add(batchItem);
+                    return b;
+                }
+                return existing;
+            });
+
+        if (isFirstInBatch)
+        {
+            // 第一张图 → 发送"收到"提示 + 启动定时器
+            if (_wecomService.IsConfigured)
+            {
+                try
+                {
+                    await _wecomService.SendTextMessageAsync(
+                        "🔍 收到发票图片，等待5秒看是否有更多图片...", message.FromUser, ct);
+                }
+                catch { /* 提示失败不影响 */ }
+            }
+
+            // 启动后台定时器，等待窗口到期后统一处理
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(BatchWindow, batch.Cts.Token);
+                    await ProcessInvoiceBatchAsync(batchKey, batch);
+                }
+                catch (OperationCanceledException) { /* 正常取消 */ }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[EmployeeGW] 批次处理异常: user={User}", message.FromUser);
+                    batch.Completion.TrySetResult("❌ 批次处理异常，请重试。");
+                }
+            });
+
+            // 等待批次处理完成并返回结果
+            // 注意：RouteIntentAsync 要求返回 reply，所以第一张图要等待整个批次完成
+            return await batch.Completion.Task;
+        }
+        else
+        {
+            // 后续图片 → 静默加入批次，不重复回复
+            _logger.LogInformation("[EmployeeGW] 图片已加入批次（静默）: user={User}, count={Count}",
+                message.FromUser, batch.Items.Count);
+            return ""; // 空回复 → 不发送消息
+        }
+    }
+
+    /// <summary>批次窗口到期，统一处理所有图片</summary>
+    private async Task ProcessInvoiceBatchAsync(string batchKey, InvoiceBatch batch)
+    {
+        // 标记正在处理，防止新图片加入
+        batch.IsProcessing = true;
+        _pendingBatches.TryRemove(batchKey, out _);
+
+        var itemCount = batch.Items.Count;
+        _logger.LogInformation("[EmployeeGW] 开始处理发票批次: user={User}, images={Count}",
+            batch.ChannelUserId, itemCount);
+
+        // 通知用户开始处理
+        if (_wecomService.IsConfigured && itemCount > 1)
+        {
+            try
+            {
+                await _wecomService.SendTextMessageAsync(
+                    $"📋 共收到 {itemCount} 张图片，正在批量识别记账...",
+                    batch.ChannelUserId, CancellationToken.None);
+            }
+            catch { }
+        }
+        else if (_wecomService.IsConfigured)
+        {
+            try
+            {
+                await _wecomService.SendTextMessageAsync(
+                    "🔍 正在识别发票，请稍候...",
+                    batch.ChannelUserId, CancellationToken.None);
+            }
+            catch { }
+        }
+
+        try
+        {
+            var agentKit = _serviceProvider.GetRequiredService<AgentKitService>();
+            var apiKey = _config["OpenAI:ApiKey"] ?? _config["Anthropic:ApiKey"] ?? "";
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                batch.Completion.TrySetResult("❌ AI 服务未配置，无法识别发票。");
+                return;
+            }
+
+            var userCtx = new Auth.UserCtx(
+                UserId: batch.SessionUserId?.ToString(),
+                Roles: Array.Empty<string>(),
+                Caps: batch.Caps.ToArray(),
+                DeptId: null,
+                EmployeeCode: null,
+                UserName: batch.ChannelUserId,
+                CompanyCode: batch.CompanyCode
+            );
+
+            // 构建文件存储（所有批次图片）
+            var fileStore = new Dictionary<string, UploadedFileRecord>();
+            foreach (var item in batch.Items)
+            {
+                fileStore[item.FileId] = new UploadedFileRecord(
+                    item.FileName, item.StoredPath, item.MimeType, item.FileSize,
+                    DateTimeOffset.UtcNow, batch.CompanyCode, batch.SessionUserId?.ToString(), item.BlobName);
+            }
+
+            Guid? sessionId = null;
+            var allReplies = new List<string>();
+
+            if (itemCount == 1)
+            {
+                // 单张图片 → 直接处理
+                var item = batch.Items[0];
+                var result = await agentKit.ProcessFileAsync(
+                    new AgentKitService.AgentFileRequest(
+                        SessionId: null,
+                        CompanyCode: batch.CompanyCode,
+                        UserCtx: userCtx,
+                        FileId: item.FileId,
+                        FileName: item.FileName,
+                        ContentType: item.MimeType,
+                        Size: item.FileSize,
+                        ApiKey: apiKey,
+                        Language: "ja",
+                        FileResolver: id => fileStore.GetValueOrDefault(id),
+                        ScenarioKey: null,
+                        BlobName: item.BlobName),
+                    CancellationToken.None);
+
+                allReplies.Add(ExtractAgentReply(result));
+            }
+            else
+            {
+                // 多张图片 → 第一张创建会话，后续追加到同一会话
+                for (var i = 0; i < batch.Items.Count; i++)
+                {
+                    var item = batch.Items[i];
+                    var userMessage = i == 0
+                        ? $"我上传了 {itemCount} 张发票图片，请逐一识别并记账。这是第 1 张。"
+                        : $"这是第 {i + 1}/{itemCount} 张发票图片。如果和前面是同一张发票的不同页，请合并处理；如果是不同发票，请分别创建凭证。";
+
+                    var result = await agentKit.ProcessFileAsync(
+                        new AgentKitService.AgentFileRequest(
+                            SessionId: sessionId, // 复用会话
+                            CompanyCode: batch.CompanyCode,
+                            UserCtx: userCtx,
+                            FileId: item.FileId,
+                            FileName: item.FileName,
+                            ContentType: item.MimeType,
+                            Size: item.FileSize,
+                            ApiKey: apiKey,
+                            Language: "ja",
+                            FileResolver: id => fileStore.GetValueOrDefault(id),
+                            ScenarioKey: null,
+                            BlobName: item.BlobName,
+                            UserMessage: userMessage),
+                        CancellationToken.None);
+
+                    sessionId = result.SessionId; // 后续图片复用同一会话
+                    var reply = ExtractAgentReply(result);
+                    allReplies.Add($"📄 图片 {i + 1}/{itemCount}:\n{reply}");
+
+                    _logger.LogInformation("[EmployeeGW] 批次图片 {Index}/{Total} 处理完成",
+                        i + 1, itemCount);
+                }
+            }
+
+            var finalReply = string.Join("\n\n" + new string('─', 30) + "\n\n", allReplies);
+
+            // 微信消息长度限制，超长时截断
+            if (finalReply.Length > 2000)
+            {
+                finalReply = finalReply[..2000] + "\n\n... (完整内容请在网页版查看)";
+            }
+
+            batch.Completion.TrySetResult(finalReply);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[EmployeeGW] 批次处理失败: user={User}", batch.ChannelUserId);
+            batch.Completion.TrySetResult("❌ 发票识别过程中出现错误，请稍后重试。\n\n您也可以在网页版上传发票。");
+        }
+        finally
+        {
+            // 清理本地临时文件
+            foreach (var item in batch.Items)
+            {
+                try { if (File.Exists(item.StoredPath)) File.Delete(item.StoredPath); } catch { }
+            }
+        }
+    }
+
+    /// <summary>从 AgentKit 运行结果中提取可读的回复文本</summary>
+    private static string ExtractAgentReply(AgentKitService.AgentRunResult result)
+    {
+        if (result.Messages == null || result.Messages.Count == 0)
+            return "发票已收到，但 AI 未能给出处理结果。请在网页版查看。";
+
+        var sb = new System.Text.StringBuilder();
+        foreach (var msg in result.Messages)
+        {
+            if (msg.Role == "assistant" && !string.IsNullOrWhiteSpace(msg.Content))
+            {
+                var text = msg.Content;
+                if (text.Length > 1500)
+                {
+                    text = text[..1500] + "\n\n... (完整内容请在网页版查看)";
+                }
+                sb.AppendLine(text);
+            }
+        }
+
+        var reply = sb.ToString().Trim();
+        return string.IsNullOrEmpty(reply) ? "✅ 发票处理完成，请在网页版查看详细记账结果。" : reply;
+    }
+
     // ==================== 通用问答 ====================
 
     private async Task<string> HandleGeneralAsync(
@@ -1176,7 +1951,30 @@ public class WeComEmployeeGateway
     {
         await using var conn = await _ds.OpenConnectionAsync(ct);
 
-        // 查找活跃会话
+        // ======== Step 1: 查绑定表 ========
+        Guid? boundUserId = null;
+        Guid? boundEmployeeId = null;
+        bool isBound = false;
+
+        await using var cmdBinding = conn.CreateCommand();
+        cmdBinding.CommandText = @"
+            SELECT b.user_id, u.employee_id
+            FROM employee_channel_bindings b
+            JOIN users u ON u.id = b.user_id
+            WHERE b.channel = 'wecom' AND b.channel_user_id = $1 AND b.status = 'active'
+            LIMIT 1";
+        cmdBinding.Parameters.AddWithValue(wecomUserId);
+
+        await using var bindReader = await cmdBinding.ExecuteReaderAsync(ct);
+        if (await bindReader.ReadAsync(ct))
+        {
+            boundUserId = bindReader.GetGuid(0);
+            boundEmployeeId = bindReader.IsDBNull(1) ? null : bindReader.GetGuid(1);
+            isBound = true;
+        }
+        await bindReader.CloseAsync();
+
+        // ======== Step 2: 查活跃会话 ========
         await using var cmdFind = conn.CreateCommand();
         cmdFind.CommandText = @"
             SELECT id, employee_id, resource_id, current_intent, session_state
@@ -1194,10 +1992,12 @@ public class WeComEmployeeGateway
                 Id = reader.GetGuid(0),
                 CompanyCode = companyCode,
                 WeComUserId = wecomUserId,
-                EmployeeId = reader.IsDBNull(1) ? null : reader.GetGuid(1),
+                UserId = boundUserId,
+                EmployeeId = boundEmployeeId ?? (reader.IsDBNull(1) ? null : reader.GetGuid(1)),
                 ResourceId = reader.IsDBNull(2) ? null : reader.GetGuid(2),
                 CurrentIntent = reader.IsDBNull(3) ? null : reader.GetString(3),
-                SessionState = reader.IsDBNull(4) ? null : JsonNode.Parse(reader.GetString(4)) as JsonObject
+                SessionState = reader.IsDBNull(4) ? null : JsonNode.Parse(reader.GetString(4)) as JsonObject,
+                IsBound = isBound
             };
             await reader.CloseAsync();
 
@@ -1210,61 +2010,39 @@ public class WeComEmployeeGateway
             cmdRefresh.Parameters.AddWithValue(session.Id);
             await cmdRefresh.ExecuteNonQueryAsync(ct);
 
+            // 加载权限
+            if (isBound && boundUserId.HasValue)
+            {
+                session.Caps = await LoadUserCapsAsync(conn, boundUserId.Value, companyCode, ct);
+                // 同时解析 resourceId（如果还没有）
+                if (session.ResourceId == null && session.EmployeeId.HasValue)
+                {
+                    await using var cmdRes = conn.CreateCommand();
+                    cmdRes.CommandText = @"SELECT id FROM stf_resources WHERE company_code = $1 AND employee_id = $2 LIMIT 1";
+                    cmdRes.Parameters.AddWithValue(companyCode);
+                    cmdRes.Parameters.AddWithValue(session.EmployeeId.Value);
+                    var resObj = await cmdRes.ExecuteScalarAsync(ct);
+                    if (resObj is Guid rid) session.ResourceId = rid;
+                }
+            }
+
             return session;
         }
         await reader.CloseAsync();
 
-        // 创建新会话 - 同时查找员工关联
-        Guid? employeeId = null;
+        // ======== Step 3: 创建新会话 ========
         Guid? resourceId = null;
         Guid? contractId = null;
 
-        // Strategy 1: 通过企业微信 userId 查找员工（employees 表）
-        await using var cmdEmp = conn.CreateCommand();
-        cmdEmp.CommandText = @"
-            SELECT e.id as employee_id, r.id as resource_id
-            FROM employees e
-            LEFT JOIN stf_resources r ON r.employee_id = e.id AND r.company_code = e.company_code
-            WHERE e.company_code = $1 AND (
-                e.payload->>'wecom_user_id' = $2 
-                OR e.payload->>'email' = $2
-                OR e.payload->>'userId' = $2
-            )
-            LIMIT 1";
-        cmdEmp.Parameters.AddWithValue(companyCode);
-        cmdEmp.Parameters.AddWithValue(wecomUserId);
-
-        await using var empReader = await cmdEmp.ExecuteReaderAsync(ct);
-        if (await empReader.ReadAsync(ct))
+        if (isBound && boundEmployeeId.HasValue)
         {
-            employeeId = empReader.IsDBNull(0) ? null : empReader.GetGuid(0);
-            resourceId = empReader.IsDBNull(1) ? null : empReader.GetGuid(1);
-        }
-        await empReader.CloseAsync();
-
-        // Strategy 2: 回退到 users 表查找（通过 employee_code 或 wecom_user_id 匹配）
-        if (employeeId == null && resourceId == null)
-        {
-            await using var cmdUser = conn.CreateCommand();
-            cmdUser.CommandText = @"
-                SELECT u.employee_id, r.id as resource_id
-                FROM users u
-                LEFT JOIN stf_resources r ON r.employee_id = u.employee_id AND r.company_code = u.company_code
-                WHERE u.company_code = $1 AND (
-                    u.employee_code = $2
-                    OR u.id::text = $2
-                )
-                LIMIT 1";
-            cmdUser.Parameters.AddWithValue(companyCode);
-            cmdUser.Parameters.AddWithValue(wecomUserId);
-
-            await using var userReader = await cmdUser.ExecuteReaderAsync(ct);
-            if (await userReader.ReadAsync(ct))
-            {
-                employeeId = userReader.IsDBNull(0) ? null : userReader.GetGuid(0);
-                resourceId = userReader.IsDBNull(1) ? null : userReader.GetGuid(1);
-            }
-            await userReader.CloseAsync();
+            // 通过 employee_id 查找 resource
+            await using var cmdRes = conn.CreateCommand();
+            cmdRes.CommandText = @"SELECT id FROM stf_resources WHERE company_code = $1 AND employee_id = $2 LIMIT 1";
+            cmdRes.Parameters.AddWithValue(companyCode);
+            cmdRes.Parameters.AddWithValue(boundEmployeeId.Value);
+            var resObj = await cmdRes.ExecuteScalarAsync(ct);
+            if (resObj is Guid rid) resourceId = rid;
         }
 
         // 查找有效合约
@@ -1277,7 +2055,6 @@ public class WeComEmployeeGateway
                 ORDER BY payload->>'start_date' DESC LIMIT 1";
             cmdContract.Parameters.AddWithValue(companyCode);
             cmdContract.Parameters.AddWithValue(resourceId.Value.ToString());
-
             var cid = await cmdContract.ExecuteScalarAsync(ct);
             contractId = cid is Guid g ? g : null;
         }
@@ -1291,23 +2068,56 @@ public class WeComEmployeeGateway
             RETURNING id";
         cmdInsert.Parameters.AddWithValue(companyCode);
         cmdInsert.Parameters.AddWithValue(wecomUserId);
-        cmdInsert.Parameters.AddWithValue(employeeId.HasValue ? (object)employeeId.Value : DBNull.Value);
+        cmdInsert.Parameters.AddWithValue(boundEmployeeId.HasValue ? (object)boundEmployeeId.Value : DBNull.Value);
         cmdInsert.Parameters.AddWithValue(resourceId.HasValue ? (object)resourceId.Value : DBNull.Value);
         cmdInsert.Parameters.AddWithValue("{}");
 
         var newId = (Guid)(await cmdInsert.ExecuteScalarAsync(ct))!;
 
-        return new EmployeeSession
+        var newSession = new EmployeeSession
         {
             Id = newId,
             CompanyCode = companyCode,
             WeComUserId = wecomUserId,
-            EmployeeId = employeeId,
+            UserId = boundUserId,
+            EmployeeId = boundEmployeeId,
             ResourceId = resourceId,
             ContractId = contractId,
             CurrentIntent = null,
-            SessionState = null
+            SessionState = null,
+            IsBound = isBound
         };
+
+        // 加载权限
+        if (isBound && boundUserId.HasValue)
+        {
+            newSession.Caps = await LoadUserCapsAsync(conn, boundUserId.Value, companyCode, ct);
+        }
+
+        return newSession;
+    }
+
+    /// <summary>
+    /// 加载用户的所有 AI 能力（从 role_caps 表）
+    /// </summary>
+    private static async Task<List<string>> LoadUserCapsAsync(
+        NpgsqlConnection conn, Guid userId, string companyCode, CancellationToken ct)
+    {
+        var caps = new List<string>();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT DISTINCT rc.cap 
+            FROM role_caps rc
+            JOIN user_roles ur ON ur.role_id = rc.role_id
+            WHERE ur.user_id = $1 AND rc.cap LIKE 'ai.%'";
+        cmd.Parameters.AddWithValue(userId);
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            caps.Add(reader.GetString(0));
+        }
+        return caps;
     }
 
     private async Task SaveMessageAsync(
@@ -1392,11 +2202,14 @@ public class WeComEmployeeGateway
         public Guid Id { get; set; }
         public string CompanyCode { get; set; } = "";
         public string WeComUserId { get; set; } = "";
+        public Guid? UserId { get; set; }          // → users.id
         public Guid? EmployeeId { get; set; }
         public Guid? ResourceId { get; set; }
         public Guid? ContractId { get; set; }
         public string? CurrentIntent { get; set; }
         public JsonObject? SessionState { get; set; }
+        public List<string> Caps { get; set; } = new();  // AI capabilities
+        public bool IsBound { get; set; }           // 是否已绑定系统账号
     }
 
     public class TimesheetEntry

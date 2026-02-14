@@ -2376,15 +2376,78 @@ static async Task<IResult> HandleVoucherUpdate(HttpRequest req, Guid id, Finance
     if (!doc.RootElement.TryGetProperty("payload", out var payloadEl) || payloadEl.ValueKind != JsonValueKind.Object)
         return Results.BadRequest(new { error = "payload required" });
 
+    // === 学习引擎：更新前获取旧凭证数据，用于检测用户修正 ===
+    JsonObject? oldVoucherSnapshot = null;
+    try
+    {
+        var ds = req.HttpContext.RequestServices.GetRequiredService<NpgsqlDataSource>();
+        await using var snapConn = await ds.OpenConnectionAsync(req.HttpContext.RequestAborted);
+        await using var snapCmd = snapConn.CreateCommand();
+        snapCmd.CommandText = @"SELECT payload FROM vouchers WHERE company_code=$1 AND id=$2";
+        snapCmd.Parameters.AddWithValue(cc.ToString()!);
+        snapCmd.Parameters.AddWithValue(id);
+        var oldPayloadStr = (string?)await snapCmd.ExecuteScalarAsync(req.HttpContext.RequestAborted);
+        if (!string.IsNullOrWhiteSpace(oldPayloadStr))
+        {
+            oldVoucherSnapshot = System.Text.Json.Nodes.JsonNode.Parse(oldPayloadStr) as JsonObject;
+        }
+    }
+    catch { /* 获取旧快照失败不阻塞更新 */ }
+
     var user = Auth.GetUserCtx(req);
     try
     {
         var json = await finance.UpdateVoucherAsync(cc.ToString(), id, payloadEl, user);
+
+        // === 学习引擎：检测科目修改并记录修正事件 ===
+        try
+        {
+            if (oldVoucherSnapshot is not null)
+            {
+                var learningCollector = req.HttpContext.RequestServices.GetService<Server.Infrastructure.Skills.LearningEventCollector>();
+                if (learningCollector is not null)
+                {
+                    var updatedNode = System.Text.Json.Nodes.JsonNode.Parse(json) as JsonObject;
+                    var updatedPayload = updatedNode?.TryGetPropertyValue("payload", out var up) == true ? up as JsonObject : null;
+                    if (updatedPayload is not null)
+                    {
+                        // 比较借方/贷方科目是否发生变化
+                        static string? ExtractFirstAccount(JsonObject? payload, string drcr)
+                        {
+                            if (payload?.TryGetPropertyValue("lines", out var linesNode) != true || linesNode is not System.Text.Json.Nodes.JsonArray lines) return null;
+                            foreach (var line in lines)
+                            {
+                                if (line is JsonObject lo &&
+                                    lo.TryGetPropertyValue("drcr", out var d) && d is System.Text.Json.Nodes.JsonValue dv && dv.TryGetValue<string>(out var ds) &&
+                                    string.Equals(ds, drcr, StringComparison.OrdinalIgnoreCase) &&
+                                    lo.TryGetPropertyValue("accountCode", out var ac) && ac is System.Text.Json.Nodes.JsonValue acv && acv.TryGetValue<string>(out var acs))
+                                    return acs;
+                            }
+                            return null;
+                        }
+                        var oldDebit = ExtractFirstAccount(oldVoucherSnapshot, "DR");
+                        var newDebit = ExtractFirstAccount(updatedPayload, "DR");
+                        var oldCredit = ExtractFirstAccount(oldVoucherSnapshot, "CR");
+                        var newCredit = ExtractFirstAccount(updatedPayload, "CR");
+                        var accountChanged = (!string.Equals(oldDebit, newDebit, StringComparison.OrdinalIgnoreCase))
+                                          || (!string.Equals(oldCredit, newCredit, StringComparison.OrdinalIgnoreCase));
+                        if (accountChanged)
+                        {
+                            var originalData = new JsonObject { ["debitAccount"] = oldDebit, ["creditAccount"] = oldCredit };
+                            var correctedData = new JsonObject { ["debitAccount"] = newDebit, ["creditAccount"] = newCredit };
+                            _ = learningCollector.RecordUserCorrectionAsync(cc.ToString()!, id, originalData, correctedData, CancellationToken.None);
+                        }
+                    }
+                }
+            }
+        }
+        catch { /* 学习记录失败不影响正常更新 */ }
+
         // Enrich attachment URLs so the frontend can preview files (e.g. PDF) immediately after save.
         // Without this, the response lacks SAS URLs because FinanceService strips them before persisting.
         try
         {
-            var node = JsonNode.Parse(json);
+            var node = System.Text.Json.Nodes.JsonNode.Parse(json);
             if (node is JsonObject rowObj && rowObj.TryGetPropertyValue("payload", out var payloadNode) && payloadNode is not null)
             {
                 AddAttachmentUrlsPreserveBlob(payloadNode, blobService);
@@ -5545,6 +5608,42 @@ app.MapPost("/api/ai/agent-scenarios/test", (HttpRequest req, AgentKitService ag
 app.MapPost("/ai/agent-scenarios/interpret", (HttpRequest req, AgentScenarioService service, AgentKitService agentKit) => AgentScenarioEndpoints.InterpretAsync(req, service, agentKit, app.Configuration)).RequireAuthorization();
 app.MapPost("/api/ai/agent-scenarios/interpret", (HttpRequest req, AgentScenarioService service, AgentKitService agentKit) => AgentScenarioEndpoints.InterpretAsync(req, service, agentKit, app.Configuration)).RequireAuthorization();
 
+// ===== Unified Agent Skills API =====
+app.MapGet("/ai/agent/skills", (HttpRequest req, AgentSkillService svc) => AgentSkillEndpoints.ListSkillsAsync(req, svc)).RequireAuthorization();
+app.MapGet("/api/ai/agent/skills", (HttpRequest req, AgentSkillService svc) => AgentSkillEndpoints.ListSkillsAsync(req, svc)).RequireAuthorization();
+
+app.MapGet("/ai/agent/skills/key/{skillKey}", (HttpRequest req, string skillKey, AgentSkillService svc) => AgentSkillEndpoints.GetSkillAsync(req, skillKey, svc)).RequireAuthorization();
+app.MapGet("/api/ai/agent/skills/key/{skillKey}", (HttpRequest req, string skillKey, AgentSkillService svc) => AgentSkillEndpoints.GetSkillAsync(req, skillKey, svc)).RequireAuthorization();
+
+app.MapGet("/ai/agent/skills/{id:guid}", (HttpRequest req, Guid id, AgentSkillService svc) => AgentSkillEndpoints.GetSkillByIdAsync(req, id, svc)).RequireAuthorization();
+app.MapGet("/api/ai/agent/skills/{id:guid}", (HttpRequest req, Guid id, AgentSkillService svc) => AgentSkillEndpoints.GetSkillByIdAsync(req, id, svc)).RequireAuthorization();
+
+app.MapPost("/ai/agent/skills", (HttpRequest req, AgentSkillService svc) => AgentSkillEndpoints.UpsertSkillAsync(req, svc)).RequireAuthorization();
+app.MapPost("/api/ai/agent/skills", (HttpRequest req, AgentSkillService svc) => AgentSkillEndpoints.UpsertSkillAsync(req, svc)).RequireAuthorization();
+
+app.MapDelete("/ai/agent/skills/{id:guid}", (HttpRequest req, Guid id, AgentSkillService svc) => AgentSkillEndpoints.DeleteSkillAsync(req, id, svc)).RequireAuthorization();
+app.MapDelete("/api/ai/agent/skills/{id:guid}", (HttpRequest req, Guid id, AgentSkillService svc) => AgentSkillEndpoints.DeleteSkillAsync(req, id, svc)).RequireAuthorization();
+
+// Skill Rules
+app.MapGet("/ai/agent/skills/{skillId:guid}/rules", (HttpRequest req, Guid skillId, AgentSkillService svc) => AgentSkillEndpoints.ListRulesAsync(req, skillId, svc)).RequireAuthorization();
+app.MapGet("/api/ai/agent/skills/{skillId:guid}/rules", (HttpRequest req, Guid skillId, AgentSkillService svc) => AgentSkillEndpoints.ListRulesAsync(req, skillId, svc)).RequireAuthorization();
+
+app.MapPost("/ai/agent/skills/{skillId:guid}/rules", (HttpRequest req, Guid skillId, AgentSkillService svc) => AgentSkillEndpoints.UpsertRuleAsync(req, skillId, svc)).RequireAuthorization();
+app.MapPost("/api/ai/agent/skills/{skillId:guid}/rules", (HttpRequest req, Guid skillId, AgentSkillService svc) => AgentSkillEndpoints.UpsertRuleAsync(req, skillId, svc)).RequireAuthorization();
+
+app.MapDelete("/ai/agent/skills/rules/{ruleId:guid}", (HttpRequest req, Guid ruleId, AgentSkillService svc) => AgentSkillEndpoints.DeleteRuleAsync(req, ruleId, svc)).RequireAuthorization();
+app.MapDelete("/api/ai/agent/skills/rules/{ruleId:guid}", (HttpRequest req, Guid ruleId, AgentSkillService svc) => AgentSkillEndpoints.DeleteRuleAsync(req, ruleId, svc)).RequireAuthorization();
+
+// Skill Examples
+app.MapGet("/ai/agent/skills/{skillId:guid}/examples", (HttpRequest req, Guid skillId, AgentSkillService svc) => AgentSkillEndpoints.ListExamplesAsync(req, skillId, svc)).RequireAuthorization();
+app.MapGet("/api/ai/agent/skills/{skillId:guid}/examples", (HttpRequest req, Guid skillId, AgentSkillService svc) => AgentSkillEndpoints.ListExamplesAsync(req, skillId, svc)).RequireAuthorization();
+
+app.MapPost("/ai/agent/skills/{skillId:guid}/examples", (HttpRequest req, Guid skillId, AgentSkillService svc) => AgentSkillEndpoints.UpsertExampleAsync(req, skillId, svc)).RequireAuthorization();
+app.MapPost("/api/ai/agent/skills/{skillId:guid}/examples", (HttpRequest req, Guid skillId, AgentSkillService svc) => AgentSkillEndpoints.UpsertExampleAsync(req, skillId, svc)).RequireAuthorization();
+
+app.MapDelete("/ai/agent/skills/examples/{exampleId:guid}", (HttpRequest req, Guid exampleId, AgentSkillService svc) => AgentSkillEndpoints.DeleteExampleAsync(req, exampleId, svc)).RequireAuthorization();
+app.MapDelete("/api/ai/agent/skills/examples/{exampleId:guid}", (HttpRequest req, Guid exampleId, AgentSkillService svc) => AgentSkillEndpoints.DeleteExampleAsync(req, exampleId, svc)).RequireAuthorization();
+
 // AgentKit conversation entrypoint.
 app.MapPost("/ai/agent/message", async (HttpRequest req, AgentKitService agentKit) =>
 {
@@ -6398,6 +6497,35 @@ static AgentKitService.AgentResultMessage BuildPlanSummaryMessage(AgentKitServic
 // Note: /reports/account-ledger moved to FinanceReportsModule
 // Note: /fb-payment/* endpoints moved to FbPaymentModule
 // Note: /reports/account-balance moved to FinanceReportsModule
+
+// ==================== AI Learning & Alert API ====================
+
+// 学习报告
+app.MapGet("/api/ai/learning/report", async (HttpRequest req, Server.Infrastructure.Skills.LearningEngine engine) =>
+{
+    if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+        return Results.BadRequest("missing x-company-code");
+    var report = await engine.GenerateReportAsync(cc!, req.HttpContext.RequestAborted);
+    return Results.Ok(report);
+}).RequireAuthorization();
+
+// 手动触发异常检测
+app.MapPost("/api/ai/alerts/run", async (HttpRequest req, Server.Infrastructure.Skills.ProactiveAlertService alertService) =>
+{
+    if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+        return Results.BadRequest("missing x-company-code");
+    var alerts = await alertService.RunAllChecksAsync(cc!, req.HttpContext.RequestAborted);
+    return Results.Ok(new { count = alerts.Count, alerts = alerts.Select(a => new { a.Type, a.Severity, a.Title, a.Message }) });
+}).RequireAuthorization();
+
+// 修正规则查询
+app.MapGet("/api/ai/learning/correction-rules", async (HttpRequest req, Server.Infrastructure.Skills.LearningEngine engine) =>
+{
+    if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+        return Results.BadRequest("missing x-company-code");
+    var rules = await engine.AnalyzeCorrectionPatternsAsync(cc!, req.HttpContext.RequestAborted);
+    return Results.Ok(rules);
+}).RequireAuthorization();
 
 app.Run();
 

@@ -307,18 +307,19 @@ public sealed class MoneytreePostingService
             MoneytreeTransactionRow? pairedFee = null;
             if (feePairings.PaymentToFee.TryGetValue(id, out var feeId))
             {
-                // 先检查手续费状态
+                // 先检查手续费状态：只要不是已经成功记账（posted/merged/linked），就尝试合并
+                // 特别地，failed 状态的手续费也应被重新合并（可能是之前单独处理失败的遗留）
                 var feeStatus = await GetTransactionStatusAsync(conn, tx, feeId, ct);
-                if (feeStatus == "pending" || feeStatus == "needs_rule")
-            {
-                pairedFee = await LoadTransactionForUpdateAsync(conn, tx, companyCode, feeId, ct);
-                if (pairedFee is not null)
+                if (feeStatus != "posted" && feeStatus != "merged" && feeStatus != "linked")
                 {
-                    processedFeeIds.Add(feeId);
-                        _logger.LogInformation("[MoneytreePosting] Auto-including paired fee {FeeId} for transaction {TransactionId}", feeId, id);
+                    pairedFee = await LoadTransactionForUpdateAsync(conn, tx, companyCode, feeId, ct);
+                    if (pairedFee is not null)
+                    {
+                        processedFeeIds.Add(feeId);
+                        _logger.LogInformation("[MoneytreePosting] Auto-including paired fee {FeeId} (status={FeeStatus}) for transaction {TransactionId}", feeId, feeStatus, id);
+                    }
                 }
-                }
-                // 如果手续费已被处理，pairedFee 保持 null
+                // 如果手续费已被成功处理（posted/merged/linked），pairedFee 保持 null
             }
 
             try

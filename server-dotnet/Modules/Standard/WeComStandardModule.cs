@@ -28,12 +28,18 @@ public class WeComStandardModule : ModuleBase
         services.AddScoped<WeComIntentClassifier>();
         services.AddScoped<TimesheetAiParser>();
         services.AddScoped<WeComEmployeeGateway>();
+
+        // LINE Channel Adapter
+        services.AddScoped<LineChannelAdapter>();
     }
     
     public override void MapEndpoints(WebApplication app)
     {
         WeComMessageModule.MapWeComMessageModule(app);
         WeComChatbotModule.MapWeComChatbotModule(app);
+
+        // LINE Webhook
+        LineMessageModule.MapLineMessageModule(app);
     }
 }
 

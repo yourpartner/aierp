@@ -2817,3 +2817,98 @@ EXCEPTION WHEN others THEN
 END $$;
 CREATE INDEX IF NOT EXISTS idx_ai_patterns_company_type ON ai_learned_patterns(company_code, pattern_type);
 CREATE INDEX IF NOT EXISTS idx_ai_patterns_confidence ON ai_learned_patterns(confidence DESC);
+
+-- ============================================================
+-- Unified Agent Skills Framework
+-- ============================================================
+
+-- 主表：技能定义（每个 Skill = 一个完整的业务场景专家）
+CREATE TABLE IF NOT EXISTS agent_skills (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_code  TEXT,                                -- NULL = 全局模板
+  skill_key     TEXT NOT NULL,                       -- 唯一标识: 'invoice_booking'
+  name          TEXT NOT NULL,                       -- 显示名: '发票识别记账'
+  description   TEXT,
+  category      TEXT DEFAULT 'general',              -- finance, hr, sales, approval
+  icon          TEXT,
+
+  -- 触发配置
+  triggers      JSONB NOT NULL DEFAULT '{}',
+
+  -- Prompt 模板
+  system_prompt       TEXT,                          -- 主系统提示词
+  extraction_prompt   TEXT,                          -- 文档提取提示词
+  followup_prompt     TEXT,                          -- 跟进对话提示词
+
+  -- 工具配置
+  enabled_tools       TEXT[] DEFAULT '{}',
+
+  -- 模型配置
+  model_config  JSONB DEFAULT '{}',
+
+  -- 行为配置
+  behavior_config JSONB DEFAULT '{}',
+
+  -- 管理字段
+  priority    INT DEFAULT 100,
+  is_active   BOOLEAN DEFAULT TRUE,
+  version     INT DEFAULT 1,
+  parent_id   UUID REFERENCES agent_skills(id),      -- 公司定制继承全局模板
+  created_at  TIMESTAMPTZ DEFAULT now(),
+  updated_at  TIMESTAMPTZ DEFAULT now()
+);
+-- company_code=NULL 为全局模板，company_code='xxx' 为公司定制覆盖
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'uq_agent_skills_company_key'
+  ) THEN
+    ALTER TABLE agent_skills
+      ADD CONSTRAINT uq_agent_skills_company_key UNIQUE (company_code, skill_key);
+  END IF;
+EXCEPTION WHEN others THEN NULL;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_agent_skills_active ON agent_skills(is_active, priority);
+CREATE INDEX IF NOT EXISTS idx_agent_skills_category ON agent_skills(category);
+
+-- 业务规则表（替代 ai_accounting_rules，按 Skill 分组）
+CREATE TABLE IF NOT EXISTS agent_skill_rules (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  skill_id    UUID NOT NULL REFERENCES agent_skills(id) ON DELETE CASCADE,
+  rule_key    TEXT,
+  name        TEXT NOT NULL,
+  conditions  JSONB NOT NULL DEFAULT '{}',
+  actions     JSONB NOT NULL DEFAULT '{}',
+  priority    INT DEFAULT 100,
+  is_active   BOOLEAN DEFAULT TRUE,
+  created_at  TIMESTAMPTZ DEFAULT now(),
+  updated_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_skill_rules_skill ON agent_skill_rules(skill_id, priority);
+
+-- 示例库（few-shot examples，提升准确度的关键）
+CREATE TABLE IF NOT EXISTS agent_skill_examples (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  skill_id    UUID NOT NULL REFERENCES agent_skills(id) ON DELETE CASCADE,
+  name        TEXT,
+  input_type  TEXT DEFAULT 'text',
+  input_data  JSONB NOT NULL DEFAULT '{}',
+  expected_output JSONB NOT NULL DEFAULT '{}',
+  is_active   BOOLEAN DEFAULT TRUE,
+  created_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_skill_examples_skill ON agent_skill_examples(skill_id);
+
+-- 测试用例（验证 Skill 配置是否正确）
+CREATE TABLE IF NOT EXISTS agent_skill_tests (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  skill_id      UUID NOT NULL REFERENCES agent_skills(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  test_input    JSONB NOT NULL DEFAULT '{}',
+  expected      JSONB,
+  last_result   JSONB,
+  last_run_at   TIMESTAMPTZ,
+  passed        BOOLEAN,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_skill_tests_skill ON agent_skill_tests(skill_id);

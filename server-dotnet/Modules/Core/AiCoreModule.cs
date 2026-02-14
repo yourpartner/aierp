@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using Npgsql;
 using Server.Infrastructure.Modules;
 using Server.Infrastructure.Skills;
 using Server.Modules.AgentKit.Tools;
@@ -23,6 +25,7 @@ public class AiCoreModule : ModuleBase
             new MenuConfig { Id = "menu_chat", Label = "menu.chat", Icon = "ChatDotRound", Path = "/chat", ParentId = "menu_ai", Order = 11 },
             new MenuConfig { Id = "menu_agent_scenarios", Label = "menu.agentScenarios", Icon = "Collection", Path = "/ai/agent-scenarios", ParentId = "menu_ai", Order = 12 },
             new MenuConfig { Id = "menu_agent_rules", Label = "menu.agentRules", Icon = "SetUp", Path = "/ai/agent-rules", ParentId = "menu_ai", Order = 13 },
+            new MenuConfig { Id = "menu_agent_skills", Label = "menu.agentSkills", Icon = "Cpu", Path = "/ai/agent-skills", ParentId = "menu_ai", Order = 14 },
             new MenuConfig { Id = "menu_workflow_rules", Label = "menu.workflowRules", Icon = "Operation", Path = "/workflow/rules", ParentId = "menu_ai", Order = 14 },
         }
     };
@@ -54,19 +57,66 @@ public class AiCoreModule : ModuleBase
         services.AddScoped<GetPayrollComparisonTool>();
         services.AddScoped<GetDepartmentSummaryTool>();
         
+        // 银行明细记账工具
+        services.AddScoped<IdentifyBankCounterpartyTool>();
+        services.AddScoped<SearchBankOpenItemsTool>();
+        services.AddScoped<ResolveBankAccountTool>();
+        
         // 注册核心服务
         services.AddScoped<AgentKitService>();
         services.AddScoped<AgentScenarioService>();
         services.AddScoped<AgentAccountingRuleService>();
+        
+        // Unified Agent Skills Framework
+        services.AddScoped<AgentSkillService>();
+        services.AddScoped<SkillMatcher>();
+        services.AddScoped<SkillPromptBuilder2>();
         services.AddScoped<WorkflowRulesService>();
         services.AddScoped<AiChatbotService>();
         services.AddScoped<AiLearningService>();
         
-        // AI Skills + Learning Framework (Phase 1)
+        // AI Skills + Learning Framework
         services.AddScoped<HistoricalPatternService>();
         services.AddScoped<LearningEventCollector>();
         services.AddScoped<SkillContextBuilder>();
         services.AddScoped<MessageTaskRouter>();
+
+        // Phase 6: Learning Engine + Proactive Alert
+        services.AddScoped<LearningEngine>();
+        services.AddScoped<ProactiveAlertService>();
+        services.AddHostedService<ProactiveAlertBackgroundService>();
+
+        // AI Unified Orchestrator — Context Engine + Skill Router
+        services.AddScoped<InvoiceBookingSkill>();
+        services.AddScoped<TimesheetSkill>();
+        services.AddScoped<PayrollSkill>();
+        services.AddScoped<CertificateSkill>();
+        services.AddScoped<LeaveSkill>();
+        services.AddScoped<WeComChannelAdapter>();
+        // Phase 4: Advanced Skills
+        services.AddScoped<ResumeAnalysisSkill>();
+        services.AddScoped<BillingSkill>();
+        services.AddScoped<PurchaseOrderSkill>();
+        services.AddScoped<OpportunitySkill>();
+        services.AddScoped<FinancialReportSkill>();
+        services.AddScoped<SkillRouter>(sp =>
+        {
+            var router = new SkillRouter(
+                sp.GetRequiredService<ILogger<SkillRouter>>(),
+                sp.GetRequiredService<NpgsqlDataSource>());
+            // 注册所有技能
+            router.RegisterSkill(sp.GetRequiredService<InvoiceBookingSkill>());
+            router.RegisterSkill(sp.GetRequiredService<TimesheetSkill>());
+            router.RegisterSkill(sp.GetRequiredService<PayrollSkill>());
+            router.RegisterSkill(sp.GetRequiredService<CertificateSkill>());
+            router.RegisterSkill(sp.GetRequiredService<LeaveSkill>());
+            router.RegisterSkill(sp.GetRequiredService<ResumeAnalysisSkill>());
+            router.RegisterSkill(sp.GetRequiredService<BillingSkill>());
+            router.RegisterSkill(sp.GetRequiredService<PurchaseOrderSkill>());
+            router.RegisterSkill(sp.GetRequiredService<OpportunitySkill>());
+            router.RegisterSkill(sp.GetRequiredService<FinancialReportSkill>());
+            return router;
+        });
     }
 }
 

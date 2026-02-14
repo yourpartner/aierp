@@ -234,11 +234,12 @@
               </div>
             </div>
             <div
-              v-for="section in taskSections"
+              v-for="section in visibleTaskSections"
               :key="section.id"
               class="task-conversation"
               :class="{ active: section.id === activeTaskId }"
               :ref="el => setTaskSectionRef(section.id, el)"
+              @click="selectTask(section.id)"
             >
               <div class="task-conversation-header">
                 <div class="task-header-main">
@@ -628,6 +629,15 @@
           </div>
           <div class="chat-input" @dragover.prevent="onChatDragOver" @drop.prevent="onChatDrop" @dragleave.prevent="onChatDragLeave">
             <div class="input-shell" :class="{ 'drag-hover': isDragOver }">
+              <div v-if="activeTaskContext && !activeClarification" class="task-context-banner">
+                <div class="task-context-info">
+                  <span class="task-context-icon">💬</span>
+                  <span class="task-context-label">{{ activeTaskContext.label }}</span>
+                  <span class="task-context-name">{{ activeTaskContext.title }}</span>
+                  <el-tag v-if="activeTaskContext.voucherNo" size="small" type="success" style="margin-left:6px">{{ activeTaskContext.voucherNo }}</el-tag>
+                </div>
+                <el-button text size="small" @click="enterGeneralMode">{{ localize('一般会話へ', '切换到通用对话', 'General chat') }}</el-button>
+              </div>
               <div v-if="activeClarification" class="clarify-banner">
                 <div class="clarify-banner-text">
           <span v-if="activeClarification?.documentLabel" class="clarify-banner-label">[{{ activeClarification.documentLabel }}]</span>
@@ -678,7 +688,7 @@
                   v-model="input"
                   type="textarea"
                   :rows="2"
-                  :placeholder="text.chat.placeholder"
+                  :placeholder="chatPlaceholder"
                   class="chat-textarea"
                 />
                 <el-button
@@ -1438,7 +1448,10 @@ async function loadTasks(){
       }
       return
     }
-    if (!normalized.find(task => task.id === activeTaskId.value)){
+    // Only auto-select when the current activeTaskId does NOT exist in the loaded task list.
+    // If it exists, NEVER override (regardless of how it was set).
+    const currentStillExists = !!activeTaskId.value && normalized.some(task => task.id === activeTaskId.value)
+    if (!currentStillExists){
       if (preferGeneralMode.value){
         activeTaskId.value = ''
       } else {
@@ -1712,14 +1725,17 @@ async function loadApprovalTasks(){
       ...pendingTasks.value.map(task => task.id),
       ...completedTasks.value.map(task => task.id)
     ])
-    if (preferGeneralMode.value){
-      if (activeTaskId.value && !availableIds.has(activeTaskId.value)){
+    // Only auto-select when the current activeTaskId is invalid (empty or not in list).
+    // If it exists in the list, NEVER override.
+    const currentValid = !!activeTaskId.value && availableIds.has(activeTaskId.value)
+    if (!currentValid) {
+      if (preferGeneralMode.value){
         activeTaskId.value = ''
+      } else {
+        const firstPending = pendingTasks.value[0]
+        const firstCompleted = completedTasks.value[0]
+        activeTaskId.value = firstPending?.id || firstCompleted?.id || ''
       }
-    } else if (!activeTaskId.value || !availableIds.has(activeTaskId.value)) {
-      const firstPending = pendingTasks.value[0]
-      const firstCompleted = completedTasks.value[0]
-      activeTaskId.value = firstPending?.id || firstCompleted?.id || ''
     }
 
     // Process completion queue (for tasks just completed in this session)
@@ -1753,7 +1769,9 @@ function mergeTasks(newTasks: AgentTask[]){
       delete taskAttachments[id]
     }
   })
-  if (!preferGeneralMode.value && !activeTaskId.value && pendingTasks.value.length > 0){
+  // Only auto-select if there is NO current active task (never override an existing selection)
+  const currentExists = !!activeTaskId.value && activeIds.has(activeTaskId.value)
+  if (!preferGeneralMode.value && !currentExists && pendingTasks.value.length > 0){
     activeTaskId.value = pendingTasks.value[0].id
   }
   if (!preferGeneralMode.value && !pendingTasks.value.length && completedTasks.value.length){
@@ -1863,7 +1881,7 @@ async function retryInvoiceTask(task: InvoiceTask){
 
 async function confirmCancelTask(task: InvoiceTask){
   if (!activeSessionId.value){
-    ElMessage.error('请先选择会话')
+    ElMessage.error(localize('セッションを選択してください', '请先选择会话', 'Please select a session first'))
     return
   }
   try{
@@ -1884,15 +1902,31 @@ async function confirmCancelTask(task: InvoiceTask){
         sessionId: activeSessionId.value
       }
     })
-    ElMessage.success('任务已删除')
-    if (activeTaskId.value === task.id){
-      activeTaskId.value = ''
+    ElMessage.success(localize('タスクを削除しました', '任务已删除', 'Task deleted'))
+    // 删除后自动选中时间轴上的下一个任务（如果当前选中的是被删除的任务）
+    let nextTaskId = ''
+    if (activeTaskId.value === task.id) {
+      const sections = taskSections.value
+      const idx = sections.findIndex(s => s.id === task.id)
+      if (idx >= 0) {
+        // 优先选下一个，没有则选上一个
+        if (idx + 1 < sections.length) {
+          nextTaskId = sections[idx + 1].id
+        } else if (idx - 1 >= 0) {
+          nextTaskId = sections[idx - 1].id
+        }
+      }
     }
     delete taskAttachments[task.id]
     await loadTasks()
     await loadMessages()
+    if (nextTaskId) {
+      selectTask(nextTaskId)
+    } else if (activeTaskId.value === task.id) {
+      activeTaskId.value = ''
+    }
   }catch(e:any){
-    const errText = e?.response?.data?.error || e?.message || '删除任务失败'
+    const errText = e?.response?.data?.error || e?.message || localize('タスクの削除に失敗しました', '删除任务失败', 'Failed to delete task')
     ElMessage.error(errText)
   }
 }
@@ -2596,6 +2630,42 @@ const preferGeneralMode = ref(false)
 const showCompletedTasks = ref(false)
 const hasAnyTasks = computed(() => taskList.value.length > 0 || approvalTasks.value.length > 0 || approvalCompleted.value.length > 0)
 const generalModeActive = computed(() => preferGeneralMode.value || !activeTaskId.value)
+
+// ==================== Task Context for input area ====================
+const activeTaskContext = computed(() => {
+  if (generalModeActive.value || !activeTaskId.value) return null
+  const task = taskList.value.find(t => t.id === activeTaskId.value)
+  if (!task) return null
+
+  // Use agentTaskDisplayLabel() for consistent labeling with left panel and task sections
+  const label = agentTaskDisplayLabel(task)
+  let title = ''
+  let voucherNo = ''
+
+  if (isInvoiceTask(task)) {
+    title = task.title || task.summary || task.fileName || ''
+    const match = task.summary?.match(/\d{10}/)
+    if (match) voucherNo = match[0]
+  } else {
+    title = (task as any).title || (task as any).summary || ''
+  }
+
+  return { id: task.id, label, title, voucherNo }
+})
+
+const chatPlaceholder = computed(() => {
+  if (activeTaskContext.value) {
+    const ctx = activeTaskContext.value
+    const taskDesc = ctx.voucherNo ? `${ctx.label} (${ctx.voucherNo})` : (ctx.label || ctx.title)
+    return localize(
+      `${taskDesc} について入力... 例：「日付を1/20に変更」「科目を変更」`,
+      `针对 ${taskDesc} 输入... 例："把日期改成1月20日""修改科目"`,
+      `About ${taskDesc}... e.g. "change date to 1/20"`
+    )
+  }
+  return text.value?.chat?.placeholder || localize('AI と会話する...', 'AI 对话...', 'Chat with AI...')
+})
+
 const approvalCompletionQueue = new Map<string, ApprovalTaskItem>()
 let approvalReloadTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -3239,6 +3309,21 @@ const taskSections = computed<TaskSectionItem[]>(() => {
   return sections
 })
 
+/** 只加载当前任务前后各 10 个（虚拟窗口），避免大量任务导致页面卡顿 */
+const TASK_WINDOW_RADIUS = 10
+const visibleTaskSections = computed<TaskSectionItem[]>(() => {
+  const all = taskSections.value
+  if (all.length <= TASK_WINDOW_RADIUS * 2 + 1) return all // 21个以内全部显示
+  const activeIdx = activeTaskId.value
+    ? all.findIndex(s => s.id === activeTaskId.value)
+    : -1
+  // 没有选中任务时，显示最后 21 个
+  const center = activeIdx >= 0 ? activeIdx : all.length - 1
+  const start = Math.max(0, center - TASK_WINDOW_RADIUS)
+  const end = Math.min(all.length, center + TASK_WINDOW_RADIUS + 1)
+  return all.slice(start, end)
+})
+
 watch(clarificationMap, map => {
   if (activeClarificationId.value) {
     const entry = map.get(activeClarificationId.value)
@@ -3487,6 +3572,7 @@ const pathToEmbedKeyMap: Record<string, string> = {
   '/system/users': 'system.users',
   '/system/roles': 'system.roles',
   '/ai/agent-scenarios': 'ai.agentScenarios',
+  '/ai/agent-skills': 'ai.agentSkills',
   '/workflow/rules': 'ai.workflowRules',
   '/notifications/runs': 'notif.ruleRuns',
   '/notifications/logs': 'notif.logs',
@@ -3698,6 +3784,7 @@ const embedMap:Record<string, any> = {
   ,'notif.logs': defineAsyncComponent(() => import('./NotificationLogs.vue'))
   ,'ai.workflowRules': defineAsyncComponent(() => import('./WorkflowRules.vue'))
   ,'ai.agentScenarios': defineAsyncComponent(() => import('./AgentScenarios.vue'))
+  ,'ai.agentSkills': defineAsyncComponent(() => import('./AgentSkills.vue'))
   // Fixed Assets embeds
   ,'fa.classes': defineAsyncComponent(() => import('./AssetClassesList.vue'))
   ,'fa.list': defineAsyncComponent(() => import('./FixedAssetsList.vue'))
@@ -5320,23 +5407,23 @@ function onChatDragLeave(){
 .task-panel-body {
   flex: 1;
   overflow-y: auto;
-  padding: 14px 14px 20px;
+  padding: 8px 10px 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 4px;
 }
 
 .task-panel-item {
-  background: #ffffff;
-  border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  padding: 14px 16px;
+  background: transparent;
+  border-radius: 10px;
+  border: none;
+  padding: 10px 12px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+  gap: 4px;
+  box-shadow: none;
   position: relative;
 }
 
@@ -5359,43 +5446,28 @@ function onChatDragLeave(){
 }
 
 .task-panel-item:hover {
-  border-color: rgba(59, 130, 246, 0.5);
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.1);
-  transform: translateY(-1px);
+  background: rgba(59, 130, 246, 0.06);
 }
 
 .task-panel-item.active {
-  border-color: var(--color-primary);
-  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.18);
-  background: linear-gradient(135deg, #ffffff 0%, #f0f7ff 100%);
+  background: rgba(59, 130, 246, 0.1);
 }
-
-.task-panel-item.completed {
-  opacity: 0.8;
-  background: #fafafa;
-}
-
-.task-panel-item.failed {
-  border-color: rgba(239, 68, 68, 0.5);
-}
-
-.task-panel-item.failed::before {
-  background: #ef4444;
+.task-panel-item.active::before {
   opacity: 1;
 }
 
-.task-panel-item.error {
-  border-color: rgba(239, 68, 68, 0.5);
+.task-panel-item.completed {
+  opacity: 0.6;
 }
 
+.task-panel-item.failed::before,
 .task-panel-item.error::before {
   background: #ef4444;
   opacity: 1;
 }
 
 .task-panel-item.cancelled {
-  border-style: dashed;
-  opacity: 0.65;
+  opacity: 0.45;
 }
 
 /* 不同类型任务的指示条颜色 */
@@ -5467,16 +5539,24 @@ function onChatDragLeave(){
 }
 
 .task-name {
-  font-weight: 600;
-  color: #1f2937;
+  font-weight: 500;
+  color: #334155;
   font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.task-panel-item.active .task-name {
+  color: var(--color-primary);
+  font-weight: 600;
 }
 
 .task-item-meta {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 12px;
+  gap: 6px;
+  font-size: 11px;
   color: var(--color-text-secondary);
 }
 
@@ -5486,6 +5566,7 @@ function onChatDragLeave(){
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: #94a3b8;
 }
 
 .chat-content {
@@ -5535,17 +5616,20 @@ function onChatDragLeave(){
 
 .task-conversation {
   background: #ffffff;
-  border-radius: 16px;
+  border-radius: 14px;
   padding: 16px 18px;
-  box-shadow: var(--shadow-card);
-  margin-bottom: 18px;
-  border: 1px solid rgba(15, 23, 42, 0.05);
-  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+  margin-bottom: 12px;
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.task-conversation:hover {
+  border-color: rgba(59, 130, 246, 0.15);
 }
 
 .task-conversation.active {
-  border-color: rgba(59, 130, 246, 0.32);
-  box-shadow: 0 18px 42px rgba(59, 130, 246, 0.18);
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 2px 12px rgba(59, 130, 246, 0.1);
 }
 
 .task-conversation.general {
@@ -6116,6 +6200,41 @@ function onChatDragLeave(){
 .input-shell.drag-hover {
   border-color: rgba(59, 130, 246, 0.7);
   background: #eff6ff;
+}
+
+.task-context-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.06);
+  border-radius: 10px;
+  margin-bottom: 4px;
+}
+.task-context-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #1f2937;
+  min-width: 0;
+  overflow: hidden;
+}
+.task-context-icon {
+  flex-shrink: 0;
+}
+.task-context-label {
+  font-weight: 600;
+  color: #059669;
+  flex-shrink: 0;
+}
+.task-context-name {
+  color: #374151;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .clarify-banner {

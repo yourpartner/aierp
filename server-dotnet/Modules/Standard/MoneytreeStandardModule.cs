@@ -79,19 +79,14 @@ public class MoneytreeStandardModule : ModuleBase
             return Results.Ok(new { ok = true, updated = n });
         }).RequireAuthorization();
 
-        // DELETE /integrations/moneytree/rules/{id}  (soft delete -> set inactive)
-        app.MapDelete("/integrations/moneytree/rules/{id:guid}", async (Guid id, HttpRequest req, NpgsqlDataSource ds) =>
+        // DELETE /integrations/moneytree/rules/{id}  (soft delete -> set inactive in agent_skill_rules)
+        app.MapDelete("/integrations/moneytree/rules/{id:guid}", async (Guid id, HttpRequest req, MoneytreePostingRuleService ruleService) =>
         {
             if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
                 return Results.BadRequest(new { error = "Missing x-company-code" });
 
-            await using var conn = await ds.OpenConnectionAsync(req.HttpContext.RequestAborted);
-            await using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"UPDATE moneytree_posting_rules SET is_active = false, updated_at = now() WHERE company_code = $1 AND id = $2";
-            cmd.Parameters.AddWithValue(cc.ToString());
-            cmd.Parameters.AddWithValue(id);
-            var n = await cmd.ExecuteNonQueryAsync(req.HttpContext.RequestAborted);
-            return n > 0 ? Results.Ok(new { ok = true }) : Results.NotFound(new { error = "rule not found" });
+            var deleted = await ruleService.DeleteAsync(id, req.HttpContext.RequestAborted);
+            return deleted ? Results.Ok(new { ok = true }) : Results.NotFound(new { error = "rule not found" });
         }).RequireAuthorization();
 
         // Approval task completion endpoint (front-end uses approval task id).

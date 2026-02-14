@@ -45,9 +45,10 @@ public sealed class WeComIntentClassifier
         if (string.IsNullOrWhiteSpace(message) && string.Equals(messageType, "text", StringComparison.OrdinalIgnoreCase))
             return new IntentResult("unknown", 0, new Dictionary<string, string>());
 
-        // 文件消息（图片/文件）→ 如果在 timesheet 上下文中，直接判定为文件上传
+        // 文件消息（图片/文件）→ 根据上下文判断是工时上传还是发票识别
         if (!string.Equals(messageType, "text", StringComparison.OrdinalIgnoreCase))
         {
+            // 如果在 timesheet 上下文中，直接判定为工时文件上传
             if (string.Equals(contextIntent, "timesheet.entry", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(contextIntent, "timesheet.upload", StringComparison.OrdinalIgnoreCase))
             {
@@ -56,7 +57,16 @@ public sealed class WeComIntentClassifier
                     ["messageType"] = messageType ?? "file"
                 });
             }
-            return new IntentResult("file.upload", 0.7m, new Dictionary<string, string>
+            // 图片消息 → 默认视为发票识别（最常见的图片使用场景）
+            if (string.Equals(messageType, "image", StringComparison.OrdinalIgnoreCase))
+            {
+                return new IntentResult("invoice.recognize", 0.85m, new Dictionary<string, string>
+                {
+                    ["messageType"] = "image"
+                });
+            }
+            // 其他文件（PDF等）→ 也尝试发票识别
+            return new IntentResult("invoice.recognize", 0.7m, new Dictionary<string, string>
             {
                 ["messageType"] = messageType ?? "file"
             });

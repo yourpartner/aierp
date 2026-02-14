@@ -1494,6 +1494,130 @@ public class StaffPortalModule : ModuleBase
                 sessionId = response.SessionId
             });
         }).RequireAuthorization();
+
+        // ========== 渠道绑定管理（管理员用） ==========
+
+        // 查询所有绑定
+        app.MapGet("/portal/channel-bindings", async (HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            var channel = req.Query["channel"].FirstOrDefault() ?? "wecom";
+
+            await using var conn = await ds.OpenConnectionAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                SELECT b.id, b.user_id, b.channel, b.channel_user_id, b.channel_name,
+                       b.bind_method, b.status, b.bound_at,
+                       u.employee_code, u.name as user_name
+                FROM employee_channel_bindings b
+                JOIN users u ON u.id = b.user_id
+                WHERE b.company_code = $1 AND b.channel = $2
+                ORDER BY b.bound_at DESC";
+            cmd.Parameters.AddWithValue(cc.ToString());
+            cmd.Parameters.AddWithValue(channel);
+
+            var results = new List<object>();
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                results.Add(new
+                {
+                    id = reader.GetGuid(0),
+                    userId = reader.GetGuid(1),
+                    channel = reader.GetString(2),
+                    channelUserId = reader.GetString(3),
+                    channelName = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    bindMethod = reader.IsDBNull(5) ? "manual" : reader.GetString(5),
+                    status = reader.IsDBNull(6) ? "active" : reader.GetString(6),
+                    boundAt = reader.IsDBNull(7) ? null : (DateTimeOffset?)reader.GetFieldValue<DateTimeOffset>(7),
+                    employeeCode = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    userName = reader.IsDBNull(9) ? null : reader.GetString(9)
+                });
+            }
+            return Results.Ok(new { data = results });
+        }).RequireAuthorization();
+
+        // 管理员手动绑定
+        app.MapPost("/portal/channel-bindings", async (HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            var body = await req.ReadFromJsonAsync<JsonElement>();
+            var employeeCode = body.GetProperty("employeeCode").GetString();
+            var channel = body.TryGetProperty("channel", out var ch) ? ch.GetString() ?? "wecom" : "wecom";
+            var channelUserId = body.GetProperty("channelUserId").GetString();
+
+            if (string.IsNullOrEmpty(employeeCode) || string.IsNullOrEmpty(channelUserId))
+                return Results.BadRequest(new { error = "employeeCode and channelUserId are required" });
+
+            await using var conn = await ds.OpenConnectionAsync();
+
+            // 查找用户
+            await using var cmdUser = conn.CreateCommand();
+            cmdUser.CommandText = @"SELECT id, name FROM users WHERE company_code = $1 AND employee_code = $2 LIMIT 1";
+            cmdUser.Parameters.AddWithValue(cc.ToString());
+            cmdUser.Parameters.AddWithValue(employeeCode);
+            await using var userReader = await cmdUser.ExecuteReaderAsync();
+            if (!await userReader.ReadAsync())
+            {
+                await userReader.CloseAsync();
+                return Results.BadRequest(new { error = $"Employee {employeeCode} not found" });
+            }
+            var userId = userReader.GetGuid(0);
+            var userName = userReader.IsDBNull(1) ? null : userReader.GetString(1);
+            await userReader.CloseAsync();
+
+            // 检查是否已绑定
+            await using var cmdCheck = conn.CreateCommand();
+            cmdCheck.CommandText = @"
+                SELECT id FROM employee_channel_bindings 
+                WHERE channel = $1 AND channel_user_id = $2 AND status = 'active'";
+            cmdCheck.Parameters.AddWithValue(channel);
+            cmdCheck.Parameters.AddWithValue(channelUserId);
+            var existing = await cmdCheck.ExecuteScalarAsync();
+            if (existing != null)
+                return Results.BadRequest(new { error = "This channel user is already bound to another account" });
+
+            // 创建绑定
+            await using var cmdBind = conn.CreateCommand();
+            cmdBind.CommandText = @"
+                INSERT INTO employee_channel_bindings 
+                (company_code, user_id, channel, channel_user_id, channel_name, bind_method, status, bound_at)
+                VALUES ($1, $2, $3, $4, $5, 'manual', 'active', now())
+                RETURNING id";
+            cmdBind.Parameters.AddWithValue(cc.ToString());
+            cmdBind.Parameters.AddWithValue(userId);
+            cmdBind.Parameters.AddWithValue(channel);
+            cmdBind.Parameters.AddWithValue(channelUserId);
+            cmdBind.Parameters.AddWithValue(userName ?? (object)DBNull.Value);
+
+            var bindId = await cmdBind.ExecuteScalarAsync();
+            return Results.Ok(new { id = bindId, message = $"Bound {employeeCode} to {channel}:{channelUserId}" });
+        }).RequireAuthorization();
+
+        // 管理员解绑
+        app.MapDelete("/portal/channel-bindings/{id:guid}", async (Guid id, HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            await using var conn = await ds.OpenConnectionAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                UPDATE employee_channel_bindings 
+                SET status = 'unbound', unbound_at = now(), updated_at = now()
+                WHERE id = $1 AND company_code = $2 AND status = 'active'";
+            cmd.Parameters.AddWithValue(id);
+            cmd.Parameters.AddWithValue(cc.ToString());
+
+            var rows = await cmd.ExecuteNonQueryAsync();
+            return rows > 0
+                ? Results.Ok(new { message = "Unbound" })
+                : Results.NotFound(new { error = "Binding not found" });
+        }).RequireAuthorization();
     }
 
     private static async Task<Guid?> ResolveResourceId(HttpContext ctx, NpgsqlConnection conn, string companyCode, string resourceTable)
