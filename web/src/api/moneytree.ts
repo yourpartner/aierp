@@ -33,6 +33,8 @@ export interface MoneytreeTransactionItem {
   voucherNo: string | null
   ruleTitle: string | null
   importedAt: string | null
+  postingConfidence: number | null
+  postingMethod: string | null
 }
 
 export interface MoneytreeSimulationResult {
@@ -87,12 +89,20 @@ export function fetchMoneytreePostingTaskTransactions(taskId: string, params: Mo
     .then((res) => res.data)
 }
 
-export function simulateMoneytreePosting(ids: string[]) {
+export interface ManualPostRequest {
+  counterpartAccountCode: string
+  note?: string
+}
+
+export interface ManualPostResult {
+  success: boolean
+  voucherNo: string | null
+  error: string | null
+}
+
+export function manualPostTransaction(transactionId: string, payload: ManualPostRequest) {
   return api
-    .post<{ count: number; items: MoneytreeSimulationResult[] }>(
-      '/integrations/moneytree/posting/simulate',
-      { ids }
-    )
+    .post<ManualPostResult>(`/integrations/moneytree/transactions/${transactionId}/manual-post`, payload)
     .then((res) => res.data)
 }
 

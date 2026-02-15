@@ -583,6 +583,27 @@
                     <span class="approval-conversation-value multiline">{{ formatApprovalRemark(section.approvalTask) }}</span>
                   </div>
                   <div class="approval-conversation-actions">
+                    <!-- 銀行自動記帳タスク専用ボタン -->
+                    <template v-if="section.approvalTask?.entity === 'moneytree_posting'">
+                      <el-button
+                        type="primary"
+                        size="small"
+                        :disabled="!section.approvalTask"
+                        :loading="section.approvalTask && bankAiSupportLoadingId === section.approvalTask.id"
+                        @click="section.approvalTask && startBankAiSupport(section.approvalTask)"
+                      >
+                        <el-icon style="margin-right:4px"><ChatDotRound /></el-icon>
+                        AI記帳サポート
+                      </el-button>
+                      <el-button
+                        size="small"
+                        type="info"
+                        :disabled="!section.approvalTask"
+                        @click="section.approvalTask && openBankTransactionsList(section.approvalTask)"
+                      >
+                        明細一覧
+                      </el-button>
+                    </template>
                     <el-button
                       v-if="section.approvalTask?.entity === 'timesheet_submission'"
                       size="small"
@@ -866,7 +887,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, reactive, ref, nextTick, watch, defineAsyncComponent, defineComponent, computed, provide } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import {
   listInvoiceTasks,
   type AgentTask,
@@ -880,7 +901,7 @@ import { loadEditionInfo, menuTree as editionMenuTree } from '../stores/edition'
 import type { MenuTreeNode } from '../api/edition'
 import { useI18n } from '../i18n'
 import SalesChartMessage from '../components/SalesChartMessage.vue'
-import { Document, Close, Plus, Delete, ArrowDown, ArrowRight, Loading, Refresh } from '@element-plus/icons-vue'
+import { Document, Close, Plus, Delete, ArrowDown, ArrowRight, Loading, Refresh, ChatDotRound } from '@element-plus/icons-vue'
 
 // 所有业务组件使用 defineAsyncComponent 按需加载，提升首次加载性能
 // 财务核心
@@ -933,6 +954,7 @@ const InventoryMovement = defineAsyncComponent(() => import('./InventoryMovement
 const InventoryBalances = defineAsyncComponent(() => import('./InventoryBalances.vue'))
 
 const router = useRouter()
+const route = useRoute()
 const { text, lang, setLang } = useI18n()
 const recent = reactive<{path:string,name?:string}[]>([])
 const messages = reactive<any[]>([])
@@ -942,6 +964,7 @@ const sessions = reactive<{id:string,title?:string}[]>([])
 const activeSessionId = ref('')
 const input = ref('')
 const chatInputRef = ref<any>(null)
+const pendingBankTransactionId = ref('')
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const attachments = reactive<ChatAttachment[]>([])
 const isDragOver = ref(false)
@@ -2058,6 +2081,63 @@ function closeTimesheetDetail(){
   timesheetDetailDialog.workDaysText = ''
   timesheetDetailDialog.statusLabel = ''
   timesheetDetailDialog.rows = []
+}
+
+// === 銀行自動記帳タスク: AI記帳サポート + 明細一覧 ===
+const bankAiSupportLoadingId = ref('')
+
+async function startBankAiSupport(task: ApprovalTaskItem){
+  if (!task || task.entity !== 'moneytree_posting') return
+  bankAiSupportLoadingId.value = task.id
+  try {
+    // 1. 获取该 task 关联的失败/needs_rule 交易列表
+    const resp = await api.get(`/integrations/moneytree/posting-task/${encodeURIComponent(task.objectId)}/failed-transactions`)
+    const failedTxs: any[] = resp.data?.items || []
+
+    if (failedTxs.length === 0) {
+      ElMessage.info('未記帳の取引はありません。')
+      bankAiSupportLoadingId.value = ''
+      return
+    }
+
+    // 2. 构建结构化消息：汇总失败交易，请 AI 引导用户逐条处理
+    let message = `銀行自動記帳で${failedTxs.length}件の取引が記帳できませんでした。順番に確認して記帳をお願いします。\n\n`
+    failedTxs.forEach((tx: any, i: number) => {
+      const isW = (tx.withdrawalAmount ?? 0) > 0
+      const amount = isW ? tx.withdrawalAmount : tx.depositAmount
+      const type = isW ? '出金' : '入金'
+      message += `${i + 1}. ${tx.transactionDate} ${type} ¥${Number(amount || 0).toLocaleString()} ${tx.description || ''}`
+      if (tx.postingError) message += ` (エラー: ${tx.postingError})`
+      message += ` [ID: ${tx.id}]\n`
+    })
+    message += `\nまず1件目から始めてください。`
+
+    // 3. 发送消息（带第一条交易的 bankTransactionId）
+    const payload: Record<string, any> = {
+      message,
+      language: 'ja',
+      bankTransactionId: failedTxs[0].id
+    }
+    if (activeSessionId.value) payload.sessionId = activeSessionId.value
+
+    const aiResp = await api.post('/ai/agent/message', payload)
+    applySessionFromResponse(aiResp.data?.sessionId)
+    await loadMessages()
+    await loadTasks()
+  } catch (e: any) {
+    const errText = e?.response?.data?.error || e?.message || 'AI記帳サポートの開始に失敗しました'
+    ElMessage.error(errText)
+  } finally {
+    bankAiSupportLoadingId.value = ''
+  }
+}
+
+function openBankTransactionsList(task: ApprovalTaskItem){
+  if (!task || task.entity !== 'moneytree_posting') return
+  openInModal('moneytree.transactions', '銀行明細', {
+    mode: 'task',
+    approvalTaskId: task.id
+  })
 }
 
 function closePdfPreview(){
@@ -4314,10 +4394,44 @@ onMounted(async () => {
     await loadApprovalTasks()
   }
 
+  // === 银行明细 AI 相談：从 MoneytreeTransactions 页面跳转过来时自动发送记账请求 ===
+  if (route.query.bankTxId) {
+    const txId = route.query.bankTxId as string
+    const desc = route.query.bankTxDesc as string || ''
+    const amount = route.query.bankTxAmount as string || '0'
+    const date = route.query.bankTxDate as string || ''
+    const type = route.query.bankTxType as string || 'withdrawal'
+    const bank = route.query.bankTxBank as string || ''
+    const account = route.query.bankTxAccount as string || ''
+    const isWithdrawal = type === 'withdrawal'
+    const typeLabel = isWithdrawal ? '出金' : '入金'
+    const amountFormatted = Number(amount).toLocaleString()
+
+    // 构建用户可以编辑的预填消息
+    let bankMsg = `以下の銀行取引を記帳してください。\n`
+    bankMsg += `取引日: ${date}\n`
+    bankMsg += `種別: ${typeLabel}\n`
+    bankMsg += `金額: ¥${amountFormatted}\n`
+    if (desc) bankMsg += `摘要: ${desc}\n`
+    if (bank) bankMsg += `金融機関: ${bank}\n`
+    if (account) bankMsg += `口座番号: ${account}\n`
+    bankMsg += `\n銀行取引ID: ${txId}`
+
+    // 设置输入内容并存储银行交易ID（用于后端关联）
+    pendingBankTransactionId.value = txId
+    input.value = bankMsg
+    await nextTick()
+    // 清除 URL 查询参数（避免刷新重复触发）
+    router.replace({ path: '/chat', query: {} })
+    // 自动聚焦到输入框，让用户可以编辑后发送，或直接发送
+    chatInputRef.value?.focus?.()
+  }
+
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('storage', handleProfileStorage)
+  window.removeEventListener('chatkit:bankConsult', onBankConsultEvent)
 })
 
 watch(activeSessionId, (id) => {
@@ -4510,6 +4624,11 @@ async function send(){
     if (activeSessionId.value) payload.sessionId = activeSessionId.value
     if (currentClarificationId) payload.answerTo = currentClarificationId
     if (targetTaskId) payload.taskId = targetTaskId
+    // 银行明细 AI 相談：将银行交易ID传给后端，用于自动关联凭证
+    if (pendingBankTransactionId.value) {
+      payload.bankTransactionId = pendingBankTransactionId.value
+      pendingBankTransactionId.value = ''
+    }
     const resp = await api.post('/ai/agent/message', payload)
     applySessionFromResponse(resp.data?.sessionId)
     await loadMessages()
@@ -4659,6 +4778,26 @@ function openInModal(key:string, title:string, payload?:any){
 }
 provide('chatkitOpenEmbed', (key: string, payload?: any) => openInModal(key, getTitle(key), payload))
 provide('chatkitCloseModal', () => { modalOpen.value = false })
+// 银行明细 AI 相談：子组件调用此方法关闭弹窗并填充银行交易消息到输入框
+provide('chatkitStartBankConsult', (txId: string, message: string) => {
+  handleBankConsultStart(txId, message)
+})
+function handleBankConsultStart(txId: string, message: string) {
+  modalOpen.value = false
+  pendingBankTransactionId.value = txId
+  input.value = message
+  nextTick(() => {
+    chatInputRef.value?.focus?.()
+  })
+}
+// 也通过 window 事件监听（解决 append-to-body 导致 provide/inject 断裂的问题）
+function onBankConsultEvent(e: Event) {
+  const detail = (e as CustomEvent).detail
+  if (detail?.txId && detail?.message) {
+    handleBankConsultStart(detail.txId, detail.message)
+  }
+}
+window.addEventListener('chatkit:bankConsult', onBankConsultEvent)
 function onModalDone(result:any){
   try{
     const summary = interpretModalResult(result)

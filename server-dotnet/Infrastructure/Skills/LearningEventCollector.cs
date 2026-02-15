@@ -239,6 +239,188 @@ DO UPDATE SET
         }
     }
 
+    // ==================== 银行明细记账专用学习方法 ====================
+
+    /// <summary>
+    /// 记录用户通过 ChatKit 对银行明细记账的事件（凭证创建后调用）。
+    /// 同时即时更新 ai_learned_patterns 中的 bank_description_account 映射。
+    /// </summary>
+    public async Task RecordBankPostingViaChatAsync(
+        string companyCode,
+        string? sessionId,
+        string bankTransactionId,
+        string? description,
+        decimal amount,
+        bool isWithdrawal,
+        string? debitAccount,
+        string? debitAccountName,
+        string? creditAccount,
+        string? creditAccountName,
+        string? counterpartyKind,
+        string? counterpartyId,
+        Guid? voucherId,
+        string? voucherNo,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var context = new JsonObject
+            {
+                ["bankTransactionId"] = bankTransactionId,
+                ["description"] = description,
+                ["amount"] = amount,
+                ["isWithdrawal"] = isWithdrawal,
+                ["counterpartyKind"] = counterpartyKind,
+                ["counterpartyId"] = counterpartyId,
+                ["voucherId"] = voucherId?.ToString(),
+                ["voucherNo"] = voucherNo
+            };
+            var aiOutput = new JsonObject
+            {
+                ["debitAccount"] = debitAccount,
+                ["debitAccountName"] = debitAccountName,
+                ["creditAccount"] = creditAccount,
+                ["creditAccountName"] = creditAccountName
+            };
+            await InsertEventAsync(companyCode, "bank_voucher_created_via_chat", sessionId, "bank_auto_booking", context, aiOutput, null, "confirmed", ct);
+
+            // 即时更新银行摘要→科目模式
+            if (!string.IsNullOrWhiteSpace(description) && !string.IsNullOrWhiteSpace(debitAccount) && !string.IsNullOrWhiteSpace(creditAccount))
+            {
+                await UpsertBankDescriptionPatternAsync(companyCode, description, isWithdrawal, debitAccount, debitAccountName, creditAccount, creditAccountName, ct);
+            }
+            _logger.LogInformation("[Learning] 记录银行 ChatKit 记账事件: company={Company}, txId={TxId}, desc={Desc}",
+                companyCode, bankTransactionId, description);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Learning] 记录银行 ChatKit 记账事件失败");
+        }
+    }
+
+    /// <summary>
+    /// 记录银行来源凭证被用户修正的事件。
+    /// 对比原始科目和修正后科目，更新 bank_description_account 模式。
+    /// </summary>
+    public async Task RecordBankVoucherCorrectionAsync(
+        string companyCode,
+        Guid voucherId,
+        string? bankDescription,
+        decimal? bankAmount,
+        bool? isWithdrawal,
+        string? oldDebit,
+        string? newDebit,
+        string? oldCredit,
+        string? newCredit,
+        string? newDebitName,
+        string? newCreditName,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var context = new JsonObject
+            {
+                ["voucherId"] = voucherId.ToString(),
+                ["bankDescription"] = bankDescription,
+                ["bankAmount"] = bankAmount,
+                ["isWithdrawal"] = isWithdrawal,
+                ["source"] = "bank_auto_posting"
+            };
+            var originalData = new JsonObject { ["debitAccount"] = oldDebit, ["creditAccount"] = oldCredit };
+            var correctedData = new JsonObject
+            {
+                ["debitAccount"] = newDebit,
+                ["debitAccountName"] = newDebitName,
+                ["creditAccount"] = newCredit,
+                ["creditAccountName"] = newCreditName
+            };
+            var userAction = new JsonObject
+            {
+                ["corrected"] = correctedData,
+                ["original"] = originalData,
+                ["correctedAt"] = DateTimeOffset.UtcNow.ToString("O")
+            };
+            await InsertEventAsync(companyCode, "bank_voucher_correction", null, "bank_auto_booking", context, null, userAction, "correction", ct);
+
+            // 即时更新银行摘要→科目模式（用修正后的科目覆盖）
+            if (!string.IsNullOrWhiteSpace(bankDescription) && !string.IsNullOrWhiteSpace(newDebit) && !string.IsNullOrWhiteSpace(newCredit))
+            {
+                await UpsertBankDescriptionPatternAsync(companyCode, bankDescription, isWithdrawal ?? true, newDebit, newDebitName, newCredit, newCreditName, ct);
+            }
+            _logger.LogInformation("[Learning] 记录银行凭证修正事件: company={Company}, voucher={VoucherId}, desc={Desc}",
+                companyCode, voucherId, bankDescription);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Learning] 记录银行凭证修正事件失败");
+        }
+    }
+
+    /// <summary>
+    /// 即时 upsert 银行摘要→科目映射到 ai_learned_patterns (pattern_type='bank_description_account')
+    /// </summary>
+    public async Task UpsertBankDescriptionPatternAsync(
+        string companyCode,
+        string description,
+        bool isWithdrawal,
+        string debitAccount,
+        string? debitAccountName,
+        string creditAccount,
+        string? creditAccountName,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            // 对描述做简单规范化，去除金额、日期等变化部分，保留核心关键词
+            var normalizedDesc = NormalizeBankDescription(description);
+            if (string.IsNullOrWhiteSpace(normalizedDesc)) return;
+
+            await using var conn = await _ds.OpenConnectionAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO ai_learned_patterns (company_code, pattern_type, conditions, recommendation, confidence, sample_count, last_updated_at)
+VALUES ($1, 'bank_description_account',
+  jsonb_build_object('description', $2, 'isWithdrawal', $3),
+  jsonb_build_object('debitAccount', $4, 'debitAccountName', $5, 'creditAccount', $6, 'creditAccountName', $7),
+  0.75, 1, now())
+ON CONFLICT ON CONSTRAINT uq_ai_learned_patterns_key
+DO UPDATE SET
+  recommendation = EXCLUDED.recommendation,
+  confidence = LEAST(0.98, ai_learned_patterns.confidence + 0.05),
+  sample_count = ai_learned_patterns.sample_count + 1,
+  last_updated_at = now()";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(normalizedDesc);
+            cmd.Parameters.AddWithValue(isWithdrawal);
+            cmd.Parameters.AddWithValue(debitAccount);
+            cmd.Parameters.AddWithValue((object?)debitAccountName ?? DBNull.Value);
+            cmd.Parameters.AddWithValue(creditAccount);
+            cmd.Parameters.AddWithValue((object?)creditAccountName ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync(ct);
+            _logger.LogDebug("[Learning] Upsert 银行摘要模式: {Desc} → DR:{Debit}/CR:{Credit}", normalizedDesc, debitAccount, creditAccount);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Learning] Upsert 银行摘要模式失败: desc={Desc}", description);
+        }
+    }
+
+    /// <summary>
+    /// 规范化银行交易摘要：去除金额、日期、序号等变化部分，保留交易对手名和交易类型关键词。
+    /// </summary>
+    private static string NormalizeBankDescription(string description)
+    {
+        if (string.IsNullOrWhiteSpace(description)) return "";
+        var result = description.Trim();
+        // 去除常见的日期模式 (yyyy/MM/dd, MM/dd 等)
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\d{2,4}[/\-\.]\d{1,2}([/\-\.]\d{1,2})?", " ");
+        // 去除纯数字（金额、序号等）
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\b\d{4,}\b", " ");
+        // 规范化空白
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\s+", " ").Trim();
+        return result;
+    }
+
     /// <summary>
     /// 基于已收集的学习事件，更新/创建 ai_learned_patterns 记录。
     /// 这个方法会分析「同一供应商→AI使用的科目→用户是否修正」的统计数据。

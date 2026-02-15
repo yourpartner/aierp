@@ -7,9 +7,11 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using Server.Infrastructure;
+using Server.Infrastructure.Skills;
 
 namespace Server.Modules;
 
@@ -18,12 +20,24 @@ public sealed class MoneytreePostingService
     private readonly NpgsqlDataSource _dataSource;
     private readonly MoneytreePostingRuleService _ruleService;
     private readonly FinanceService _financeService;
+    private readonly AgentKitService _agentKit;
+    private readonly LearningEventCollector _learningCollector;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<MoneytreePostingService> _logger;
     private readonly ConcurrentDictionary<string, BankAccountCacheEntry> _bankAccountCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string?> _accountNameCache = new(StringComparer.OrdinalIgnoreCase);
     
     // 手续费识别关键词
     private static readonly string[] BankFeeKeywords = { "振込手数料", "手数料", "振込ﾃｽｳﾘｮｳ", "ﾃｽｳﾘｮｳ" };
+    // 自动扣款类交易关键词（不会产生振込手数料）
+    private static readonly string[] AutoDebitKeywords = {
+        "シヤカイホケン", "社会保険", "コクミンケンコウ", "国民健康", "ケンコウホケン", "健康保険",
+        "コウセイネンキン", "厚生年金", "ロウドウホケン", "労働保険", "コヨウホケン", "雇用保険",
+        "ゲンセンチョウシュウ", "源泉徴収", "ジュウミンゼイ", "住民税", "ホウジンゼイ", "法人税",
+        "ショウヒゼイ", "消費税", "ジドウフリカエ", "自動振替", "コウザフリカエ", "口座振替",
+        "ヒキオトシ", "引落", "ﾋｷｵﾄｼ", "ｼﾞﾄﾞｳﾌﾘｶｴ",
+        "デンキ", "電気", "ガス", "スイドウ", "水道", "デンワ", "電話", "NHK", "NTT"
+    };
     // 银行手续费税率（10%）
     private const decimal BankFeeTaxRate = 10m;
     private static readonly TimeSpan BankCacheTtl = TimeSpan.FromMinutes(10);
@@ -46,11 +60,17 @@ public sealed class MoneytreePostingService
         NpgsqlDataSource dataSource,
         MoneytreePostingRuleService ruleService,
         FinanceService financeService,
+        AgentKitService agentKit,
+        LearningEventCollector learningCollector,
+        IConfiguration configuration,
         ILogger<MoneytreePostingService> logger)
     {
         _dataSource = dataSource;
         _ruleService = ruleService;
         _financeService = financeService;
+        _agentKit = agentKit;
+        _learningCollector = learningCollector;
+        _configuration = configuration;
         _logger = logger;
     }
 
@@ -141,10 +161,6 @@ public sealed class MoneytreePostingService
         CancellationToken ct = default)
     {
         var rules = await _ruleService.ListAsync(companyCode, includeInactive: false, ct);
-        if (rules.Count == 0)
-        {
-            return MoneytreePostingResult.Empty;
-        }
 
         // 预加载手续费配对信息
         var feePairings = await BuildFeePairingsAsync(companyCode, ct);
@@ -152,6 +168,11 @@ public sealed class MoneytreePostingService
         // One runId per processing batch; used to link transactions to the confirmation approval task (entity=moneytree_posting).
         var runId = Guid.NewGuid();
         var stats = new ProcessingStats { RunId = runId };
+
+        // Phase 2 候补：smart processing 失败的交易
+        var needsSkillQueue = new List<(MoneytreeTransactionRow Row, MoneytreeTransactionRow? Fee)>();
+
+        // ====== Phase 1: Smart Processing（快速、确定性匹配）======
         for (var i = 0; i < batchSize; i++)
         {
             await using var conn = await _dataSource.OpenConnectionAsync(ct);
@@ -167,21 +188,17 @@ public sealed class MoneytreePostingService
             // 如果这条是手续费且已被配对到其他入出金，跳过（等待入出金一起处理）
             if (feePairings.FeeToPayment.TryGetValue(row.Id, out var pairedPaymentId))
             {
-                // 这是一条手续费，检查状态
                 var feeStatus = await GetTransactionStatusAsync(conn, tx, row.Id, ct);
                 if (feeStatus == "merged" || feeStatus == "linked")
                 {
-                    // 已经被处理了
                     await tx.RollbackAsync(ct);
                     stats.Apply(feeStatus == "posted" ? PostingOutcome.Posted : PostingOutcome.Linked, transactionId: row.Id);
                     continue;
                 }
                 
-                // 检查配对的入出金状态，如果还未处理，跳过手续费（等待入出金来处理）
                 var paymentStatus = await GetTransactionStatusAsync(conn, tx, pairedPaymentId, ct);
                 if (paymentStatus == "pending" || paymentStatus == "needs_rule")
                 {
-                    // 入出金还未处理，跳过手续费，让入出金来带着手续费一起处理
                     await tx.RollbackAsync(ct);
                     _logger.LogDebug("[MoneytreePosting] Skipping fee {FeeId} - waiting for paired payment {PaymentId}", row.Id, pairedPaymentId);
                     continue;
@@ -197,15 +214,23 @@ public sealed class MoneytreePostingService
 
             try
             {
-            var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
-            await tx.CommitAsync(ct);
-            stats.Apply(outcome, voucherInfo, transactionId: row.Id, error: error);
-            
-            // 如果有配对的手续费且处理成功，也添加到返回结果以便前端同时更新显示
-            if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
-            {
-                var feeStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
-                stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, feeStatus, voucherInfo?.VoucherNo, null));
+                var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
+
+                if (outcome == PostingOutcome.NeedsSkill)
+                {
+                    // Smart processing 无法处理，加入 skill 队列
+                    await tx.RollbackAsync(ct); // 释放 FOR UPDATE 锁
+                    needsSkillQueue.Add((row, pairedFee));
+                    continue;
+                }
+
+                await tx.CommitAsync(ct);
+                stats.Apply(outcome, voucherInfo, transactionId: row.Id, error: error);
+                
+                if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
+                {
+                    var pfStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
+                    stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, pfStatus, voucherInfo?.VoucherNo, null));
                 }
             }
             catch (PostgresException pgEx)
@@ -219,6 +244,41 @@ public sealed class MoneytreePostingService
                 await tx.RollbackAsync(ct);
                 _logger.LogError(npgEx, "[MoneytreePosting] Npgsql error processing transaction {Id}", row.Id);
                 stats.Apply(PostingOutcome.Failed, transactionId: row.Id, error: $"データベース接続エラー: {npgEx.Message}");
+            }
+        }
+
+        // ====== Phase 2: Skill Processing（AI 驱动，逐条调用 bank_auto_booking skill）======
+        if (needsSkillQueue.Count > 0)
+        {
+            _logger.LogInformation("[MoneytreePosting] Phase 2: processing {Count} transactions via skill (AgentKit)", needsSkillQueue.Count);
+        }
+        foreach (var (row, pairedFee) in needsSkillQueue)
+        {
+            try
+            {
+                var skillResult = await TrySkillProcessAsync(companyCode, row, pairedFee, user, runId, ct);
+                if (skillResult.Success)
+                {
+                    stats.Apply(PostingOutcome.Posted, skillResult.VoucherInfo, transactionId: row.Id);
+                    if (pairedFee is not null)
+                    {
+                        stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, "posted", skillResult.VoucherInfo?.VoucherNo, null));
+                    }
+                }
+                else
+                {
+                    // Skill 也无法处理 → 标记为 needs_rule，等待用户处理
+                    await using var conn = await _dataSource.OpenConnectionAsync(ct);
+                    await UpdateStatusAsync(conn, null, row.Id, "needs_rule", skillResult.Error, null, null, null, null, null, runId, ct);
+                    stats.Apply(PostingOutcome.NeedsRule, transactionId: row.Id, error: skillResult.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[MoneytreePosting] Skill processing error for transaction {Id}", row.Id);
+                await using var conn = await _dataSource.OpenConnectionAsync(ct);
+                await UpdateStatusAsync(conn, null, row.Id, "needs_rule", $"skill error: {ex.Message}", null, null, null, null, null, runId, ct);
+                stats.Apply(PostingOutcome.NeedsRule, transactionId: row.Id, error: ex.Message);
             }
         }
 
@@ -251,28 +311,22 @@ public sealed class MoneytreePostingService
         }
 
         var rules = await _ruleService.ListAsync(companyCode, includeInactive: false, ct);
-        if (rules.Count == 0)
-        {
-            return MoneytreePostingResult.Empty;
-        }
 
         // 预加载手续费配对信息（仅限选中的ID）
         var feePairings = await BuildFeePairingsForIdsAsync(companyCode, transactionIds, ct);
         var processedFeeIds = new HashSet<Guid>();
 
-        // One runId per processing request; used to link transactions to the confirmation approval task (entity=moneytree_posting).
         var runId = Guid.NewGuid();
         var stats = new ProcessingStats { RunId = runId };
         var uniqueIds = new HashSet<Guid>(transactionIds);
 
+        // Phase 2 候补
+        var needsSkillQueue = new List<(MoneytreeTransactionRow Row, MoneytreeTransactionRow? Fee)>();
+
+        // ====== Phase 1: Smart Processing ======
         foreach (var id in uniqueIds)
         {
-            // 如果这是一条已被合并处理的手续费，跳过
-            // 不需要再调用 stats.Apply，因为手续费的状态已经在处理主交易时通过 ProcessedItems.Add 添加了
-            if (processedFeeIds.Contains(id))
-            {
-                continue;
-            }
+            if (processedFeeIds.Contains(id)) continue;
 
             await using var conn = await _dataSource.OpenConnectionAsync(ct);
             await using var tx = await conn.BeginTransactionAsync(ct);
@@ -290,25 +344,21 @@ public sealed class MoneytreePostingService
             {
                 if (uniqueIds.Contains(paymentId))
                 {
-                    // 这条手续费会在处理对应入出金时一起处理，跳过
-                await tx.RollbackAsync(ct);
-                continue;
-            }
+                    await tx.RollbackAsync(ct);
+                    continue;
+                }
                 else
                 {
-                    // 手续费有配对的入出金，但用户没有选择它，提示用户选择对应的入出金
                     await tx.RollbackAsync(ct);
                     stats.Apply(PostingOutcome.Skipped, transactionId: id, error: $"この手数料は別の入出金明細と紐付けられています。対応する入出金明細を選択してください。");
                     continue;
                 }
             }
 
-            // 查找配对的手续费（即使手续费不在选中列表中，也尝试合并）
+            // 查找配对的手续费
             MoneytreeTransactionRow? pairedFee = null;
             if (feePairings.PaymentToFee.TryGetValue(id, out var feeId))
             {
-                // 先检查手续费状态：只要不是已经成功记账（posted/merged/linked），就尝试合并
-                // 特别地，failed 状态的手续费也应被重新合并（可能是之前单独处理失败的遗留）
                 var feeStatus = await GetTransactionStatusAsync(conn, tx, feeId, ct);
                 if (feeStatus != "posted" && feeStatus != "merged" && feeStatus != "linked")
                 {
@@ -319,20 +369,26 @@ public sealed class MoneytreePostingService
                         _logger.LogInformation("[MoneytreePosting] Auto-including paired fee {FeeId} (status={FeeStatus}) for transaction {TransactionId}", feeId, feeStatus, id);
                     }
                 }
-                // 如果手续费已被成功处理（posted/merged/linked），pairedFee 保持 null
             }
 
             try
             {
-            var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
-            await tx.CommitAsync(ct);
-            stats.Apply(outcome, voucherInfo, transactionId: id, error: error);
-            
-            // 如果有配对的手续费且处理成功，也添加到返回结果以便前端同时更新显示
-            if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
-            {
-                var feeStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
-                stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, feeStatus, voucherInfo?.VoucherNo, null));
+                var (outcome, voucherInfo, error) = await ProcessRowAsync(conn, tx, companyCode, row, rules, user, pairedFee, runId, ct);
+
+                if (outcome == PostingOutcome.NeedsSkill)
+                {
+                    await tx.RollbackAsync(ct);
+                    needsSkillQueue.Add((row, pairedFee));
+                    continue;
+                }
+
+                await tx.CommitAsync(ct);
+                stats.Apply(outcome, voucherInfo, transactionId: id, error: error);
+                
+                if (pairedFee is not null && (outcome == PostingOutcome.Posted || outcome == PostingOutcome.Linked))
+                {
+                    var pfStatus = outcome == PostingOutcome.Posted ? "posted" : "linked";
+                    stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, pfStatus, voucherInfo?.VoucherNo, null));
                 }
             }
             catch (PostgresException pgEx)
@@ -349,10 +405,185 @@ public sealed class MoneytreePostingService
             }
         }
 
-        // 手工在银行明细画面触发的自动记账（选中明细）：
-        // 不创建任务面板的确认任务，用户应在当前画面直接确认结果。
+        // ====== Phase 2: Skill Processing ======
+        if (needsSkillQueue.Count > 0)
+        {
+            _logger.LogInformation("[MoneytreePosting] Phase 2 (selected): processing {Count} transactions via skill", needsSkillQueue.Count);
+        }
+        foreach (var (row, pairedFee) in needsSkillQueue)
+        {
+            try
+            {
+                var skillResult = await TrySkillProcessAsync(companyCode, row, pairedFee, user, runId, ct);
+                if (skillResult.Success)
+                {
+                    stats.Apply(PostingOutcome.Posted, skillResult.VoucherInfo, transactionId: row.Id);
+                    if (pairedFee is not null)
+                    {
+                        stats.ProcessedItems.Add(new ProcessedItemInfo(pairedFee.Id, "posted", skillResult.VoucherInfo?.VoucherNo, null));
+                    }
+                }
+                else
+                {
+                    await using var conn = await _dataSource.OpenConnectionAsync(ct);
+                    await UpdateStatusAsync(conn, null, row.Id, "needs_rule", skillResult.Error, null, null, null, null, null, runId, ct);
+                    stats.Apply(PostingOutcome.NeedsRule, transactionId: row.Id, error: skillResult.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[MoneytreePosting] Skill processing error for transaction {Id}", row.Id);
+                await using var conn = await _dataSource.OpenConnectionAsync(ct);
+                await UpdateStatusAsync(conn, null, row.Id, "needs_rule", $"skill error: {ex.Message}", null, null, null, null, null, runId, ct);
+                stats.Apply(PostingOutcome.NeedsRule, transactionId: row.Id, error: ex.Message);
+            }
+        }
 
         return stats.ToResult();
+    }
+
+    // ====== 手工快速记账 ======
+    public sealed record ManualPostResult(bool Success, string? VoucherNo, string? Error);
+
+    /// <summary>
+    /// 用户通过行内快速记账，选择对方科目后一键创建凭证。
+    /// 银行科目自动解析。同时记录学习事件。
+    /// </summary>
+    public async Task<ManualPostResult> ManualPostAsync(
+        string companyCode, Guid transactionId, string counterpartAccountCode,
+        string? note, Auth.UserCtx user, CancellationToken ct)
+    {
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+
+        // 1. 读取银行交易
+        MoneytreeTransactionRow? row;
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"SELECT id, transaction_date, deposit_amount, withdrawal_amount,
+                (COALESCE(deposit_amount,0) - COALESCE(withdrawal_amount,0)) as net_amount,
+                balance, currency, bank_name, description, account_name, account_number, imported_at
+                FROM moneytree_transactions WHERE id = $1 AND company_code = $2";
+            cmd.Parameters.AddWithValue(transactionId);
+            cmd.Parameters.AddWithValue(companyCode);
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            row = await reader.ReadAsync(ct) ? MoneytreeTransactionRow.FromReader(reader) : null;
+        }
+        if (row is null)
+            throw new InvalidOperationException("指定の銀行取引が見つかりません");
+
+        // 2. 解析银行科目
+        var bankAccountCode = await ResolveBankAccountCodeAsync(companyCode, row, ct);
+        if (string.IsNullOrWhiteSpace(bankAccountCode))
+            throw new InvalidOperationException("銀行口座に対応する勘定科目が見つかりません。銀行口座の設定を確認してください。");
+
+        // 3. 判断借贷方向
+        var isWithdrawal = (row.WithdrawalAmount ?? 0m) > 0m;
+        var amount = isWithdrawal
+            ? Math.Abs(row.WithdrawalAmount!.Value)
+            : Math.Abs(row.DepositAmount ?? 0m);
+        // 出金: 借方=对方科目, 贷方=银行 | 入金: 借方=银行, 贷方=对方科目
+        var debitAccount = isWithdrawal ? counterpartAccountCode : bankAccountCode;
+        var creditAccount = isWithdrawal ? bankAccountCode : counterpartAccountCode;
+        var voucherType = isWithdrawal ? "bank_payment" : "bank_receipt";
+        var summary = row.Description ?? (isWithdrawal ? "出金" : "入金");
+        if (!string.IsNullOrWhiteSpace(note))
+            summary = $"{summary}（{note}）";
+
+        // 4. 构建凭证 payload
+        var linesArray = new System.Text.Json.Nodes.JsonArray();
+        linesArray.Add(new System.Text.Json.Nodes.JsonObject
+        {
+            ["lineNo"] = 1,
+            ["accountCode"] = debitAccount,
+            ["drAmount"] = amount,
+            ["crAmount"] = 0m,
+            ["description"] = summary
+        });
+        linesArray.Add(new System.Text.Json.Nodes.JsonObject
+        {
+            ["lineNo"] = 2,
+            ["accountCode"] = creditAccount,
+            ["drAmount"] = 0m,
+            ["crAmount"] = amount,
+            ["description"] = summary
+        });
+        var payloadObj = new System.Text.Json.Nodes.JsonObject
+        {
+            ["header"] = new System.Text.Json.Nodes.JsonObject
+            {
+                ["postingDate"] = (row.TransactionDate ?? DateTime.Today).ToString("yyyy-MM-dd"),
+                ["voucherType"] = voucherType,
+                ["summary"] = summary,
+                ["currency"] = row.Currency ?? "JPY"
+            },
+            ["lines"] = linesArray
+        };
+
+        // 5. 创建凭证
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        string? voucherNo = null;
+        Guid? voucherId = null;
+        try
+        {
+            using var payloadDoc = JsonDocument.Parse(payloadObj.ToJsonString());
+            var (json, _) = await _financeService.CreateVoucher(
+                companyCode, "vouchers", payloadDoc.RootElement, user,
+                VoucherSource.Manual, targetUserId: user.UserId,
+                externalConn: conn, externalTx: tx);
+            (voucherId, voucherNo) = ExtractVoucherInfo(json);
+        }
+        catch (Exception ex)
+        {
+            await tx.RollbackAsync(ct);
+            _logger.LogWarning(ex, "[ManualPost] Failed to create voucher for tx {Id}", transactionId);
+            return new ManualPostResult(false, null, ex.Message);
+        }
+
+        // 6. 更新银行交易状态
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"UPDATE moneytree_transactions
+                SET voucher_id = $1, voucher_no = $2, posting_status = 'posted',
+                    posting_error = NULL, posting_method = 'Manual', updated_at = now()
+                WHERE id = $3";
+            cmd.Parameters.AddWithValue(voucherId!.Value);
+            cmd.Parameters.AddWithValue(voucherNo ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue(transactionId);
+            cmd.Transaction = tx;
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
+
+        // 7. 记录学习事件（不影响主流程）
+        try
+        {
+            var debitName = await GetAccountNameAsync(conn, companyCode, debitAccount, ct);
+            var creditName = await GetAccountNameAsync(conn, companyCode, creditAccount, ct);
+            await _learningCollector.RecordBankPostingViaChatAsync(
+                companyCode,
+                sessionId: null,
+                bankTransactionId: transactionId.ToString(),
+                description: row.Description,
+                amount: amount,
+                isWithdrawal: isWithdrawal,
+                debitAccount: debitAccount,
+                debitAccountName: debitName,
+                creditAccount: creditAccount,
+                creditAccountName: creditName,
+                counterpartyKind: null,
+                counterpartyId: null,
+                voucherId: voucherId,
+                voucherNo: voucherNo,
+                ct: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ManualPost] 学習イベント記録に失敗（記帳自体は成功）");
+        }
+
+        _logger.LogInformation("[ManualPost] Successfully posted tx {TxId} → voucher {VoucherNo}", transactionId, voucherNo);
+        return new ManualPostResult(true, voucherNo, null);
     }
 
     private async Task<(PostingOutcome Outcome, PostedVoucherInfo? VoucherInfo, string? Error)> ProcessRowAsync(
@@ -383,7 +614,8 @@ public sealed class MoneytreePostingService
                 await UpdateStatusAsync(conn, tx, row.Id, "posted", 
                     smartResult.ClearedOpenItem ? "智能清账記帳" : "智能記帳",
                     smartResult.VoucherId, smartResult.VoucherNo, 
-                    null, "SmartPosting", smartResult.ClearedOpenItemId, postingRunId, ct);
+                    null, "SmartPosting", smartResult.ClearedOpenItemId, postingRunId, ct,
+                    confidence: smartResult.Confidence, postingMethod: "SmartPosting");
                 
                 // 如果有配对的手续费，也更新其状态
                 if (pairedFee != null && smartResult.IncludedFee)
@@ -391,7 +623,8 @@ public sealed class MoneytreePostingService
                     await UpdateStatusAsync(conn, tx, pairedFee.Id, "posted", 
                         $"智能記帳（主明細に随伴）：{smartResult.VoucherNo}",
                         smartResult.VoucherId, smartResult.VoucherNo,
-                        null, "SmartPosting", null, postingRunId, ct);
+                        null, "SmartPosting", null, postingRunId, ct,
+                        confidence: smartResult.Confidence, postingMethod: "SmartPosting");
                 }
                 
                 var smartVoucherInfo = new PostedVoucherInfo(
@@ -424,11 +657,14 @@ public sealed class MoneytreePostingService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[MoneytreePosting] Smart processing failed for transaction {Id}, falling back to rules", row.Id);
-            // 非数据库异常，继续使用规则处理
+            _logger.LogWarning(ex, "[MoneytreePosting] Smart processing failed for transaction {Id}, will try skill (AgentKit)", row.Id);
         }
-        // ====== 智能处理结束，继续规则匹配 ======
+        // ====== 智能处理失败，标记为需要 skill 处理 ======
+        // Phase 2（skill 处理）由 ProcessSelectedAsync / ProcessAsync 负责
+        return (PostingOutcome.NeedsSkill, null, "smart processing could not handle this transaction");
 
+        // ====== 以下是旧的 DSL 规则引擎代码，已被 skill 取代 ======
+#if false
         var rule = FindMatchingRule(rules, row);
         if (rule is null)
         {
@@ -942,6 +1178,158 @@ public sealed class MoneytreePostingService
         );
         
         return (PostingOutcome.Posted, voucherInfo, null);
+#endif
+    }
+
+    // ====== Phase 2: Skill (AgentKit/LLM) 处理 ======
+    // 对 TrySmartProcessAsync 无法处理的交易，通过 bank_auto_booking skill 让 LLM 决策
+    private sealed record SkillProcessResult(bool Success, PostedVoucherInfo? VoucherInfo, string? Error);
+
+    private async Task<SkillProcessResult> TrySkillProcessAsync(
+        string companyCode,
+        MoneytreeTransactionRow row,
+        MoneytreeTransactionRow? pairedFee,
+        Auth.UserCtx user,
+        Guid postingRunId,
+        CancellationToken ct)
+    {
+        _logger.LogInformation("[MoneytreePosting] Skill processing: txId={Id}, desc={Desc}", row.Id, row.Description);
+
+        // 获取 API Key（优先 Anthropic，其次 OpenAI）
+        var apiKey = _configuration["Anthropic:ApiKey"]
+                  ?? _configuration["OpenAI:ApiKey"]
+                  ?? Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")
+                  ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return new SkillProcessResult(false, null, "AI API key not configured");
+        }
+
+        // 构建银行交易信息消息（与前端 buildBankMessage 逻辑一致）
+        var isWithdrawal = (row.WithdrawalAmount ?? 0m) < 0m;
+        var amount = row.GetPositiveAmount();
+        var typeLabel = isWithdrawal ? "出金" : "入金";
+        var amountFormatted = amount.ToString("N0");
+
+        var msgBuilder = new StringBuilder();
+        msgBuilder.AppendLine("以下の銀行取引を記帳してください。");
+        msgBuilder.AppendLine($"取引日: {(row.TransactionDate?.ToString("yyyy-MM-dd") ?? "")}");
+        msgBuilder.AppendLine($"種別: {typeLabel}");
+        msgBuilder.AppendLine($"金額: ¥{amountFormatted}");
+        if (!string.IsNullOrWhiteSpace(row.Description))
+            msgBuilder.AppendLine($"摘要: {row.Description}");
+        if (!string.IsNullOrWhiteSpace(row.BankName))
+            msgBuilder.AppendLine($"金融機関: {row.BankName}");
+        if (!string.IsNullOrWhiteSpace(row.AccountNumber))
+            msgBuilder.AppendLine($"口座番号: {row.AccountNumber}");
+        if (pairedFee != null)
+        {
+            var feeAmount = pairedFee.GetPositiveAmount();
+            if (feeAmount > 0m)
+                msgBuilder.AppendLine($"振込手数料: ¥{feeAmount:N0}");
+        }
+        msgBuilder.AppendLine();
+        msgBuilder.AppendLine($"銀行取引ID: {row.Id}");
+        // 自動モードであることを明示（skill が request_clarification を使わず、できる限り自動処理するように）
+        msgBuilder.AppendLine();
+        msgBuilder.AppendLine("注意: これは自動記帳モードです。確認不要で記帳できる場合はそのまま記帳してください。");
+        msgBuilder.AppendLine("確信が持てない場合は、記帳せずに理由を説明してください。");
+
+        var request = new AgentKitService.AgentMessageRequest(
+            SessionId: null, // 新しいセッション
+            CompanyCode: companyCode,
+            UserCtx: user,
+            Message: msgBuilder.ToString(),
+            ApiKey: apiKey,
+            Language: "ja",
+            FileResolver: null,
+            ScenarioKey: null,
+            AnswerTo: null,
+            TaskId: null,
+            BankTransactionId: row.Id.ToString()
+        );
+
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(90)); // skill 处理单笔交易最多 90 秒
+
+            var result = await _agentKit.ProcessUserMessageAsync(request, cts.Token);
+
+            // skill 的 create_voucher tool 成功时会自动更新 moneytree_transactions 的状态
+            // 检查数据库确认是否已完成记账
+            await using var conn = await _dataSource.OpenConnectionAsync(ct);
+            await using var checkCmd = conn.CreateCommand();
+            checkCmd.CommandText = @"
+SELECT posting_status, voucher_id, 
+       (SELECT voucher_no FROM vouchers WHERE id = mt.voucher_id LIMIT 1) as voucher_no
+FROM moneytree_transactions mt 
+WHERE id = $1";
+            checkCmd.Parameters.AddWithValue(row.Id);
+            await using var reader = await checkCmd.ExecuteReaderAsync(ct);
+
+            if (await reader.ReadAsync(ct))
+            {
+                var status = reader.IsDBNull(0) ? null : reader.GetString(0);
+                if (status == "posted" && !reader.IsDBNull(1))
+                {
+                    var voucherId = reader.GetGuid(1);
+                    var voucherNo = reader.IsDBNull(2) ? null : reader.GetString(2);
+
+                    _logger.LogInformation("[MoneytreePosting] Skill successfully posted transaction {Id}: voucher={VoucherNo}", row.Id, voucherNo);
+
+                    // 如果有配对的手续费，也更新其状态
+                    if (pairedFee != null)
+                    {
+                        await using var feeCmd = conn.CreateCommand();
+                        feeCmd.CommandText = @"
+UPDATE moneytree_transactions 
+SET posting_status = 'posted', 
+    voucher_id = $1,
+    posting_error = $2,
+    posting_method = 'Skill',
+    posting_run_id = $3,
+    updated_at = now()
+WHERE id = $4 AND posting_status NOT IN ('posted', 'linked')";
+                        feeCmd.Parameters.AddWithValue(voucherId);
+                        feeCmd.Parameters.AddWithValue($"Skill記帳（主明細に随伴）：{voucherNo}");
+                        feeCmd.Parameters.AddWithValue(postingRunId);
+                        feeCmd.Parameters.AddWithValue(pairedFee.Id);
+                        await feeCmd.ExecuteNonQueryAsync(ct);
+                    }
+
+                    // 更新 posting_run_id（skill 不知道 runId）
+                    await using var runIdCmd = conn.CreateCommand();
+                    runIdCmd.CommandText = "UPDATE moneytree_transactions SET posting_run_id = $1 WHERE id = $2";
+                    runIdCmd.Parameters.AddWithValue(postingRunId);
+                    runIdCmd.Parameters.AddWithValue(row.Id);
+                    await runIdCmd.ExecuteNonQueryAsync(ct);
+
+                    var info = new PostedVoucherInfo(row.Id, voucherId, voucherNo, amount, row.Description, "Skill", null);
+                    return new SkillProcessResult(true, info, null);
+                }
+            }
+
+            // skill 没有成功创建凭证 — 提取 AI 的回复作为失败原因
+            var aiReply = result.Messages?
+                .Where(m => m.Role == "assistant" && !string.IsNullOrWhiteSpace(m.Content))
+                .Select(m => m.Content)
+                .LastOrDefault();
+            var errorMsg = aiReply ?? "skill could not determine how to post this transaction";
+            _logger.LogInformation("[MoneytreePosting] Skill could not post transaction {Id}: {Reason}", row.Id, errorMsg);
+
+            return new SkillProcessResult(false, null, errorMsg);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("[MoneytreePosting] Skill processing timed out for transaction {Id}", row.Id);
+            return new SkillProcessResult(false, null, "skill processing timed out (90s)");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[MoneytreePosting] Skill processing failed for transaction {Id}", row.Id);
+            return new SkillProcessResult(false, null, $"skill error: {ex.Message}");
+        }
     }
 
     public async Task<IReadOnlyList<MoneytreeSimulationResult>> SimulateAsync(
@@ -2686,6 +3074,10 @@ LIMIT 1";
         SmartOpenItemMatchResult? openItemMatch = null;
         bool clearedOpenItem = false;
 
+        // 置信度追踪
+        decimal confidence = 0m;
+        string matchSource = "none";
+
         // Step 2: 如果识别到对手方，查找未清项
         if (counterparty != null)
         {
@@ -2698,6 +3090,8 @@ LIMIT 1";
                 targetAccountCode = openItemMatch.AccountCode;
                 targetAccountName = await GetAccountNameAsync(conn, companyCode, targetAccountCode, ct);
                 clearedOpenItem = true;
+                confidence = 0.95m; // 未清项金额匹配 → 最高置信度
+                matchSource = "open_item";
                 _logger.LogInformation("[SmartPosting] Will clear open item(s): account={Account}, matchType={Type}",
                     targetAccountCode, openItemMatch.MatchType);
             }
@@ -2718,7 +3112,9 @@ LIMIT 1";
             {
                 targetAccountCode = learned.AccountCode;
                 targetAccountName = learned.AccountName;
-                _logger.LogInformation("[SmartPosting] Using learned account: {Code} ({Name})", targetAccountCode, targetAccountName);
+                confidence = counterparty != null ? 0.85m : 0.75m; // 有对手方匹配+历史 vs 仅历史描述匹配
+                matchSource = "history";
+                _logger.LogInformation("[SmartPosting] Using learned account: {Code} ({Name}), confidence={Confidence}", targetAccountCode, targetAccountName, confidence);
             }
         }
 
@@ -2729,7 +3125,9 @@ LIMIT 1";
             if (targetAccountCode != null)
             {
                 targetAccountName = await GetAccountNameAsync(conn, companyCode, targetAccountCode, ct);
-                _logger.LogInformation("[SmartPosting] Using fallback account: {Code} ({Name})", targetAccountCode, targetAccountName);
+                confidence = 0.40m; // 兜底科目 → 低置信度，需要用户确认
+                matchSource = "fallback";
+                _logger.LogInformation("[SmartPosting] Using fallback account: {Code} ({Name}), confidence={Confidence}", targetAccountCode, targetAccountName, confidence);
             }
         }
 
@@ -2981,6 +3379,36 @@ LIMIT 1";
         _logger.LogInformation("[SmartPosting] Successfully created voucher: {VoucherNo}, clearedOpenItem={Cleared}",
             voucherNo, clearedOpenItem);
 
+        // ====== 学习闭环：记录 SmartPosting 成功事件 ======
+        try
+        {
+            var isW = (row.WithdrawalAmount ?? 0m) < 0m;
+            var debitAccountNameForLearn = await GetAccountNameAsync(conn, companyCode, debitAccount, ct);
+            var creditAccountNameForLearn = await GetAccountNameAsync(conn, companyCode, creditAccount, ct);
+
+            await _learningCollector.RecordBankPostingViaChatAsync(
+                companyCode,
+                sessionId: null, // SmartPosting 没有会话
+                bankTransactionId: row.Id.ToString(),
+                description: row.Description,
+                amount: amount,
+                isWithdrawal: isW,
+                debitAccount: debitAccount,
+                debitAccountName: debitAccountNameForLearn,
+                creditAccount: creditAccount,
+                creditAccountName: creditAccountNameForLearn,
+                counterpartyKind: counterparty?.Kind,
+                counterpartyId: counterparty?.Id,
+                voucherId: voucherId,
+                voucherNo: voucherNo,
+                ct: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[SmartPosting] 记录学习事件失败（不影响凭证创建）");
+        }
+        // ====== 学习事件记录结束 ======
+
         return new SmartPostingResult(
             voucherId,
             voucherNo,
@@ -2993,7 +3421,8 @@ LIMIT 1";
             counterparty?.Id,
             clearedOpenItem,
             clearedOpenItemId,
-            feeAmount > 0m
+            feeAmount > 0m,
+            confidence
         );
     }
 
@@ -3029,7 +3458,8 @@ LIMIT 1";
         string? CounterpartyId,
         bool ClearedOpenItem,
         Guid? ClearedOpenItemId,
-        bool IncludedFee
+        bool IncludedFee,
+        decimal Confidence = 0.9m
     );
 
     #endregion
@@ -4143,7 +4573,7 @@ RETURNING id";
 
     private static async Task UpdateStatusAsync(
         NpgsqlConnection conn,
-        NpgsqlTransaction tx,
+        NpgsqlTransaction? tx,
         Guid id,
         string status,
         string? error,
@@ -4153,7 +4583,9 @@ RETURNING id";
         string? ruleTitle,
         Guid? clearedOpenItemId,
         Guid? postingRunId,
-        CancellationToken ct)
+        CancellationToken ct,
+        decimal? confidence = null,
+        string? postingMethod = null)
     {
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
@@ -4166,6 +4598,8 @@ SET posting_status = $2,
     rule_title = $7,
     cleared_open_item_id = $8,
     posting_run_id = $9,
+    posting_confidence = COALESCE($10, posting_confidence),
+    posting_method = COALESCE($11, posting_method),
     updated_at = now()
 WHERE id = $1";
         cmd.Parameters.AddWithValue(id);
@@ -4177,6 +4611,8 @@ WHERE id = $1";
         cmd.Parameters.AddWithValue((object?)ruleTitle ?? DBNull.Value);
         cmd.Parameters.AddWithValue((object?)clearedOpenItemId ?? DBNull.Value);
         cmd.Parameters.AddWithValue((object?)postingRunId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue((object?)confidence ?? DBNull.Value);
+        cmd.Parameters.AddWithValue((object?)postingMethod ?? DBNull.Value);
         cmd.Transaction = tx;
         await cmd.ExecuteNonQueryAsync(ct);
     }
@@ -4223,6 +4659,12 @@ WHERE id = $1";
                     }
                     break;
                 case PostingOutcome.NeedsRule:
+                    _needsRule++;
+                    status = "needs_rule";
+                    break;
+                case PostingOutcome.NeedsSkill:
+                    // NeedsSkill は Phase 2 で処理されるため、ここには通常来ない
+                    // 万が一来た場合は needs_rule として扱う
                     _needsRule++;
                     status = "needs_rule";
                     break;
@@ -4287,7 +4729,11 @@ WHERE id = $1";
         /// <summary>
         /// 已关联到既存凭证（不新建凭证）
         /// </summary>
-        Linked
+        Linked,
+        /// <summary>
+        /// Smart processing 失败，需要交给 skill (AgentKit/LLM) 处理
+        /// </summary>
+        NeedsSkill
     }
 
     public sealed record MoneytreePostingResult(
@@ -5058,6 +5504,14 @@ ORDER BY transaction_date, row_sequence";
                     isWithdrawal);
                 continue;
             }
+
+            // 排除自动扣款类交易（社会保険、税金、公共料金等不会产生振込手数料）
+            if (IsAutoDebitTransaction(candidate.Description))
+            {
+                _logger.LogInformation("[MoneytreePosting] TryPairFeeWithPayment: skipping auto-debit transaction. desc={Desc}",
+                    candidate.Description);
+                continue;
+            }
             
             // 检查这个明细是否已经配对了手续费
             if (paymentToFee.ContainsKey(candidate.Id))
@@ -5088,6 +5542,21 @@ ORDER BY transaction_date, row_sequence";
         }
         
         return BankFeeKeywords.Any(keyword => 
+            description.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// 判断是否是自动扣款类交易（社会保険、税金、公共料金等）
+    /// 这类交易不会产生振込手数料，不应与手续费配对
+    /// </summary>
+    private static bool IsAutoDebitTransaction(string? description)
+    {
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            return false;
+        }
+        
+        return AutoDebitKeywords.Any(keyword => 
             description.Contains(keyword, StringComparison.OrdinalIgnoreCase));
     }
 

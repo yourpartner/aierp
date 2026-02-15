@@ -89,6 +89,49 @@ public class MoneytreeStandardModule : ModuleBase
             return deleted ? Results.Ok(new { ok = true }) : Results.NotFound(new { error = "rule not found" });
         }).RequireAuthorization();
 
+        // GET /integrations/moneytree/posting-task/{runId}/failed-transactions
+        // 获取指定 posting run 中失败/needs_rule 的交易列表（供 AI 记帳サポート使用）
+        app.MapGet("/integrations/moneytree/posting-task/{runId:guid}/failed-transactions", async (Guid runId, HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "missing x-company-code" });
+
+            await using var conn = await ds.OpenConnectionAsync(req.HttpContext.RequestAborted);
+            var items = new List<object>();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+SELECT id, transaction_date, deposit_amount, withdrawal_amount, balance, currency, bank_name,
+       description, account_name, account_number, posting_status, posting_error
+FROM moneytree_transactions
+WHERE company_code = $1 AND posting_run_id = $2
+  AND posting_status IN ('failed', 'needs_rule')
+ORDER BY transaction_date DESC, row_sequence ASC";
+            cmd.Parameters.AddWithValue(cc.ToString());
+            cmd.Parameters.AddWithValue(runId);
+
+            await using var reader = await cmd.ExecuteReaderAsync(req.HttpContext.RequestAborted);
+            while (await reader.ReadAsync(req.HttpContext.RequestAborted))
+            {
+                items.Add(new
+                {
+                    id = reader.GetGuid(0).ToString(),
+                    transactionDate = reader.IsDBNull(1) ? null : reader.GetDateTime(1).ToString("yyyy-MM-dd"),
+                    depositAmount = reader.IsDBNull(2) ? (decimal?)null : reader.GetDecimal(2),
+                    withdrawalAmount = reader.IsDBNull(3) ? (decimal?)null : reader.GetDecimal(3),
+                    balance = reader.IsDBNull(4) ? (decimal?)null : reader.GetDecimal(4),
+                    currency = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    bankName = reader.IsDBNull(6) ? null : reader.GetString(6),
+                    description = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    accountName = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    accountNumber = reader.IsDBNull(9) ? null : reader.GetString(9),
+                    postingStatus = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    postingError = reader.IsDBNull(11) ? null : reader.GetString(11)
+                });
+            }
+
+            return Results.Json(new { items, total = items.Count });
+        }).RequireAuthorization();
+
         // Approval task completion endpoint (front-end uses approval task id).
         // POST /integrations/moneytree/posting/tasks/{taskId}/complete
         // Marks approval_tasks (entity=moneytree_posting) as approved for the same run/object_id.
@@ -268,42 +311,6 @@ public class MoneytreeStandardModule : ModuleBase
             }
         }).RequireAuthorization();
 
-        // POST /integrations/moneytree/posting/simulate - 模拟记账
-        app.MapPost("/integrations/moneytree/posting/simulate", async (HttpRequest req, MoneytreePostingService postingService) =>
-        {
-            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
-                return Results.BadRequest(new { error = "missing x-company-code" });
-
-            JsonDocument body;
-            try
-            {
-                body = await JsonDocument.ParseAsync(req.Body);
-            }
-            catch (JsonException)
-            {
-                return Results.BadRequest(new { error = "invalid json" });
-            }
-
-            using (body)
-            {
-                var root = body.RootElement;
-                if (!root.TryGetProperty("ids", out var idsEl) || idsEl.ValueKind != JsonValueKind.Array)
-                    return Results.BadRequest(new { error = "ids array is required" });
-
-                var ids = new List<Guid>();
-                foreach (var item in idsEl.EnumerateArray())
-                {
-                    if (item.ValueKind == JsonValueKind.String && Guid.TryParse(item.GetString(), out var gid))
-                        ids.Add(gid);
-                }
-                if (ids.Count == 0)
-                    return Results.BadRequest(new { error = "ids array is empty" });
-
-                var result = await postingService.SimulateAsync(cc.ToString()!, ids, req.HttpContext.RequestAborted);
-                return Results.Json(new { count = result.Count, items = result });
-            }
-        }).RequireAuthorization();
-
         // GET /integrations/moneytree/transactions - 查询交易列表
         app.MapGet("/integrations/moneytree/transactions", async (HttpRequest req, NpgsqlDataSource ds) =>
         {
@@ -343,6 +350,22 @@ public class MoneytreeStandardModule : ModuleBase
             else if (string.Equals(typeFilter, "withdrawal", StringComparison.OrdinalIgnoreCase))
                 filters.Add("(withdrawal_amount IS NOT NULL AND withdrawal_amount > 0)");
 
+            // 状态过滤
+            var statusFilter = query.TryGetValue("status", out var statusVal) ? statusVal.ToString().Trim() : "all";
+            if (!string.IsNullOrWhiteSpace(statusFilter) && !string.Equals(statusFilter, "all", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.Equals(statusFilter, "low_confidence", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 低置信度：已记账但置信度 < 0.8
+                    filters.Add($"posting_status = 'posted' AND posting_confidence IS NOT NULL AND posting_confidence < 0.8");
+                }
+                else
+                {
+                    filters.Add($"posting_status = ${pIdx++}");
+                    parameterValues.Add(statusFilter);
+                }
+            }
+
             if (!string.IsNullOrWhiteSpace(keyword))
             {
                 filters.Add($"(description ILIKE ${pIdx++})");
@@ -376,7 +399,7 @@ public class MoneytreeStandardModule : ModuleBase
                 cmd.CommandText = $@"
 SELECT id, transaction_date, deposit_amount, withdrawal_amount, balance, currency, bank_name,
        description, account_name, account_number, posting_status, posting_error,
-       voucher_no, rule_title, imported_at, row_sequence
+       voucher_no, rule_title, imported_at, row_sequence, posting_confidence, posting_method
 FROM moneytree_transactions
 WHERE {whereClause}
 ORDER BY transaction_date DESC NULLS LAST, row_sequence ASC
@@ -411,7 +434,9 @@ LIMIT ${limitIdx} OFFSET ${offsetIdx}";
                         voucherNo = reader.IsDBNull(12) ? null : reader.GetString(12),
                         ruleTitle = reader.IsDBNull(13) ? null : reader.GetString(13),
                         importedAt = reader.IsDBNull(14) ? null : reader.GetFieldValue<DateTimeOffset>(14).ToString("yyyy-MM-dd HH:mm"),
-                        rowSequence = reader.IsDBNull(15) ? (int?)null : reader.GetInt32(15)
+                        rowSequence = reader.IsDBNull(15) ? (int?)null : reader.GetInt32(15),
+                        postingConfidence = reader.IsDBNull(16) ? (decimal?)null : reader.GetDecimal(16),
+                        postingMethod = reader.IsDBNull(17) ? null : reader.GetString(17)
                     });
                 }
             }
@@ -503,6 +528,66 @@ LIMIT ${limitIdx} OFFSET ${offsetIdx}";
                     return Results.BadRequest(new { error = ex.Message });
                 }
             }
+        }).RequireAuthorization();
+
+        // POST /integrations/moneytree/transactions/{id}/manual-post - 手工快速记账
+        app.MapPost("/integrations/moneytree/transactions/{id:guid}/manual-post", async (Guid id, HttpRequest req, MoneytreePostingService postingService) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "missing x-company-code" });
+
+            JsonDocument body;
+            try { body = await JsonDocument.ParseAsync(req.Body); }
+            catch (JsonException) { return Results.BadRequest(new { error = "invalid json" }); }
+
+            using (body)
+            {
+                var root = body.RootElement;
+                if (root.ValueKind != JsonValueKind.Object)
+                    return Results.BadRequest(new { error = "invalid payload" });
+
+                var counterpartAccountCode = root.TryGetProperty("counterpartAccountCode", out var accEl) && accEl.ValueKind == JsonValueKind.String
+                    ? accEl.GetString()
+                    : null;
+                if (string.IsNullOrWhiteSpace(counterpartAccountCode))
+                    return Results.BadRequest(new { error = "counterpartAccountCode is required" });
+
+                var note = root.TryGetProperty("note", out var noteEl) && noteEl.ValueKind == JsonValueKind.String
+                    ? noteEl.GetString()
+                    : null;
+
+                var user = Auth.GetUserCtx(req);
+                try
+                {
+                    var result = await postingService.ManualPostAsync(
+                        cc.ToString()!, id, counterpartAccountCode!, note, user, req.HttpContext.RequestAborted);
+                    return Results.Json(result);
+                }
+                catch (Exception ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }
+        }).RequireAuthorization();
+
+        // POST /integrations/moneytree/transactions/{id}/confirm - 确认低置信度记账
+        app.MapPost("/integrations/moneytree/transactions/{id:guid}/confirm", async (Guid id, HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "missing x-company-code" });
+
+            await using var conn = await ds.OpenConnectionAsync(req.HttpContext.RequestAborted);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"UPDATE moneytree_transactions
+                SET posting_confidence = 1.0, updated_at = now()
+                WHERE id = $1 AND company_code = $2 AND posting_status = 'posted'";
+            cmd.Parameters.AddWithValue(id);
+            cmd.Parameters.AddWithValue(cc.ToString()!);
+            var affected = await cmd.ExecuteNonQueryAsync(req.HttpContext.RequestAborted);
+            if (affected == 0)
+                return Results.NotFound(new { error = "transaction not found or not posted" });
+
+            return Results.Json(new { success = true });
         }).RequireAuthorization();
 
         // PUT /integrations/moneytree/rules/{id} - 更新规则

@@ -24,10 +24,11 @@
           <el-option label="入金" value="deposit" />
           <el-option label="出金" value="withdrawal" />
         </el-select>
-        <el-select v-model="filters.status" style="width:140px">
+        <el-select v-model="filters.status" style="width:160px">
           <el-option label="全ステータス" value="all" />
           <el-option label="失敗" value="failed" />
           <el-option label="ルール不足" value="needs_rule" />
+          <el-option label="要確認（低置信度）" value="low_confidence" />
           <el-option label="重複疑い" value="duplicate_suspected" />
           <el-option label="記帳済み" value="posted" />
           <el-option label="紐付け済み" value="linked" />
@@ -48,9 +49,6 @@
             <el-tag type="info" size="small">{{ selectedRows.length }}件選択中</el-tag>
             <el-button size="small" text @click="clearSelection">選択解除</el-button>
           </span>
-          <el-button v-if="!isTaskMode" type="success" :disabled="!hasPendingSelection" @click="simulateSelected">
-            記帳ルールシミュレーション
-          </el-button>
           <el-button
             v-if="!isTaskMode"
             type="warning"
@@ -83,8 +81,53 @@
         size="small"
         class="mt-table"
         row-key="id"
+        :expand-row-keys="expandedRowKeys"
         @selection-change="handleSelectionChange"
       >
+        <!-- 隐藏的展开列：AI 相談内联面板 -->
+        <el-table-column type="expand" width="1" class-name="hidden-expand-col">
+          <template #default="{ row }">
+            <div v-if="aiPanelTxId === row.id" class="ai-consult-panel-inline" :style="{ width: aiPanelWidth }">
+              <div class="ai-panel-body">
+                <div v-if="aiPanelMessages.length" class="ai-panel-messages">
+                  <div v-for="(msg, idx) in aiPanelMessages" :key="idx" class="ai-panel-msg" :class="msg.role">
+                    <div class="ai-msg-content" v-html="formatAiMessage(msg.content)"></div>
+                  </div>
+                </div>
+                <div v-if="aiPanelStatus === 'sending'" class="ai-panel-loading">
+                  <el-icon class="is-loading"><Loading /></el-icon>
+                  <span>AIが記帳方法を判断しています...</span>
+                </div>
+                <div v-if="aiPanelStatus === 'success'" class="ai-panel-result success">
+                  <el-icon><CircleCheck /></el-icon>
+                  <span>{{ aiPanelResultText }}</span>
+                </div>
+                <div v-if="aiPanelStatus === 'error'" class="ai-panel-result error">
+                  <el-icon><CircleClose /></el-icon>
+                  <span>{{ aiPanelResultText }}</span>
+                </div>
+              </div>
+              <div v-if="aiPanelStatus !== 'success'" class="ai-panel-input">
+                <el-input
+                  ref="aiInputRef"
+                  v-model="aiPanelInput"
+                  :placeholder="'AIへの返答やヒントを入力（例：消耗品費で記帳して）'"
+                  :disabled="aiPanelStatus === 'sending'"
+                  @keyup.enter.ctrl="sendAiConsult"
+                  size="default"
+                />
+                <el-button
+                  type="primary"
+                  :loading="aiPanelStatus === 'sending'"
+                  :disabled="aiPanelStatus === 'sending'"
+                  @click="sendAiConsult"
+                >
+                  送信
+                </el-button>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column v-if="!isTaskMode" type="selection" width="40" :selectable="isRowSelectable" reserve-selection />
         <el-table-column prop="transactionDate" label="取引日" width="110" />
         <el-table-column v-if="showBankColumn" prop="bankName" label="金融機関" width="140" show-overflow-tooltip />
@@ -118,9 +161,37 @@
         </el-table-column>
         <el-table-column v-if="showCurrencyColumn" prop="currency" label="通貨" width="80" />
         <el-table-column v-if="showDescriptionColumn" prop="description" label="摘要" min-width="200" show-overflow-tooltip />
-        <el-table-column label="ステータス" width="110">
+        <el-table-column label="ステータス" width="140">
           <template #default="{ row }">
-            <el-tag size="small" :type="statusType(row.postingStatus)">
+            <!-- 低置信度の記帳済み：警告表示 -->
+            <el-tooltip
+              v-if="isLowConfidence(row)"
+              :content="`置信度: ${Math.round((row.postingConfidence || 0) * 100)}% — 確認が必要です`"
+              placement="top"
+              :show-after="300"
+              effect="light"
+            >
+              <el-tag size="small" type="warning" class="status-tag-with-info">
+                要確認
+                <el-icon style="margin-left:2px;vertical-align:middle"><InfoFilled /></el-icon>
+              </el-tag>
+            </el-tooltip>
+            <!-- 失敗/ルール不足：エラー情報付き -->
+            <el-tooltip
+              v-else-if="row.postingError && (row.postingStatus === 'needs_rule' || row.postingStatus === 'failed')"
+              :content="row.postingError"
+              placement="top"
+              :show-after="300"
+              effect="light"
+              :popper-style="{ maxWidth: '400px', whiteSpace: 'pre-wrap' }"
+            >
+              <el-tag size="small" :type="statusType(row.postingStatus)" class="status-tag-with-info">
+                {{ statusLabel(row.postingStatus) }}
+                <el-icon style="margin-left:2px;vertical-align:middle"><InfoFilled /></el-icon>
+              </el-tag>
+            </el-tooltip>
+            <!-- 通常ステータス -->
+            <el-tag v-else size="small" :type="statusType(row.postingStatus)">
               {{ statusLabel(row.postingStatus) }}
             </el-tag>
           </template>
@@ -134,6 +205,82 @@
         <el-table-column prop="ruleTitle" label="適用ルール" width="160" show-overflow-tooltip />
         <el-table-column v-if="showErrorColumn" prop="postingError" label="エラー内容" min-width="200" show-overflow-tooltip />
         <el-table-column prop="importedAt" label="取込日時" width="160" />
+        <el-table-column v-if="showAiConsultColumn" label="操作" width="180" fixed="right">
+          <template #default="{ row }">
+            <div v-if="canConsultAi(row)" class="ops-cell">
+              <!-- 低置信度の記帳済み：確認OK / 取消 ボタン -->
+              <template v-if="isLowConfidence(row)">
+                <el-button type="success" size="small" link @click="confirmLowConfidence(row)">
+                  <el-icon style="margin-right:2px"><CircleCheck /></el-icon>確認OK
+                </el-button>
+                <el-button type="primary" size="small" link @click="toggleAiPanel(row)">
+                  <el-icon style="margin-right:2px"><ChatDotRound /></el-icon>修正
+                </el-button>
+              </template>
+              <!-- 失敗/ルール不足：AI相談 / 手工記帳 -->
+              <template v-else>
+                <el-button type="primary" size="small" link @click="toggleAiPanel(row)">
+                  <el-icon style="margin-right:2px"><ChatDotRound /></el-icon>
+                  {{ aiPanelTxId === row.id ? '閉じる' : 'AI相談' }}
+                </el-button>
+                <el-popover
+                  :ref="(el: any) => { if (el) manualPopoverRefs[row.id] = el }"
+                  trigger="click"
+                  placement="left-start"
+                  :width="320"
+                  :visible="manualPostTxId === row.id"
+                >
+                  <template #reference>
+                    <el-button type="warning" size="small" link @click="toggleManualPost(row)">
+                      <el-icon style="margin-right:2px"><Edit /></el-icon>手工
+                    </el-button>
+                  </template>
+                  <div class="manual-post-form">
+                    <div class="manual-post-label">対方科目を選択</div>
+                    <el-select
+                      v-model="manualPostAccount"
+                      filterable
+                      remote
+                      reserve-keyword
+                      :remote-method="searchAccounts"
+                      :loading="accountSearchLoading"
+                      placeholder="科目名/コードで検索"
+                      size="default"
+                      style="width:100%"
+                      @change="onAccountSelected"
+                    >
+                      <el-option
+                        v-for="acc in accountOptions"
+                        :key="acc.code"
+                        :value="acc.code"
+                        :label="`${acc.code} ${acc.name}`"
+                      />
+                    </el-select>
+                    <el-input
+                      v-model="manualPostNote"
+                      placeholder="メモ（任意）"
+                      size="small"
+                      style="margin-top:8px"
+                      clearable
+                    />
+                    <div style="margin-top:10px;text-align:right">
+                      <el-button size="small" @click="manualPostTxId = ''">取消</el-button>
+                      <el-button
+                        type="primary"
+                        size="small"
+                        :loading="manualPostLoading"
+                        :disabled="!manualPostAccount"
+                        @click="submitManualPost(row)"
+                      >
+                        記帳
+                      </el-button>
+                    </div>
+                  </div>
+                </el-popover>
+              </template>
+            </div>
+          </template>
+        </el-table-column>
       </el-table>
 
       <div style="margin-top:12px; display:flex; justify-content:flex-end;">
@@ -150,59 +297,6 @@
       </div>
     </el-card>
 
-    <el-dialog
-      v-model="simulateDialogVisible"
-      title="ルール照合シミュレーション"
-      class="simulate-dialog"
-      append-to-body
-      destroy-on-close
-      align-center
-      width="75%"
-      :style="{ maxWidth: '1100px' }"
-    >
-      <el-alert
-        v-if="!simulateSelectionSnapshot.length"
-        type="info"
-        title="一覧から明細を選択してください"
-        show-icon
-        style="margin-bottom:12px"
-      />
-      <div class="sim-table-wrapper" v-else>
-        <el-table
-          :data="simulateResults"
-          v-loading="simulateLoading"
-          border
-        >
-          <el-table-column label="摘要 / 金額" min-width="260">
-            <template #default="{ row }">
-              <div class="sim-desc">{{ getSimDescription(row.transactionId) }}</div>
-              <div class="sim-amount">{{ getSimAmount(row.transactionId) }}</div>
-            </template>
-          </el-table-column>
-          <el-table-column prop="status" label="ステータス" width="100" />
-          <el-table-column prop="ruleTitle" label="適用ルール" width="200" show-overflow-tooltip />
-          <el-table-column label="仕訳科目" width="220">
-            <template #default="{ row }">
-              <div>借方：{{ formatAccountLabel(row.debitAccount, row.debitAccountName) }}</div>
-              <div>貸方：{{ formatAccountLabel(row.creditAccount, row.creditAccountName) }}</div>
-            </template>
-          </el-table-column>
-          <el-table-column prop="wouldClearOpenItem" label="消込可" width="80">
-            <template #default="{ row }">
-              <el-tag size="small" :type="row.wouldClearOpenItem ? 'success' : 'info'">
-                {{ row.wouldClearOpenItem ? 'はい' : 'いいえ' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="message" label="メモ" min-width="200" show-overflow-tooltip />
-        </el-table>
-      </div>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="simulateDialogVisible = false">閉じる</el-button>
-        </span>
-      </template>
-    </el-dialog>
 
     <el-dialog v-model="rulesDialogVisible" title="自動記帳ルール" width="815px">
       <div class="rules-toolbar">
@@ -369,20 +463,20 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CreditCard } from '@element-plus/icons-vue'
+import { CreditCard, ChatDotRound, Loading, CircleCheck, CircleClose, InfoFilled, Edit } from '@element-plus/icons-vue'
+import api from '../api'
 import VouchersList from './VouchersList.vue'
 import {
   fetchMoneytreeTransactions,
   fetchMoneytreePostingTaskTransactions,
-  simulateMoneytreePosting,
   runMoneytreePosting,
   fetchMoneytreeRules,
   createMoneytreeRule,
   updateMoneytreeRule,
   deleteMoneytreeRule,
   importMoneytreeTransactions,
+  manualPostTransaction,
   type MoneytreeTransactionItem,
-  type MoneytreeSimulationResult,
   type MoneytreeRule
 } from '../api/moneytree'
 
@@ -395,10 +489,6 @@ const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 const selectedRows = ref<MoneytreeTransactionItem[]>([])
-const simulateDialogVisible = ref(false)
-const simulateLoading = ref(false)
-const simulateResults = ref<MoneytreeSimulationResult[]>([])
-const simulateSelectionSnapshot = ref<MoneytreeTransactionItem[]>([])
 const runPostingLoading = ref(false)
 const unlinkLoading = ref(false)
 const syncDialogVisible = ref(false)
@@ -417,6 +507,7 @@ const showVoucherColumn = computed(() => rows.value.some((row) => !!row.voucherN
 const showErrorColumn = computed(() => rows.value.some((row) => !!(row.postingError && row.postingError.trim())))
 const showBankColumn = computed(() => rows.value.some((row) => row.bankName))
 const showDescriptionColumn = computed(() => rows.value.some((row) => row.description))
+const showAiConsultColumn = computed(() => rows.value.some((row) => canConsultAi(row)))
 const voucherDialogVisible = ref(false)
 const voucherDetailRef = ref<InstanceType<typeof VouchersList> | null>(null)
 const syncRange = ref<DateRange | null>(null)
@@ -607,6 +698,261 @@ function onVoucherReversed(_voucherId: string, _reversalVoucherId: string) {
   loadData()
 }
 
+// === 低置信度判定・確認 ===
+function isLowConfidence(row: MoneytreeTransactionItem): boolean {
+  return row.postingStatus === 'posted' && row.postingConfidence != null && row.postingConfidence < 0.8
+}
+
+async function confirmLowConfidence(row: MoneytreeTransactionItem) {
+  try {
+    await api.post(`/integrations/moneytree/transactions/${row.id}/confirm`)
+    ElMessage.success('確認しました')
+    const idx = rows.value.findIndex(r => r.id === row.id)
+    if (idx >= 0) {
+      rows.value[idx] = { ...rows.value[idx], postingConfidence: 1.0 }
+    }
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.error || '確認に失敗しました')
+  }
+}
+
+// === AI相談：内联对话面板（展开行方式） ===
+function canConsultAi(row: MoneytreeTransactionItem): boolean {
+  const status = (row.postingStatus || '').toLowerCase()
+  // 失敗、ルール不足、低置信度の場合にAI相談/手工記帳を表示
+  return status === 'needs_rule' || status === 'failed' || isLowConfidence(row)
+}
+
+const aiPanelTxId = ref<string>('')
+const aiPanelRow = ref<MoneytreeTransactionItem | null>(null)
+const aiPanelInput = ref('')
+const aiPanelStatus = ref<'idle' | 'sending' | 'success' | 'error'>('idle')
+const aiPanelResultText = ref('')
+const aiPanelMessages = ref<{ role: string; content: string }[]>([])
+const aiInputRef = ref<any>(null)
+const aiSessionId = ref<string>('')  // 多轮对话保持同一 session
+const aiIsFirstMessage = ref(true)   // 标记是否是第一条消息
+// expand-row-keys 控制：只展开当前 AI 相談的行
+const expandedRowKeys = computed(() => aiPanelTxId.value ? [aiPanelTxId.value] : [])
+// AI 面板宽度：动态测量表格可视区域
+const aiPanelWidth = ref('100%')
+function measurePanelWidth() {
+  const wrapper = tableRef.value?.$el?.querySelector('.el-table__body-wrapper')
+  if (wrapper) {
+    aiPanelWidth.value = wrapper.clientWidth + 'px'
+  }
+}
+
+function toggleAiPanel(row: MoneytreeTransactionItem) {
+  if (aiPanelTxId.value === row.id) {
+    closeAiPanel()
+  } else {
+    aiPanelTxId.value = row.id
+    aiPanelRow.value = row
+    aiPanelInput.value = ''
+    aiPanelStatus.value = 'idle'
+    aiPanelResultText.value = ''
+    aiPanelMessages.value = []
+    aiSessionId.value = ''
+    aiIsFirstMessage.value = true
+    // 展开行渲染需要稍微等一下 DOM 更新
+    measurePanelWidth()
+    nextTick(() => {
+      setTimeout(() => {
+        measurePanelWidth()
+        // 自動的に最初のメッセージを送信（AI が主動的にガイドする）
+        sendAiConsult()
+      }, 80)
+    })
+  }
+}
+
+function closeAiPanel() {
+  aiPanelTxId.value = ''
+  aiPanelRow.value = null
+  aiPanelStatus.value = 'idle'
+}
+
+function buildBankMessage(row: MoneytreeTransactionItem, userHint: string): string {
+  const isW = (row.withdrawalAmount ?? 0) > 0
+  const amount = isW ? row.withdrawalAmount : row.depositAmount
+  const typeLabel = isW ? '出金' : '入金'
+  const amountFormatted = Number(amount || 0).toLocaleString()
+
+  let msg = `以下の銀行取引を記帳してください。\n`
+  msg += `取引日: ${row.transactionDate || ''}\n`
+  msg += `種別: ${typeLabel}\n`
+  msg += `金額: ¥${amountFormatted}\n`
+  if (row.description) msg += `摘要: ${row.description}\n`
+  if (row.bankName) msg += `金融機関: ${row.bankName}\n`
+  if (row.accountNumber) msg += `口座番号: ${row.accountNumber}\n`
+  // 自動記帳が失敗した理由を伝える（AI がより的確に質問できるように）
+  if (row.postingError) msg += `\n自動記帳失敗理由: ${row.postingError}\n`
+  if (userHint.trim()) msg += `\nユーザー指示: ${userHint.trim()}\n`
+  msg += `\n銀行取引ID: ${row.id}`
+  msg += `\n\nこの取引は自動記帳に失敗しました。ユーザーに必要な情報を確認しながら、記帳を完了してください。`
+  return msg
+}
+
+async function sendAiConsult() {
+  const row = aiPanelRow.value
+  if (!row) return
+  const userHint = aiPanelInput.value.trim()
+
+  // 第一条消息：发送完整银行交易信息；后续消息：只发用户回复
+  let message: string
+  if (aiIsFirstMessage.value) {
+    message = buildBankMessage(row, userHint)
+  } else {
+    message = userHint || '記帳を続けてください'
+  }
+
+  if (userHint) {
+    aiPanelMessages.value.push({ role: 'user', content: userHint })
+  }
+  aiPanelInput.value = ''
+  aiPanelStatus.value = 'sending'
+
+  try {
+    const payload: Record<string, any> = {
+      message,
+      language: 'ja',
+      bankTransactionId: row.id
+    }
+    // 多轮对话：传递 sessionId 保持上下文
+    if (aiSessionId.value) {
+      payload.sessionId = aiSessionId.value
+    }
+    const resp = await api.post('/ai/agent/message', payload)
+    const data = resp.data
+    // 保存 sessionId 供后续消息使用
+    if (data?.sessionId) {
+      aiSessionId.value = data.sessionId
+    }
+    aiIsFirstMessage.value = false
+    // 从响应中提取 AI 的回复
+    const aiMessages: any[] = data?.messages || []
+    for (const m of aiMessages) {
+      if (m.role === 'assistant' && m.content) {
+        aiPanelMessages.value.push({ role: 'assistant', content: m.content })
+      }
+    }
+    // 判断是否成功创建了凭证
+    const successMsg = aiMessages.find((m: any) =>
+      m.role === 'assistant' && m.status === 'success' && m.content
+    )
+    if (successMsg) {
+      aiPanelStatus.value = 'success'
+      aiPanelResultText.value = successMsg.content
+      // 更新本地行数据
+      const idx = rows.value.findIndex(r => r.id === row.id)
+      if (idx >= 0) {
+        rows.value[idx] = { ...rows.value[idx], postingStatus: 'posted' }
+      }
+    } else {
+      // AI 回复了但没有成功标记（可能是追问或错误）
+      aiPanelStatus.value = 'idle'
+      // AI の応答後、入力欄にフォーカス
+      nextTick(() => aiInputRef.value?.focus?.())
+    }
+  } catch (err: any) {
+    const errText = err?.response?.data?.error || err?.message || '処理に失敗しました'
+    aiPanelMessages.value.push({ role: 'assistant', content: `エラー: ${errText}` })
+    aiPanelStatus.value = 'error'
+    aiPanelResultText.value = errText
+  }
+}
+
+function formatAiMessage(content: string): string {
+  // 简单的换行转 HTML
+  return content.replace(/\n/g, '<br>')
+}
+
+// === 手工快速記帳 ===
+const manualPostTxId = ref('')
+const manualPostAccount = ref('')
+const manualPostNote = ref('')
+const manualPostLoading = ref(false)
+const accountOptions = ref<{ code: string; name: string }[]>([])
+const accountSearchLoading = ref(false)
+const manualPopoverRefs: Record<string, any> = {}
+
+function toggleManualPost(row: MoneytreeTransactionItem) {
+  if (manualPostTxId.value === row.id) {
+    manualPostTxId.value = ''
+  } else {
+    manualPostTxId.value = row.id
+    manualPostAccount.value = ''
+    manualPostNote.value = ''
+    accountOptions.value = []
+  }
+}
+
+async function searchAccounts(query: string) {
+  if (!query || query.length < 1) {
+    accountOptions.value = []
+    return
+  }
+  accountSearchLoading.value = true
+  try {
+    const dsl = {
+      filters: [
+        {
+          operator: 'or',
+          conditions: [
+            { field: 'payload.name', op: 'contains', value: query },
+            { field: 'account_code', op: 'contains', value: query }
+          ]
+        }
+      ],
+      page: 1,
+      pageSize: 20,
+      orderBy: 'account_code',
+      orderDir: 'asc'
+    }
+    const resp = await api.post('/objects/account/search', dsl)
+    const items = resp.data?.items || resp.data?.rows || []
+    accountOptions.value = items.map((item: any) => ({
+      code: item.account_code || item.accountCode || '',
+      name: item.payload?.name || item.name || ''
+    }))
+  } catch {
+    accountOptions.value = []
+  } finally {
+    accountSearchLoading.value = false
+  }
+}
+
+function onAccountSelected(_val: string) {
+  // 选中科目后自动聚焦到メモ字段（可选交互优化）
+}
+
+async function submitManualPost(row: MoneytreeTransactionItem) {
+  if (!manualPostAccount.value) return
+  manualPostLoading.value = true
+  try {
+    const result = await manualPostTransaction(row.id, {
+      counterpartAccountCode: manualPostAccount.value,
+      note: manualPostNote.value || undefined
+    })
+    if (result.success) {
+      ElMessage.success(`記帳完了: ${result.voucherNo}`)
+      // 更新本地行数据
+      const idx = rows.value.findIndex(r => r.id === row.id)
+      if (idx >= 0) {
+        rows.value[idx] = { ...rows.value[idx], postingStatus: 'posted', voucherNo: result.voucherNo, postingError: null }
+      }
+      manualPostTxId.value = ''
+    } else {
+      ElMessage.error(result.error || '記帳に失敗しました')
+    }
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.error || err?.message || '記帳に失敗しました')
+  } finally {
+    manualPostLoading.value = false
+  }
+}
+
 // ChatKit modal payload hook
 function applyIntent(payload: any) {
   const mode = payload?.mode || payload?.context
@@ -624,34 +970,6 @@ function applyIntent(payload: any) {
 }
 
 defineExpose({ applyIntent })
-
-async function simulateSelected() {
-  // 只处理未记帳的记录
-  const pendingRows = selectedRows.value.filter(row => {
-    const status = (row.postingStatus || '').toLowerCase()
-    return status !== 'posted' && status !== 'linked'
-  })
-  if (!pendingRows.length) {
-    ElMessage.warning('対象の明細を選択してください。')
-    return
-  }
-  simulateSelectionSnapshot.value = [...pendingRows]
-  const ids = simulateSelectionSnapshot.value.map((item) => item.id)
-  simulateDialogVisible.value = true
-  simulateLoading.value = true
-  try {
-    const res = await simulateMoneytreePosting(ids)
-    simulateResults.value = res.items ?? []
-    if (!res.items?.length) {
-      ElMessage.info('シミュレーション結果がありません。')
-    }
-  } catch (err: any) {
-    const msg = err?.response?.data?.error || err?.message || 'シミュレーションに失敗しました。'
-    ElMessage.error(msg)
-  } finally {
-    simulateLoading.value = false
-  }
-}
 
 async function runPostingSelected() {
   // 只处理未记帳的记录
@@ -765,28 +1083,6 @@ async function unlinkSelected() {
 
 function formatNumber(val: number) {
   return Number(val).toLocaleString('ja-JP', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
-}
-
-function findSimRow(id: string) {
-  return simulateSelectionSnapshot.value.find((item) => item.id === id)
-}
-
-function getSimDescription(id: string) {
-  return findSimRow(id)?.description || '-'
-}
-
-function getSimAmount(id: string) {
-  const row = findSimRow(id)
-  if (!row) return '-'
-  const amount = row.depositAmount ?? (row.withdrawalAmount ? -row.withdrawalAmount : 0)
-  if (!amount) return '-'
-  const sign = amount >= 0 ? '+' : '-'
-  return `${sign}${formatNumber(Math.abs(amount))} ${row.currency || ''}`.trim()
-}
-
-function formatAccountLabel(code?: string | null, name?: string | null) {
-  if (!code) return '-'
-  return name ? `${code} (${name})` : code
 }
 
 function statusType(status?: string | null) {
@@ -1025,30 +1321,6 @@ function formatDateTime(value?: string | null) {
   padding: 6px 8px;
   line-height: 18px;
 }
-.sim-desc {
-  font-weight: 600;
-  color: #303133;
-}
-.sim-amount {
-  font-size: 13px;
-  color: #606266;
-}
-:deep(.simulate-dialog .el-dialog__header) {
-  padding: 12px 20px;
-}
-:deep(.simulate-dialog .el-dialog__body) {
-  padding: 0 28px 12px;
-}
-:deep(.simulate-dialog .el-dialog__footer) {
-  padding: 12px 20px 20px;
-}
-:deep(.simulate-dialog .el-table__header-wrapper),
-:deep(.simulate-dialog .el-table__body-wrapper) {
-  overflow: visible !important;
-}
-:deep(.simulate-dialog .el-table__cell) {
-  white-space: normal;
-}
 .voucher-detail-embed :deep(.page-toolbar),
 .voucher-detail-embed :deep(.page-pagination) {
   display: none;
@@ -1058,17 +1330,6 @@ function formatDateTime(value?: string | null) {
 .voucher-detail-embed :deep(.voucher-detail-only .detail-card) {
   border: none;
   box-shadow: none;
-}
-.sim-table-wrapper {
-  display: flex;
-  justify-content: center;
-  padding: 0;
-  margin: 0 0 12px 0;
-}
-.sim-table-wrapper .el-table {
-  width: auto;
-  min-width: 720px;
-  margin: 0;
 }
 .rules-toolbar {
   display: flex;
@@ -1123,6 +1384,119 @@ function formatDateTime(value?: string | null) {
 .account-number {
   font-size: 12px;
   color: #666;
+}
+
+.status-tag-with-info {
+  cursor: pointer;
+}
+.ops-cell {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.manual-post-form {
+  padding: 4px 0;
+}
+.manual-post-label {
+  font-size: 13px;
+  color: #606266;
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+/* === 隐藏展开列的箭头按钮和列宽（由 AI相談 按钮控制展开） === */
+:deep(.hidden-expand-col) {
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  overflow: hidden;
+}
+:deep(.hidden-expand-col .cell) {
+  display: none !important;
+}
+/* 展开行内容区域取消默认内边距 */
+:deep(.el-table__expanded-cell) {
+  padding: 0 !important;
+  background: #f8fbff;
+}
+/* === AI 相談 内联面板（展开行内） === */
+.ai-consult-panel-inline {
+  border-top: 2px solid #409eff;
+  background: #f8fbff;
+  /* 固定在可视区域左侧，宽度由 JS 动态测量 */
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
+}
+.ai-panel-body {
+  padding: 10px 16px;
+  min-height: 36px;
+}
+.ai-panel-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ai-panel-msg {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 80%;
+}
+.ai-panel-msg.user {
+  background: #409eff;
+  color: #fff;
+  align-self: flex-end;
+  border-bottom-right-radius: 2px;
+}
+.ai-panel-msg.assistant {
+  background: #fff;
+  color: #303133;
+  border: 1px solid #e4e7ed;
+  align-self: flex-start;
+  border-bottom-left-radius: 2px;
+}
+.ai-msg-content {
+  word-break: break-word;
+}
+.ai-panel-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #909399;
+  font-size: 13px;
+  padding: 8px 0;
+}
+.ai-panel-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.ai-panel-result.success {
+  background: #f0f9eb;
+  color: #67c23a;
+  border: 1px solid #e1f3d8;
+}
+.ai-panel-result.error {
+  background: #fef0f0;
+  color: #f56c6c;
+  border: 1px solid #fde2e2;
+}
+.ai-panel-input {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 12px;
+}
+.ai-panel-input .el-input {
+  flex: 1;
 }
 </style>
 

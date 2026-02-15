@@ -232,19 +232,31 @@ public sealed class AgentKitService
         }
 
         AgentSkillService.AgentSkillRecord? matchedSkill = null;
-        try
+        // === 银行明细 AI 相談：bankTransactionId 存在时强制路由到 bank_auto_booking ===
+        if (!string.IsNullOrWhiteSpace(request.BankTransactionId))
         {
-            var skillMatch = await _skillMatcher.MatchAsync(request.CompanyCode, request.Message ?? "", fileContentType, "web", ct);
-            if (skillMatch is not null && skillMatch.Score >= 0.3)
+            matchedSkill = await _skillMatcher.GetSkillAsync(request.CompanyCode, "bank_auto_booking", ct);
+            if (matchedSkill is not null)
             {
-                matchedSkill = skillMatch.Skill;
-                _logger.LogInformation("[AgentKit] Skill 匹配: skill={SkillKey}, score={Score:F2}, reason={Reason}",
-                    matchedSkill.SkillKey, skillMatch.Score, skillMatch.Reason);
+                _logger.LogInformation("[AgentKit] 银行交易 AI 相談: 强制路由到 bank_auto_booking (txId={TxId})", request.BankTransactionId);
             }
         }
-        catch (Exception ex)
+        if (matchedSkill is null)
         {
-            _logger.LogWarning(ex, "[AgentKit] Skill 匹配异常");
+            try
+            {
+                var skillMatch = await _skillMatcher.MatchAsync(request.CompanyCode, request.Message ?? "", fileContentType, "web", ct);
+                if (skillMatch is not null && skillMatch.Score >= 0.3)
+                {
+                    matchedSkill = skillMatch.Skill;
+                    _logger.LogInformation("[AgentKit] Skill 匹配: skill={SkillKey}, score={Score:F2}, reason={Reason}",
+                        matchedSkill.SkillKey, skillMatch.Score, skillMatch.Reason);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[AgentKit] Skill 匹配异常");
+            }
         }
         // 无匹配时加载 general_assistant 兜底 Skill
         matchedSkill ??= await _skillMatcher.GetSkillAsync(request.CompanyCode, "general_assistant", ct);
@@ -364,6 +376,13 @@ public sealed class AgentKitService
         else if (!string.IsNullOrWhiteSpace(activeDocumentSessionId))
         {
             tokens["activeDocumentSessionId"] = activeDocumentSessionId;
+        }
+        // 银行交易 AI 相谈：注入虚拟 documentSessionId 供 create_voucher 使用
+        if (!tokens.ContainsKey("activeDocumentSessionId") && !string.IsNullOrWhiteSpace(request.BankTransactionId))
+        {
+            var bankDocSessionId = $"bank_{request.BankTransactionId}";
+            tokens["activeDocumentSessionId"] = bankDocSessionId;
+            tokens["activeDocumentLabel"] = "#1";
         }
 
         // === 纯 Skill 驱动的 Prompt 构建（无回退） ===
@@ -547,6 +566,22 @@ public sealed class AgentKitService
         context.SkillTemperature = activeSkillTemperature;
         context.SkillEnabledTools = activeSkillEnabledTools;
         context.SkillExtractionPrompt = activeSkillExtractionPrompt;
+        // === 银行明细 AI 相談：传递银行交易ID + 注册虚拟文档会话 ===
+        if (!string.IsNullOrWhiteSpace(request.BankTransactionId))
+        {
+            context.BankTransactionId = request.BankTransactionId;
+            // create_voucher 需要 documentSessionId，但银行交易相谈没有上传文件。
+            // 注册一个虚拟文档会话，以 bankTxId 作为 fileId，让 create_voucher 正常工作。
+            var bankDocSessionId = $"bank_{request.BankTransactionId}";
+            var bankPlaceholder = new System.Text.Json.Nodes.JsonObject
+            {
+                ["type"] = "bank_transaction",
+                ["transactionId"] = request.BankTransactionId
+            };
+            context.RegisterDocument(request.BankTransactionId, bankPlaceholder, bankDocSessionId);
+            context.AssignDocumentLabel(bankDocSessionId, "#1");
+            context.SetActiveDocumentSession(bankDocSessionId);
+        }
         foreach (var entry in documentLabelEntries)
         {
             context.AssignDocumentLabel(entry.SessionId, entry.Label);
@@ -4715,6 +4750,103 @@ public sealed class AgentKitService
         }
         // === 学习事件记录结束 ===
 
+        // === 银行明细 AI 相談：如果凭证是通过银行交易相谈创建的，自动关联到 moneytree_transactions ===
+        if (!string.IsNullOrWhiteSpace(context.BankTransactionId) && voucherId != Guid.Empty)
+        {
+            try
+            {
+                await using var bankConn = await _ds.OpenConnectionAsync(ct);
+
+                // 1. 更新 moneytree_transactions: 设置 voucher_id、posting_status
+                await using var linkCmd = bankConn.CreateCommand();
+                linkCmd.CommandText = @"
+UPDATE moneytree_transactions
+SET voucher_id = $1,
+    posting_status = 'posted',
+    posting_error = NULL,
+    posting_method = 'ChatKitAI',
+    updated_at = now()
+WHERE company_code = $2 AND id = $3 AND posting_status NOT IN ('posted', 'linked')";
+                linkCmd.Parameters.AddWithValue(voucherId);
+                linkCmd.Parameters.AddWithValue(context.CompanyCode);
+                linkCmd.Parameters.AddWithValue(context.BankTransactionId);
+                var bankRowsAffected = await linkCmd.ExecuteNonQueryAsync(ct);
+
+                if (bankRowsAffected > 0)
+                {
+                    _logger.LogInformation("[AgentKit] 银行交易 {TxId} 已关联到凭证 {VoucherNo}",
+                        context.BankTransactionId, voucherNo);
+
+                    // 2. 获取银行交易信息用于学习
+                    await using var txCmd = bankConn.CreateCommand();
+                    txCmd.CommandText = @"
+SELECT description, withdrawal_amount, deposit_amount
+FROM moneytree_transactions
+WHERE company_code = $1 AND id = $2";
+                    txCmd.Parameters.AddWithValue(context.CompanyCode);
+                    txCmd.Parameters.AddWithValue(context.BankTransactionId);
+                    await using var txReader = await txCmd.ExecuteReaderAsync(ct);
+                    if (await txReader.ReadAsync(ct))
+                    {
+                        var bankDesc = txReader.IsDBNull(0) ? null : txReader.GetString(0);
+                        var withdrawal = txReader.IsDBNull(1) ? 0m : txReader.GetDecimal(1);
+                        var deposit = txReader.IsDBNull(2) ? 0m : txReader.GetDecimal(2);
+                        var isWithdrawal = withdrawal > 0;
+                        var bankAmount = isWithdrawal ? withdrawal : deposit;
+
+                        // 3. 从凭证 payload 提取借方/贷方科目
+                        string? bankDebitAcct = null, bankDebitName = null, bankCreditAcct = null, bankCreditName = null;
+                        if (root["lines"] is JsonArray bankLines)
+                        {
+                            foreach (var bl in bankLines)
+                            {
+                                if (bl is JsonObject blo)
+                                {
+                                    var bDrcr = blo["drcr"]?.GetValue<string>();
+                                    if (string.Equals(bDrcr, "DR", StringComparison.OrdinalIgnoreCase) && bankDebitAcct == null)
+                                    {
+                                        bankDebitAcct = blo["accountCode"]?.GetValue<string>();
+                                        bankDebitName = blo["accountName"]?.GetValue<string>();
+                                    }
+                                    else if (string.Equals(bDrcr, "CR", StringComparison.OrdinalIgnoreCase) && bankCreditAcct == null)
+                                    {
+                                        bankCreditAcct = blo["accountCode"]?.GetValue<string>();
+                                        bankCreditName = blo["accountName"]?.GetValue<string>();
+                                    }
+                                }
+                            }
+                        }
+
+                        // 4. 记录银行专用学习事件 + 更新 ai_learned_patterns
+                        await _learningCollector.RecordBankPostingViaChatAsync(
+                            context.CompanyCode,
+                            context.SessionId.ToString(),
+                            context.BankTransactionId,
+                            bankDesc,
+                            bankAmount,
+                            isWithdrawal,
+                            bankDebitAcct,
+                            bankDebitName,
+                            bankCreditAcct,
+                            bankCreditName,
+                            null, null,  // counterpartyKind/Id — 可从上下文提取
+                            voucherId,
+                            voucherNo,
+                            ct);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("[AgentKit] 银行交易 {TxId} 关联失败（可能已被记账或ID不存在）", context.BankTransactionId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[AgentKit] 银行交易关联失败（不影响凭证创建）: txId={TxId}", context.BankTransactionId);
+            }
+        }
+        // === 银行明细关联结束 ===
+
         // === Context Engine: 记录凭证创建到上下文 ===
         try
         {
@@ -6932,7 +7064,7 @@ public sealed class AgentKitService
 
     public sealed record AgentResultMessage(string Role, string Content, string? Status, object? Tag);
 
-    internal sealed record AgentMessageRequest(Guid? SessionId, string CompanyCode, Auth.UserCtx UserCtx, string Message, string ApiKey, string Language, Func<string, UploadedFileRecord?>? FileResolver, string? ScenarioKey, string? AnswerTo, Guid? TaskId);
+    internal sealed record AgentMessageRequest(Guid? SessionId, string CompanyCode, Auth.UserCtx UserCtx, string Message, string ApiKey, string Language, Func<string, UploadedFileRecord?>? FileResolver, string? ScenarioKey, string? AnswerTo, Guid? TaskId, string? BankTransactionId = null);
 
     internal sealed record AgentFileRequest(Guid? SessionId, string CompanyCode, Auth.UserCtx UserCtx, string FileId, string FileName, string ContentType, long Size, string ApiKey, string Language, Func<string, UploadedFileRecord?>? FileResolver, string? ScenarioKey, string BlobName, string? UserMessage = null, JsonObject? ParsedData = null, string? AnswerTo = null);
 
@@ -6983,6 +7115,9 @@ public sealed class AgentKitService
         public string[]? SkillEnabledTools { get; set; }
         public string? SkillKey { get; set; }
         public string? SkillExtractionPrompt { get; set; }
+
+        // === 银行明细 ChatKit 记账：关联的银行交易ID ===
+        public string? BankTransactionId { get; set; }
 
         public UploadedFileRecord? ResolveFile(string fileId) => _fileResolver(fileId);
 

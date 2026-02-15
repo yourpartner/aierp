@@ -39,12 +39,17 @@ public sealed class TaskSchedulerService : BackgroundService
     /// <summary>
     /// Entry point for the background worker: continuously fetches due tasks and processes them.
     /// </summary>
+    private static readonly TimeSpan StaleLockTimeout = TimeSpan.FromMinutes(10);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                // 回收超过 10 分钟的过期锁（服务重启后任务卡在 running 状态）
+                await RecoverStaleLocks(stoppingToken);
+
                 var tasks = await FetchDueTasksAsync(stoppingToken);
                 if (tasks.Count == 0)
                 {
@@ -69,6 +74,43 @@ public sealed class TaskSchedulerService : BackgroundService
                 try { _logger?.LogError(ex, "任务调度执行失败"); } catch { }
                 try { await Task.Delay(TimeSpan.FromSeconds(60), stoppingToken); } catch { }
             }
+        }
+    }
+
+    /// <summary>
+    /// Recovers tasks that are stuck in 'running' state due to service restarts.
+    /// If a task has been locked for more than StaleLockTimeout, reset it to 'pending'.
+    /// </summary>
+    private async Task RecoverStaleLocks(CancellationToken ct)
+    {
+        try
+        {
+            await using var conn = await _ds.OpenConnectionAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+UPDATE scheduler_tasks
+SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{status}', '""pending""'),
+    locked_by = NULL,
+    locked_at = NULL,
+    next_run_at = now(),
+    updated_at = now()
+WHERE locked_by IS NOT NULL
+  AND locked_at < now() - $1::interval
+RETURNING id, company_code, payload->'plan'->>'action' AS action";
+            cmd.Parameters.AddWithValue(StaleLockTimeout);
+
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                var id = reader.GetGuid(0);
+                var company = reader.IsDBNull(1) ? "?" : reader.GetString(1);
+                var action = reader.IsDBNull(2) ? "?" : reader.GetString(2);
+                _logger?.LogWarning("[TaskScheduler] Recovered stale lock: task={TaskId}, company={Company}, action={Action}", id, company, action);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "[TaskScheduler] Failed to recover stale locks");
         }
     }
 

@@ -2436,6 +2436,53 @@ static async Task<IResult> HandleVoucherUpdate(HttpRequest req, Guid id, Finance
                             var originalData = new JsonObject { ["debitAccount"] = oldDebit, ["creditAccount"] = oldCredit };
                             var correctedData = new JsonObject { ["debitAccount"] = newDebit, ["creditAccount"] = newCredit };
                             _ = learningCollector.RecordUserCorrectionAsync(cc.ToString()!, id, originalData, correctedData, CancellationToken.None);
+
+                            // === 银行来源凭证修正：检测是否关联了 moneytree 交易，如果是则记录银行专用学习事件 ===
+                            try
+                            {
+                                var ds2 = req.HttpContext.RequestServices.GetRequiredService<NpgsqlDataSource>();
+                                await using var bankConn = await ds2.OpenConnectionAsync(req.HttpContext.RequestAborted);
+                                await using var bankCmd = bankConn.CreateCommand();
+                                bankCmd.CommandText = @"
+SELECT mt.description, mt.withdrawal_amount, mt.deposit_amount
+FROM moneytree_transactions mt
+WHERE mt.company_code = $1 AND mt.voucher_id = $2
+LIMIT 1";
+                                bankCmd.Parameters.AddWithValue(cc.ToString()!);
+                                bankCmd.Parameters.AddWithValue(id);
+                                await using var bankReader = await bankCmd.ExecuteReaderAsync(req.HttpContext.RequestAborted);
+                                if (await bankReader.ReadAsync(req.HttpContext.RequestAborted))
+                                {
+                                    var bankDesc = bankReader.IsDBNull(0) ? null : bankReader.GetString(0);
+                                    var withdrawal = bankReader.IsDBNull(1) ? 0m : bankReader.GetDecimal(1);
+                                    var deposit = bankReader.IsDBNull(2) ? 0m : bankReader.GetDecimal(2);
+                                    var isWithdrawal = withdrawal > 0;
+                                    var bankAmount = isWithdrawal ? withdrawal : deposit;
+
+                                    // 提取修正后的科目名称
+                                    static string? ExtractFirstAccountName(JsonObject? payload, string drcr)
+                                    {
+                                        if (payload?.TryGetPropertyValue("lines", out var linesNode) != true || linesNode is not System.Text.Json.Nodes.JsonArray lines) return null;
+                                        foreach (var line in lines)
+                                        {
+                                            if (line is JsonObject lo &&
+                                                lo.TryGetPropertyValue("drcr", out var d) && d is System.Text.Json.Nodes.JsonValue dv && dv.TryGetValue<string>(out var ds3) &&
+                                                string.Equals(ds3, drcr, StringComparison.OrdinalIgnoreCase) &&
+                                                lo.TryGetPropertyValue("accountName", out var an) && an is System.Text.Json.Nodes.JsonValue anv && anv.TryGetValue<string>(out var ans))
+                                                return ans;
+                                        }
+                                        return null;
+                                    }
+                                    var newDebitName = ExtractFirstAccountName(updatedPayload, "DR");
+                                    var newCreditName = ExtractFirstAccountName(updatedPayload, "CR");
+
+                                    _ = learningCollector.RecordBankVoucherCorrectionAsync(
+                                        cc.ToString()!, id, bankDesc, bankAmount, isWithdrawal,
+                                        oldDebit, newDebit, oldCredit, newCredit,
+                                        newDebitName, newCreditName, CancellationToken.None);
+                                }
+                            }
+                            catch { /* 银行学习记录失败不影响正常更新 */ }
                         }
                     }
                 }
@@ -5674,6 +5721,11 @@ app.MapPost("/ai/agent/message", async (HttpRequest req, AgentKitService agentKi
     {
         taskId = parsedTaskId;
     }
+    string? bankTransactionId = null;
+    if (root.TryGetProperty("bankTransactionId", out var bankTxEl) && bankTxEl.ValueKind == JsonValueKind.String)
+    {
+        bankTransactionId = bankTxEl.GetString();
+    }
     var language = root.TryGetProperty("language", out var langEl) && langEl.ValueKind == JsonValueKind.String
         ? langEl.GetString()
         : (req.Headers.TryGetValue("x-lang", out var langHeader) ? langHeader.ToString() : null);
@@ -5703,7 +5755,8 @@ app.MapPost("/ai/agent/message", async (HttpRequest req, AgentKitService agentKi
         id => uploadedFiles.TryGetValue(id, out var record) ? record : null,
         scenarioKey,
         answerTo,
-        taskId),
+        taskId,
+        bankTransactionId),
         req.HttpContext.RequestAborted);
     var activeDocumentSessionId = await agentKit.GetActiveDocumentSessionIdAsync(result.SessionId, req.HttpContext.RequestAborted);
     return Results.Json(new
