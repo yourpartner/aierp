@@ -619,12 +619,12 @@ CREATE TABLE IF NOT EXISTS warehouse_sequences (
                         {
                             new { type = "grid", cols = new object[]
                                 {
-                                    new { field = "companyName", label = "公司名称", span = 12 },
-                                    new { field = "companyAddress", label = "公司地址", span = 12 },
+                                    new { field = "companyName", label = "会社名", span = 12 },
+                                    new { field = "companyAddress", label = "会社住所", span = 12 },
                                     new { field = "companyRep", label = "代表者", span = 6 },
-                                    new { field = "workdayDefaultStart", label = "上班(HH:mm)", span = 6 },
-                                    new { field = "workdayDefaultEnd", label = "下班(HH:mm)", span = 6 },
-                                    new { field = "lunchMinutes", label = "午休(分钟)", span = 6, props = new { type = "number" } }
+                                    new { field = "workdayDefaultStart", label = "始業(HH:mm)", span = 6 },
+                                    new { field = "workdayDefaultEnd", label = "終業(HH:mm)", span = 6 },
+                                    new { field = "lunchMinutes", label = "休憩(分)", span = 6, props = new { type = "number" } }
                                 } }
                             , new { type = "grid", cols = new object[]
                                 {
@@ -635,14 +635,14 @@ CREATE TABLE IF NOT EXISTS warehouse_sequences (
                                 } }
                             , new { type = "grid", cols = new object[]
                                 {
-                                    new { field = "seal.format", label = "印章格式(png/jpg)", span = 6 },
-                                    new { field = "seal.size", label = "印章尺寸(pt)", span = 6, props = new { type = "number" } },
-                                    new { field = "seal.offsetX", label = "X偏移(pt)", span = 6, props = new { type = "number" } },
-                                    new { field = "seal.offsetY", label = "Y偏移(pt)", span = 6, props = new { type = "number" } },
+                                    new { field = "seal.format", label = "社印形式(png/jpg)", span = 6 },
+                                    new { field = "seal.size", label = "社印サイズ(pt)", span = 6, props = new { type = "number" } },
+                                    new { field = "seal.offsetX", label = "X オフセット(pt)", span = 6, props = new { type = "number" } },
+                                    new { field = "seal.offsetY", label = "Y オフセット(pt)", span = 6, props = new { type = "number" } },
                                     new { field = "seal.opacity", label = "不透明度(0-1)", span = 6, props = new { type = "number" } }
                                 } }
-                            , new { field = "seal.plainBase64", label = "印章Base64(不会明文落库)", widget = "textarea", props = new { type = "textarea", rows = 3 } }
-                            , new { field = "seal.dataUrl", label = "印章DataURL(可选)", widget = "textarea", props = new { type = "textarea", rows = 2 } }
+                            , new { field = "seal.plainBase64", label = "社印Base64(暗号化保存)", widget = "textarea", props = new { type = "textarea", rows = 3 } }
+                            , new { field = "seal.dataUrl", label = "社印DataURL(任意)", widget = "textarea", props = new { type = "textarea", rows = 2 } }
                         }
                     }
                 },

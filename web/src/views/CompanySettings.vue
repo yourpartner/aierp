@@ -14,7 +14,9 @@
         <el-form label-width="150px" label-position="left" style="margin-bottom:16px">
           <el-form-item label="社印">
             <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap">
-              <input type="file" accept="image/*" @change="onPickSeal" />
+              <input ref="sealFileInput" type="file" accept="image/*" style="display:none" @change="onPickSeal" />
+              <el-button size="small" @click="($refs.sealFileInput as HTMLInputElement)?.click()">ファイルを選択</el-button>
+              <span class="seal-filename">{{ sealFileName || '選択されていません' }}</span>
               <div style="display:flex; align-items:center; gap:8px">
                 <span>サイズ(pt)</span>
                 <el-input-number v-model="model.seal.size" :min="0" :step="1" />
@@ -62,7 +64,7 @@
               />
             </div>
           </el-form-item>
-          <el-form-item label="進項税計上科目">
+          <el-form-item label="仮払消費税科目">
             <el-select
               v-model="model.inputTaxAccountCode"
               filterable
@@ -77,7 +79,7 @@
               <el-option v-for="opt in taxAccountOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
             </el-select>
           </el-form-item>
-          <el-form-item label="売上税計上科目">
+          <el-form-item label="仮受消費税科目">
             <el-select
               v-model="model.outputTaxAccountCode"
               filterable
@@ -91,7 +93,7 @@
             >
               <el-option v-for="opt in taxAccountOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
             </el-select>
-            <div class="tax-hint">※進項税→仮払消費税、売上税→仮受消費税など、仕訳に使用する科目を指定してください。</div>
+            <div class="tax-hint">※仕訳に使用する消費税科目を指定してください。</div>
           </el-form-item>
           <el-form-item label="銀行手数料科目">
             <el-select
@@ -216,6 +218,7 @@ const finalUi = computed(()=>{
   }catch{ return base }
 })
 const sealPreview = ref<string>('')
+const sealFileName = ref<string>('')
 const schema = ref<any>(null)
 const currentId = ref<string>('')
 const taxAccountOptions = ref<{ label: string; value: string }[]>([])
@@ -304,7 +307,7 @@ async function ensureSchema(){
       },
       ui: { form: { layout: [ { type:'grid', cols:[
         { field:'companyName', label:'会社名', span:12 },
-        { field:'companyAddress', label:'所在地', span:12 },
+        { field:'companyAddress', label:'会社住所', span:12 },
         { field:'companyRep', label:'代表者', span:6 },
         { field:'workdayDefaultStart', label:'始業(HH:mm)', span:6 },
         { field:'workdayDefaultEnd', label:'終業(HH:mm)', span:6 },
@@ -396,6 +399,7 @@ function onPickSeal(e: Event){
   const input = e.target as HTMLInputElement
   const file = input.files && input.files[0]
   if (!file) return
+  sealFileName.value = file.name
   const reader = new FileReader()
   reader.onload = () => {
     const dataUrl = String(reader.result||'')
@@ -420,6 +424,7 @@ function onPickSeal(e: Event){
 .tax-period{ display:flex; align-items:center; gap:8px; flex-wrap:wrap }
 .tax-period-sep{ color:#6b7280 }
 .tax-hint{ font-size:12px; color:#6b7280; margin-left:12px }
+.seal-filename{ font-size:13px; color:#6b7280 }
 </style>
 
 
