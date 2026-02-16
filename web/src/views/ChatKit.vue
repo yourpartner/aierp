@@ -3,8 +3,7 @@
     <aside class="sidebar" @click.capture="onSidebarClick">
       <div class="sidebar-header">
         <div class="brand">
-          <img src="/logo.svg?v=2" alt="AIMate" class="brand-logo" />
-          <div class="brand-title">{{ text.appTitle }}</div>
+          <img src="/sfin-logo.png" alt="iTBank Sfin" class="brand-logo" />
         </div>
       </div>
       <div class="sidebar-scroll">
@@ -45,9 +44,11 @@
             <el-option v-for="opt in langOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
           </el-select>
           <div class="profile-box">
-            <div class="company-badge">{{ profile.company }}</div>
+            <div class="company-info">
+              <div class="company-badge">{{ profile.company }}</div>
+              <div class="company-name-sub">{{ companyDisplayName }}</div>
+            </div>
             <div class="user-chip">
-              <div class="avatar">{{ profileInitials }}</div>
               <div class="user-meta">
                 <div class="user-name">{{ profile.name }}</div>
                 <el-button type="danger" size="small" plain @click="handleLogout">
@@ -3493,6 +3494,18 @@ const profile = reactive({
   caps: (sessionStorage.getItem('userCaps') || '').split(',').filter(Boolean)
 })
 
+const companyDisplayName = ref('')
+async function loadCompanyDisplayName() {
+  try {
+    const resp = await api.post('/objects/company_setting/search', {
+      page: 1, pageSize: 1, where: [], orderBy: [{ field: 'created_at', dir: 'DESC' }]
+    })
+    const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
+    const name = rows[0]?.payload?.companyName
+    companyDisplayName.value = typeof name === 'string' ? name.trim() : ''
+  } catch { companyDisplayName.value = '' }
+}
+
 // 权限检查方法
 function hasCap(cap: string): boolean {
   if (!profile.caps || profile.caps.length === 0) return true // 没有caps信息时不限制
@@ -4362,6 +4375,7 @@ onMounted(async () => {
   window.addEventListener('storage', handleProfileStorage)
   loadRecent()
   loadAccessibleMenus() // 加载可访问的菜单列表
+  loadCompanyDisplayName()
   await loadEditionInfo() // 加载版本和动态菜单
   router.afterEach((to) => {
     const p = to.fullPath
@@ -5256,20 +5270,20 @@ function onChatDragLeave(){
 }
 
 .sidebar-header {
-  padding: 26px 22px 18px;
+  padding: 6px 22px 6px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.03);
 }
 
 .brand {
   display: flex;
+  justify-content: center;
   align-items: center;
-  gap: 10px;
 }
 
 .brand-logo {
-  width: 28px;
-  height: 28px;
+  height: 96px;
+  width: auto;
 }
 
 .brand-title {
@@ -5427,18 +5441,31 @@ function onChatDragLeave(){
 
 .profile-box {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 16px;
+}
+
+.company-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 2px;
 }
 
 .company-badge {
   background: rgba(59, 130, 246, 0.16);
   color: var(--color-primary);
-  padding: 6px 14px;
+  padding: 2px 10px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: var(--font-weight-medium);
   letter-spacing: 0.02em;
+}
+
+.company-name-sub {
+  font-size: 11px;
+  color: #333;
+  margin-top: 2px;
 }
 
 .user-chip {
@@ -5464,6 +5491,7 @@ function onChatDragLeave(){
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  gap: 2px;
 }
 
 .user-name {

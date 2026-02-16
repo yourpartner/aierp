@@ -817,7 +817,7 @@ export interface Messages {
 }
 
 export const ja: Messages = {
-  appTitle: 'AIMate',
+  appTitle: 'iTBank Sfin - シンプルファイナンス',
   nav: {
     chat: 'チャット会話',
     newSession: '新規会話',
@@ -1848,7 +1848,7 @@ export const ja: Messages = {
 }
 
 export const en: Messages = {
-  appTitle: 'AIMate',
+  appTitle: 'iTBank Sfin - Simple Finance',
   nav: {
     chat: 'Chat Conversation',
     newSession: 'New Conversation',
@@ -2885,7 +2885,7 @@ export const en: Messages = {
 
 export const zh: Messages = JSON.parse(JSON.stringify(ja)) as Messages
 
-zh.appTitle = 'AIMate'
+zh.appTitle = 'iTBank Sfin - 简单财务'
 zh.nav = {
   chat: '聊天会话',
   newSession: '新建会话',

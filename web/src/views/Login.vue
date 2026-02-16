@@ -1,5 +1,8 @@
 <template>
   <div style="max-width: 380px; margin: 80px auto;">
+    <div style="text-align: center; margin-bottom: 32px;">
+      <img src="/sfin-logo.png" alt="iTBank Sfin" style="width: 240px; height: auto;" />
+    </div>
     <h3 style="margin-bottom:16px;">{{ t('login.title') }}</h3>
     <el-form :model="form" label-width="110px" @submit.native.prevent>
       <el-form-item :label="t('login.companyCode')">

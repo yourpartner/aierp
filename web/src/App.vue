@@ -1,7 +1,9 @@
 <template>
   <div class="app-shell">
     <header class="app-header">
-      <div class="title">{{ t('appTitle') }}</div>
+      <div class="header-logo">
+        <img src="/sfin-logo.png" alt="iTBank Sfin" class="logo-img" />
+      </div>
       <div class="lang-switch">
         <el-select v-model="langVal" size="small" style="width:120px" @change="onLangChange">
           <el-option v-for="item in langOptions" :key="item.value" :label="item.label" :value="item.value" />
@@ -39,14 +41,14 @@ function onLangChange(val: string) {
 const companyName = ref('')
 const localizedAppTitle = computed(() => t('appTitle'))
 const pageTitle = computed(() => {
-  const base = localizedAppTitle.value || 'AIMate'
+  const base = localizedAppTitle.value || 'iTBank Sfin'
   const company = (companyName.value || '').trim()
   return company ? `${base} - ${company}` : base
 })
 
 watch(pageTitle, (val) => {
   if (typeof document !== 'undefined') {
-    document.title = val || 'AIMate'
+    document.title = val || 'iTBank Sfin'
   }
 }, { immediate: true })
 
@@ -97,5 +99,6 @@ html,body,#app{height:100%;margin:0;}
 .app-shell{display:flex;flex-direction:column;height:100%;}
 .app-header{display:flex;justify-content:space-between;align-items:center;padding:8px 16px;border-bottom:1px solid #e5e7eb;background:#fff;}
 .app-body{flex:1;overflow:auto;background:#f5f7fb;}
-.title{font-size:18px;font-weight:600;color:#111827;}
+.header-logo{display:flex;align-items:center;padding:4px 0;}
+.logo-img{height:55px;width:auto;}
 </style>
