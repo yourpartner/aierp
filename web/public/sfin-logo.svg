@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 110" fill="none">
+  <defs>
+    <linearGradient id="sfin-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#60a5fa;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- iTBank ?? -->
+  <text x="5" y="18" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" fill="#1e3a8a">iTBank</text>
+  
+  <!-- Sfin ?????? - ????????? -->
+  <g fill="url(#sfin-gradient)" stroke="url(#sfin-gradient)" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- S - ????? -->
+    <path d="M 10 58 Q 12 45, 22 43 Q 32 41, 35 48 Q 37 53, 30 57 Q 23 61, 20 58 Q 16 54, 18 48 Q 20 44, 26 42" 
+          fill="url(#sfin-gradient)" stroke="none"/>
+    <path d="M 28 42 Q 35 40, 40 44 Q 44 48, 42 54 Q 40 59, 34 61 Q 28 63, 24 60 Q 20 57, 22 52" 
+          fill="url(#sfin-gradient)" stroke="none" opacity="0.8"/>
+    
+    <!-- f - ????? -->
+    <path d="M 50 38 Q 52 32, 56 32 Q 59 32, 60 35 L 60 68 Q 60 72, 58 74" 
+          fill="none" stroke="url(#sfin-gradient)" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M 45 48 L 65 48" 
+          fill="none" stroke="url(#sfin-gradient)" stroke-width="3" stroke-linecap="round"/>
+    
+    <!-- i - ??????? -->
+    <circle cx="79" cy="36" r="3.5" fill="url(#sfin-gradient)"/>
+    <path d="M 79 46 L 79 68 Q 79 72, 77 74" 
+          fill="none" stroke="url(#sfin-gradient)" stroke-width="3.5" stroke-linecap="round"/>
+    
+    <!-- n - ????? -->
+    <path d="M 92 68 L 92 52 Q 92 46, 98 46 Q 104 46, 104 52 L 104 68 Q 104 72, 102 74" 
+          fill="none" stroke="url(#sfin-gradient)" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+  
+  <!-- ?????????? ??? -->
+  <text x="5" y="98" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#6b7280" letter-spacing="1">??????????</text>
+</svg>
