@@ -1503,7 +1503,10 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
             var (row, pairedFee) = transactions[i];
             try
             {
-                var msg = BuildSingleTransactionMessage(row, pairedFee, i + 1, transactions.Count);
+                // 对振込类交易，预先在代码中执行取引先识别和未清明细搜索
+                // 避免依赖 AI 调用 identify_bank_counterparty / search_bank_open_items（AI 经常跳过）
+                var preContext = await PreIdentifyCounterpartyAsync(companyCode, row, ct);
+                var msg = BuildSingleTransactionMessage(row, pairedFee, i + 1, transactions.Count, preContext);
 
                 var request = new AgentKitService.AgentMessageRequest(
                     SessionId: null,
@@ -1557,13 +1560,173 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         return results;
     }
 
+    // ====== 预查询结果 ======
+    private sealed record PreIdentifyResult(
+        bool IsTransfer,
+        string? CounterpartyKind,   // employee / vendor / customer
+        string? CounterpartyId,     // UUID
+        string? CounterpartyCode,   // employee_code etc.
+        string? CounterpartyName,
+        string? ExtractedName,
+        List<OpenItemMatch>? OpenItems);
+
+    private sealed record OpenItemMatch(
+        string Id, string AccountCode, decimal ResidualAmount, string? DocDate, string? VoucherNo, string? EffectiveDate);
+
+    /// <summary>
+    /// 对振込类交易，预先在代码中执行取引先识别和未清明细搜索。
+    /// 结果会注入到 AI 消息中，避免依赖 AI 主动调用这些工具。
+    /// </summary>
+    private async Task<PreIdentifyResult?> PreIdentifyCounterpartyAsync(
+        string companyCode, MoneytreeTransactionRow row, CancellationToken ct)
+    {
+        var desc = row.Description?.Trim() ?? "";
+        var isWithdrawal = (row.WithdrawalAmount ?? 0m) < 0m;
+        var isTransfer = desc.StartsWith("振込 ") || desc.StartsWith("振込　");
+        if (!isTransfer) return null;
+
+        // 提取取引先名（去掉「振込 」前缀）
+        var extractedName = desc;
+        if (desc.StartsWith("振込 ")) extractedName = desc.Substring(3).Trim();
+        else if (desc.StartsWith("振込　")) extractedName = desc.Substring(3).Trim();
+        if (string.IsNullOrWhiteSpace(extractedName)) return new PreIdentifyResult(true, null, null, null, null, null, null);
+
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+
+        // 1. 识别取引先
+        string? kind = null, partnerId = null, partnerCode = null, partnerName = null;
+
+        if (isWithdrawal)
+        {
+            // 尝试匹配员工（katakana/romaji → employee）
+            await using var empCmd = conn.CreateCommand();
+            empCmd.CommandText = @"
+SELECT id, employee_code, name FROM employees 
+WHERE company_code = $1 AND (
+    payload->>'nameKatakana' ILIKE '%' || $2 || '%' OR
+    name ILIKE '%' || $2 || '%' OR
+    payload->>'nameRomaji' ILIKE '%' || $2 || '%'
+) LIMIT 1";
+            empCmd.Parameters.AddWithValue(companyCode);
+            empCmd.Parameters.AddWithValue(extractedName);
+            await using var empReader = await empCmd.ExecuteReaderAsync(ct);
+            if (await empReader.ReadAsync(ct))
+            {
+                kind = "employee";
+                partnerId = empReader.GetGuid(0).ToString();
+                partnerCode = empReader.IsDBNull(1) ? null : empReader.GetString(1);
+                partnerName = empReader.IsDBNull(2) ? null : empReader.GetString(2);
+            }
+            await empReader.CloseAsync();
+
+            // 尝试匹配供应商
+            if (kind == null)
+            {
+                await using var vendorCmd = conn.CreateCommand();
+                vendorCmd.CommandText = @"
+SELECT id, name FROM business_partners 
+WHERE company_code = $1 AND partner_type = 'vendor' AND (
+    name ILIKE '%' || $2 || '%' OR
+    payload->>'nameKatakana' ILIKE '%' || $2 || '%'
+) LIMIT 1";
+                vendorCmd.Parameters.AddWithValue(companyCode);
+                vendorCmd.Parameters.AddWithValue(extractedName);
+                await using var vendorReader = await vendorCmd.ExecuteReaderAsync(ct);
+                if (await vendorReader.ReadAsync(ct))
+                {
+                    kind = "vendor";
+                    partnerId = vendorReader.GetGuid(0).ToString();
+                    partnerName = vendorReader.IsDBNull(1) ? null : vendorReader.GetString(1);
+                }
+                await vendorReader.CloseAsync();
+            }
+        }
+        else
+        {
+            // 入金 → 客户
+            await using var custCmd = conn.CreateCommand();
+            custCmd.CommandText = @"
+SELECT id, name FROM business_partners 
+WHERE company_code = $1 AND partner_type = 'customer' AND (
+    name ILIKE '%' || $2 || '%' OR
+    payload->>'nameKatakana' ILIKE '%' || $2 || '%'
+) LIMIT 1";
+            custCmd.Parameters.AddWithValue(companyCode);
+            custCmd.Parameters.AddWithValue(extractedName);
+            await using var custReader = await custCmd.ExecuteReaderAsync(ct);
+            if (await custReader.ReadAsync(ct))
+            {
+                kind = "customer";
+                partnerId = custReader.GetGuid(0).ToString();
+                partnerName = custReader.IsDBNull(1) ? null : custReader.GetString(1);
+            }
+            await custReader.CloseAsync();
+        }
+
+        // 2. 搜索未清明细
+        List<OpenItemMatch>? openItems = null;
+        if (!string.IsNullOrWhiteSpace(partnerId))
+        {
+            var txDate = row.TransactionDate ?? DateTime.Today;
+            var amount = row.GetPositiveAmount();
+            await using var oiCmd = conn.CreateCommand();
+            oiCmd.CommandText = @"
+WITH oi_with_detail AS (
+    SELECT oi.id, oi.account_code, oi.residual_amount, oi.doc_date, 
+           v.voucher_no,
+           COALESCE(
+               (SELECT (line->>'paymentDate')::date FROM jsonb_array_elements(v.payload->'lines') AS line 
+                WHERE (line->>'lineNo')::int = oi.voucher_line_no AND line->>'paymentDate' IS NOT NULL LIMIT 1),
+               oi.doc_date
+           ) as effective_date
+    FROM open_items oi
+    JOIN vouchers v ON v.id = oi.voucher_id AND v.company_code = oi.company_code
+    WHERE oi.company_code = $1
+      AND oi.partner_id = $2
+      AND oi.cleared_flag = false
+      AND ABS(oi.residual_amount) > 0.01
+)
+SELECT id, account_code, residual_amount, doc_date::text, voucher_no, effective_date::text
+FROM oi_with_detail
+WHERE ABS(effective_date - $3::date) <= 60
+ORDER BY ABS(residual_amount - $4) ASC, ABS(effective_date - $3::date) ASC
+LIMIT 5";
+            oiCmd.Parameters.AddWithValue(companyCode);
+            if (Guid.TryParse(partnerId, out var pGuid))
+                oiCmd.Parameters.AddWithValue(pGuid);
+            else
+                oiCmd.Parameters.AddWithValue(partnerId);
+            oiCmd.Parameters.AddWithValue(txDate);
+            oiCmd.Parameters.AddWithValue(amount);
+
+            openItems = new List<OpenItemMatch>();
+            await using var oiReader = await oiCmd.ExecuteReaderAsync(ct);
+            while (await oiReader.ReadAsync(ct))
+            {
+                openItems.Add(new OpenItemMatch(
+                    oiReader.GetGuid(0).ToString(),
+                    oiReader.IsDBNull(1) ? "" : oiReader.GetString(1),
+                    oiReader.IsDBNull(2) ? 0m : oiReader.GetDecimal(2),
+                    oiReader.IsDBNull(3) ? null : oiReader.GetString(3),
+                    oiReader.IsDBNull(4) ? null : oiReader.GetString(4),
+                    oiReader.IsDBNull(5) ? null : oiReader.GetString(5)));
+            }
+            await oiReader.CloseAsync();
+        }
+
+        _logger.LogInformation("[MoneytreePosting] PreIdentify: desc={Desc}, kind={Kind}, partnerId={PartnerId}, name={Name}, openItems={Count}",
+            desc, kind ?? "(none)", partnerId ?? "(none)", partnerName ?? "(none)", openItems?.Count ?? 0);
+
+        return new PreIdentifyResult(true, kind, partnerId, partnerCode, partnerName, extractedName, openItems);
+    }
+
     /// <summary>
     /// 构建单条交易的 AI 消息（不包含其他交易信息，避免上下文膨胀）
-    /// 对振込类交易，强制要求按步骤调用 identify_bank_counterparty → search_bank_open_items
+    /// 对振込类交易，包含预查询的取引先和未清明细信息
     /// </summary>
     private static string BuildSingleTransactionMessage(
         MoneytreeTransactionRow row, MoneytreeTransactionRow? pairedFee,
-        int index, int total)
+        int index, int total, PreIdentifyResult? preContext = null)
     {
         var isWithdrawal = (row.WithdrawalAmount ?? 0m) < 0m;
         var amount = row.GetPositiveAmount();
@@ -1592,8 +1755,65 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         }
 
         sb.AppendLine();
-        if (isTransfer)
+        if (isTransfer && preContext != null)
         {
+            // 预查询结果已嵌入，AI 无需调用 identify_bank_counterparty / search_bank_open_items
+            sb.AppendLine("【事前調査結果】この取引は「振込」です。以下の事前調査結果を使って記帳してください。");
+            sb.AppendLine();
+
+            if (!string.IsNullOrWhiteSpace(preContext.CounterpartyKind))
+            {
+                sb.AppendLine($"■ 取引先の特定結果:");
+                sb.AppendLine($"  - 種類: {preContext.CounterpartyKind}");
+                sb.AppendLine($"  - ID: {preContext.CounterpartyId}");
+                if (!string.IsNullOrWhiteSpace(preContext.CounterpartyCode))
+                    sb.AppendLine($"  - コード: {preContext.CounterpartyCode}");
+                sb.AppendLine($"  - 名前: {preContext.CounterpartyName}");
+                sb.AppendLine($"  - 抽出名: {preContext.ExtractedName}");
+            }
+            else
+            {
+                sb.AppendLine($"■ 取引先の特定結果: 「{preContext.ExtractedName}」に該当する取引先が見つかりませんでした。");
+            }
+            sb.AppendLine();
+
+            if (preContext.OpenItems != null && preContext.OpenItems.Count > 0)
+            {
+                sb.AppendLine("■ 未清項の検索結果:");
+                foreach (var oi in preContext.OpenItems)
+                {
+                    sb.AppendLine($"  - open_item_id={oi.Id}, account={oi.AccountCode}, residual={oi.ResidualAmount}, doc_date={oi.DocDate}, voucher_no={oi.VoucherNo}");
+                }
+                sb.AppendLine();
+                sb.AppendLine("【指示】");
+                sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
+                sb.AppendLine("  2. 上記の未清項から金額がマッチするものを選び、その勘定科目(account)で仕訳を作成してください（create_voucher）。");
+                sb.AppendLine("  3. 仕訳作成後、clear_open_item で該当する未清項を消込してください。");
+                sb.AppendLine($"  ※ 取引先ID: {preContext.CounterpartyId}");
+            }
+            else if (!string.IsNullOrWhiteSpace(preContext.CounterpartyKind))
+            {
+                sb.AppendLine("■ 未清項の検索結果: 該当する未清項が見つかりませんでした。");
+                sb.AppendLine();
+                sb.AppendLine("【指示】");
+                sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
+                sb.AppendLine("  2. search_historical_patterns で過去の記帳パターンを検索してください。");
+                sb.AppendLine("  3. パターンがあればその科目で記帳、なければデフォルト科目（出金:仮払金183/入金:仮受金319）で記帳してください。");
+            }
+            else
+            {
+                sb.AppendLine("【指示】");
+                sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
+                sb.AppendLine("  2. 取引先が不明のため、search_historical_patterns で過去パターンを検索してください。");
+                sb.AppendLine("  3. パターンがあればその科目で記帳、なければデフォルト科目（出金:仮払金183/入金:仮受金319）で記帳してください。");
+            }
+            sb.AppendLine();
+            sb.AppendLine("※ identify_bank_counterparty / search_bank_open_items を再度呼ぶ必要はありません（事前調査済み）。");
+            sb.AppendLine("※ lookup_account で人名を検索しないでください。");
+        }
+        else if (isTransfer)
+        {
+            // fallback: 没有预查询结果时仍然用原指令
             sb.AppendLine("【重要】この取引は「振込」です。以下の手順を必ず実行してください：");
             sb.AppendLine("  Step 1: resolve_bank_account で銀行口座の勘定科目を特定");
             sb.AppendLine("  Step 2: identify_bank_counterparty で摘要から取引先（従業員/仕入先/得意先）を特定");
