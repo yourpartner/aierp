@@ -1485,11 +1485,10 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
             return results;
         }
 
-        // 逐条发给同一个 session：
-        //  - 每条消息只含当前交易信息（避免上下文膨胀）
-        //  - 复用 session 使 AI 共享已解析的银行科目等上下文
+        // 每条交易使用独立 session：
+        //  - 防止 AI 在长 session 中学习坏习惯（如跳过 identify_bank_counterparty 直接用仮払金）
+        //  - 每条消息包含完整上下文和步骤指令
         //  - BankTransactionId 按条设置，确保 create_voucher 正确关联
-        Guid? sessionId = null;
 
         for (int i = 0; i < transactions.Count; i++)
         {
@@ -1499,7 +1498,7 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
                 var msg = BuildSingleTransactionMessage(row, pairedFee, i + 1, transactions.Count);
 
                 var request = new AgentKitService.AgentMessageRequest(
-                    SessionId: sessionId,
+                    SessionId: null,
                     CompanyCode: companyCode,
                     UserCtx: user,
                     Message: msg,
@@ -1516,9 +1515,6 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
                 cts.CancelAfter(TimeSpan.FromSeconds(120));
 
                 var result = await _agentKit.ProcessUserMessageAsync(request, cts.Token);
-
-                if (sessionId == null && result.SessionId != Guid.Empty)
-                    sessionId = result.SessionId;
 
                 var skillResult = await CheckSkillResultAsync(row, pairedFee, postingRunId, ct);
                 results[row.Id] = skillResult;
@@ -1555,6 +1551,7 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
 
     /// <summary>
     /// 构建单条交易的 AI 消息（不包含其他交易信息，避免上下文膨胀）
+    /// 对振込类交易，强制要求按步骤调用 identify_bank_counterparty → search_bank_open_items
     /// </summary>
     private static string BuildSingleTransactionMessage(
         MoneytreeTransactionRow row, MoneytreeTransactionRow? pairedFee,
@@ -1563,17 +1560,18 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         var isWithdrawal = (row.WithdrawalAmount ?? 0m) < 0m;
         var amount = row.GetPositiveAmount();
         var typeLabel = isWithdrawal ? "出金" : "入金";
+        var desc = row.Description?.Trim() ?? "";
+        var isTransfer = desc.StartsWith("振込 ") || desc.StartsWith("振込　");
 
         var sb = new StringBuilder();
         sb.AppendLine($"以下の銀行取引を記帳してください（{index}/{total}件目）。");
-        sb.AppendLine("自動記帳モード: 確認不要で記帳できる場合はそのまま記帳してください。確信が持てない場合は skip_transaction でスキップしてください。");
         sb.AppendLine();
         sb.AppendLine($"取引ID: {row.Id}");
         sb.AppendLine($"取引日: {(row.TransactionDate?.ToString("yyyy-MM-dd") ?? "不明")}");
         sb.AppendLine($"種別: {typeLabel}");
         sb.AppendLine($"金額: ¥{amount:N0}");
-        if (!string.IsNullOrWhiteSpace(row.Description))
-            sb.AppendLine($"摘要: {row.Description}");
+        if (!string.IsNullOrWhiteSpace(desc))
+            sb.AppendLine($"摘要: {desc}");
         if (!string.IsNullOrWhiteSpace(row.BankName))
             sb.AppendLine($"金融機関: {row.BankName}");
         if (!string.IsNullOrWhiteSpace(row.AccountNumber))
@@ -1584,6 +1582,26 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
             if (feeAmount > 0m)
                 sb.AppendLine($"振込手数料: ¥{feeAmount:N0} (手数料ID: {pairedFee.Id})");
         }
+
+        sb.AppendLine();
+        if (isTransfer)
+        {
+            sb.AppendLine("【重要】この取引は「振込」です。以下の手順を必ず実行してください：");
+            sb.AppendLine("  Step 1: resolve_bank_account で銀行口座の勘定科目を特定");
+            sb.AppendLine("  Step 2: identify_bank_counterparty で摘要から取引先（従業員/仕入先/得意先）を特定");
+            sb.AppendLine("  Step 3: search_bank_open_items で取引先の未清項（買掛金/未払費用/未払金等）を検索");
+            sb.AppendLine("  Step 4a: マッチする未清項がある → その科目で仕訳作成 + clear_open_item で消込");
+            sb.AppendLine("  Step 4b: マッチなし → search_historical_patterns で過去パターン検索");
+            sb.AppendLine("  Step 4c: パターンもなし → デフォルト科目（出金:仮払金183/入金:仮受金319）で記帳");
+            sb.AppendLine("※ lookup_account で人名を検索しないでください。人名は identify_bank_counterparty で特定します。");
+            sb.AppendLine("※ identify_bank_counterparty と search_bank_open_items の呼び出しをスキップしないでください。");
+        }
+        else
+        {
+            sb.AppendLine("処理手順に従い、適切なツールを呼び出して記帳してください。");
+            sb.AppendLine("確信が持てない場合は skip_transaction でスキップしてください。");
+        }
+
         return sb.ToString();
     }
 

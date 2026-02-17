@@ -381,7 +381,7 @@ DO UPDATE SET
 INSERT INTO ai_learned_patterns (company_code, pattern_type, conditions, recommendation, confidence, sample_count, last_updated_at)
 VALUES ($1, 'bank_description_account',
   jsonb_build_object('description', $2, 'isWithdrawal', $3),
-  jsonb_build_object('debitAccount', $4, 'debitAccountName', $5, 'creditAccount', $6, 'creditAccountName', $7),
+  jsonb_build_object('debitAccount', $4, 'debitAccountName', $5::text, 'creditAccount', $6, 'creditAccountName', $7::text),
   0.75, 1, now())
 ON CONFLICT ON CONSTRAINT uq_ai_learned_patterns_key
 DO UPDATE SET
@@ -393,9 +393,9 @@ DO UPDATE SET
             cmd.Parameters.AddWithValue(normalizedDesc);
             cmd.Parameters.AddWithValue(isWithdrawal);
             cmd.Parameters.AddWithValue(debitAccount);
-            cmd.Parameters.AddWithValue((object?)debitAccountName ?? DBNull.Value);
+            cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)debitAccountName ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text });
             cmd.Parameters.AddWithValue(creditAccount);
-            cmd.Parameters.AddWithValue((object?)creditAccountName ?? DBNull.Value);
+            cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)creditAccountName ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text });
             await cmd.ExecuteNonQueryAsync(ct);
             _logger.LogDebug("[Learning] Upsert 银行摘要模式: {Desc} → DR:{Debit}/CR:{Credit}", normalizedDesc, debitAccount, creditAccount);
         }
