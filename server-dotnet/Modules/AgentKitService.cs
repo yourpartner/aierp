@@ -103,10 +103,13 @@ public sealed class AgentKitService
         GetMyPayrollTool getMyPayrollTool,
         GetPayrollComparisonTool getPayrollComparisonTool,
         GetDepartmentSummaryTool getDepartmentSummaryTool,
-        // 银行明细记账工具
+        // 银行明細記帳ツール
         IdentifyBankCounterpartyTool identifyBankCounterpartyTool,
         SearchBankOpenItemsTool searchBankOpenItemsTool,
         ResolveBankAccountTool resolveBankAccountTool,
+        SearchHistoricalPatternsTool searchHistoricalPatternsTool,
+        ClearOpenItemTool clearOpenItemTool,
+        SkipTransactionTool skipTransactionTool,
         SkillContextBuilder skillContextBuilder,
         LearningEventCollector learningCollector,
         MessageTaskRouter messageRouter,
@@ -154,10 +157,13 @@ public sealed class AgentKitService
         _toolRegistry.Register(getMyPayrollTool);
         _toolRegistry.Register(getPayrollComparisonTool);
         _toolRegistry.Register(getDepartmentSummaryTool);
-        // 银行明细记账工具
+        // 银行明細記帳ツール
         _toolRegistry.Register(identifyBankCounterpartyTool);
         _toolRegistry.Register(searchBankOpenItemsTool);
         _toolRegistry.Register(resolveBankAccountTool);
+        _toolRegistry.Register(searchHistoricalPatternsTool);
+        _toolRegistry.Register(clearOpenItemTool);
+        _toolRegistry.Register(skipTransactionTool);
     }
 
     internal async Task<AgentRunResult> ProcessUserMessageAsync(AgentMessageRequest request, CancellationToken ct)
@@ -4072,6 +4078,19 @@ public sealed class AgentKitService
         var documentSessionId = args.TryGetProperty("documentSessionId", out var docSessionEl) && docSessionEl.ValueKind == JsonValueKind.String
             ? docSessionEl.GetString()
             : null;
+
+        // 银行交易记帳：AI 可能传原始交易ID，需要补 bank_ 前缀匹配已注册的虚拟 session
+        if (!string.IsNullOrWhiteSpace(context.BankTransactionId))
+        {
+            var bankDocSessionId = $"bank_{context.BankTransactionId}";
+            // 如果 AI 传了原始交易ID 或没传 documentSessionId，自动修正为已注册的虚拟 session
+            if (string.IsNullOrWhiteSpace(documentSessionId) || 
+                context.GetFileIdsByDocumentSession(documentSessionId).ToArray().Length == 0)
+            {
+                documentSessionId = bankDocSessionId;
+            }
+        }
+
         if (string.IsNullOrWhiteSpace(documentSessionId))
             throw new Exception("documentSessionId 缺失");
         documentSessionId = documentSessionId.Trim();
@@ -4112,7 +4131,12 @@ public sealed class AgentKitService
             {
                 if (node is JsonValue val && val.TryGetValue<string>(out var raw))
                 {
-                    return string.IsNullOrWhiteSpace(raw) ? null : raw.Trim().ToUpperInvariant();
+                    var s = string.IsNullOrWhiteSpace(raw) ? null : raw.Trim().ToUpperInvariant();
+                    if (s == null) return null;
+                    // 标准化: DEBIT/D → DR, CREDIT/C → CR
+                    if (s == "DEBIT" || s == "D") return "DR";
+                    if (s == "CREDIT" || s == "C") return "CR";
+                    return s;
                 }
                 return null;
             }
@@ -4576,27 +4600,29 @@ public sealed class AgentKitService
         }
 
         var attachmentsNode = new JsonArray();
-        foreach (var id in resolvedAttachments)
+        // 银行交易记帳：没有真实文件附件，跳过附件处理
+        if (string.IsNullOrWhiteSpace(context.BankTransactionId))
         {
-            // Resolve file record to get full attachment info including blobName
-            var fileRecord = context.ResolveFile(id);
-            if (fileRecord is not null && !string.IsNullOrWhiteSpace(fileRecord.BlobName))
+            foreach (var id in resolvedAttachments)
             {
-                attachmentsNode.Add(new JsonObject
+                var fileRecord = context.ResolveFile(id);
+                if (fileRecord is not null && !string.IsNullOrWhiteSpace(fileRecord.BlobName))
                 {
-                    ["id"] = id,
-                    ["name"] = fileRecord.FileName ?? "ファイル",
-                    ["contentType"] = fileRecord.ContentType ?? "application/octet-stream",
-                    ["size"] = fileRecord.Size,
-                    ["blobName"] = fileRecord.BlobName,
-                    ["source"] = "agent" // Mark as agent-uploaded, so it won't be deleted when voucher is deleted
-                });
-            }
-            else
-            {
-                // Fallback: use id as-is (legacy behavior, may not work for preview)
-                _logger.LogWarning("[AgentKit] 无法解析附件 {FileId} 的 blobName，使用旧行为", id);
-                attachmentsNode.Add(id);
+                    attachmentsNode.Add(new JsonObject
+                    {
+                        ["id"] = id,
+                        ["name"] = fileRecord.FileName ?? "ファイル",
+                        ["contentType"] = fileRecord.ContentType ?? "application/octet-stream",
+                        ["size"] = fileRecord.Size,
+                        ["blobName"] = fileRecord.BlobName,
+                        ["source"] = "agent"
+                    });
+                }
+                else
+                {
+                    _logger.LogWarning("[AgentKit] 无法解析附件 {FileId} 的 blobName，使用旧行为", id);
+                    attachmentsNode.Add(id);
+                }
             }
         }
 
@@ -4769,7 +4795,7 @@ SET voucher_id = $1,
 WHERE company_code = $2 AND id = $3 AND posting_status NOT IN ('posted', 'linked')";
                 linkCmd.Parameters.AddWithValue(voucherId);
                 linkCmd.Parameters.AddWithValue(context.CompanyCode);
-                linkCmd.Parameters.AddWithValue(context.BankTransactionId);
+                linkCmd.Parameters.AddWithValue(Guid.Parse(context.BankTransactionId));
                 var bankRowsAffected = await linkCmd.ExecuteNonQueryAsync(ct);
 
                 if (bankRowsAffected > 0)
@@ -4784,7 +4810,7 @@ SELECT description, withdrawal_amount, deposit_amount
 FROM moneytree_transactions
 WHERE company_code = $1 AND id = $2";
                     txCmd.Parameters.AddWithValue(context.CompanyCode);
-                    txCmd.Parameters.AddWithValue(context.BankTransactionId);
+                    txCmd.Parameters.AddWithValue(Guid.Parse(context.BankTransactionId));
                     await using var txReader = await txCmd.ExecuteReaderAsync(ct);
                     if (await txReader.ReadAsync(ct))
                     {

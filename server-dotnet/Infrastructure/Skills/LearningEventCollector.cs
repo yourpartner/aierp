@@ -227,9 +227,9 @@ DO UPDATE SET
             cmd.Parameters.AddWithValue(companyCode);
             cmd.Parameters.AddWithValue(vendorName);
             cmd.Parameters.AddWithValue(debitAccount);
-            cmd.Parameters.AddWithValue((object?)debitAccountName ?? DBNull.Value);
+            cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)debitAccountName ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text });
             cmd.Parameters.AddWithValue(creditAccount);
-            cmd.Parameters.AddWithValue((object?)creditAccountName ?? DBNull.Value);
+            cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)creditAccountName ?? DBNull.Value, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text });
             await cmd.ExecuteNonQueryAsync(ct);
             _logger.LogDebug("[Learning] Upsert 供应商模式: {Vendor} → DR:{Debit}/CR:{Credit}", vendorName, debitAccount, creditAccount);
         }

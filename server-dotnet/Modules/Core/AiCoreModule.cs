@@ -57,10 +57,13 @@ public class AiCoreModule : ModuleBase
         services.AddScoped<GetPayrollComparisonTool>();
         services.AddScoped<GetDepartmentSummaryTool>();
         
-        // 银行明细记账工具
+        // 银行明細記帳ツール
         services.AddScoped<IdentifyBankCounterpartyTool>();
         services.AddScoped<SearchBankOpenItemsTool>();
         services.AddScoped<ResolveBankAccountTool>();
+        services.AddScoped<SearchHistoricalPatternsTool>();
+        services.AddScoped<ClearOpenItemTool>();
+        services.AddScoped<SkipTransactionTool>();
         
         // 注册核心服务
         services.AddScoped<AgentKitService>();
