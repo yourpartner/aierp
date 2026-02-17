@@ -2651,15 +2651,32 @@ LIMIT 1";
         // 入金 → 找借方未清项（资产：売掛金等）
         var targetDirection = isWithdrawal ? "CR" : "DR";
 
-        _logger.LogInformation("[SmartPosting] Finding open items: counterparty={Kind}:{Id}, amount={Amount}, direction={Dir}",
-            counterparty.Kind, counterparty.Id, amount, targetDirection);
+        // open_items.partner_id は UUID（employees.id）だが、SmartPosting の counterparty.Id は
+        // employee_code（例: E1106）の場合がある。ここで UUID に変換する。
+        var partnerIdForQuery = counterparty.Id;
+        if (string.Equals(counterparty.Kind, "employee", StringComparison.OrdinalIgnoreCase) && !Guid.TryParse(counterparty.Id, out _))
+        {
+            await using var resolveCmd = conn.CreateCommand();
+            if (tx != null) resolveCmd.Transaction = tx;
+            resolveCmd.CommandText = "SELECT id FROM employees WHERE company_code = $1 AND employee_code = $2 LIMIT 1";
+            resolveCmd.Parameters.AddWithValue(companyCode);
+            resolveCmd.Parameters.AddWithValue(counterparty.Id);
+            var resolvedId = await resolveCmd.ExecuteScalarAsync(ct);
+            if (resolvedId is Guid g)
+            {
+                partnerIdForQuery = g.ToString();
+                _logger.LogInformation("[SmartPosting] Resolved employee_code {Code} to UUID {Uuid}", counterparty.Id, partnerIdForQuery);
+            }
+        }
+
+        _logger.LogInformation("[SmartPosting] Finding open items: counterparty={Kind}:{Id} (query={QueryId}), amount={Amount}, direction={Dir}",
+            counterparty.Kind, counterparty.Id, partnerIdForQuery, amount, targetDirection);
 
         await using var cmd = conn.CreateCommand();
         if (tx != null) cmd.Transaction = tx;
         
-        // open_items 表只有 partner_id 列，员工/供应商/客户的 ID 都存储在这里
-        // 注意：open_items 表的日期列是 doc_date，不是 posting_date
-        // 通过 JOIN vouchers 获取 voucher_no 和原始凭证行的 drcr
+        // open_items.partner_id は UUID 形式で格納されている
+        // doc_date <= transactionDate の条件で未清項を検索
         cmd.CommandText = $@"
             WITH oi_with_drcr AS (
                 SELECT oi.id, oi.account_code, oi.residual_amount, oi.doc_date, 
@@ -2679,7 +2696,7 @@ LIMIT 1";
             ORDER BY ABS(ABS(residual_amount) - $5) ASC, doc_date DESC
             LIMIT 20";
         cmd.Parameters.AddWithValue(companyCode);
-        cmd.Parameters.AddWithValue(counterparty.Id);
+        cmd.Parameters.AddWithValue(partnerIdForQuery);
         cmd.Parameters.AddWithValue(targetDirection);
         cmd.Parameters.AddWithValue(transactionDate);
         cmd.Parameters.AddWithValue(amount);
