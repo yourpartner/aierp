@@ -654,7 +654,9 @@ WHERE u.company_code=$1";
             var result = new JsonObject
             {
                 ["summary"] = summary,
-                ["lastSuccessEnd"] = endLocalDate.ToString("yyyy-MM-dd"),
+                ["lastSuccessEnd"] = isEmpty
+                    ? (lastSuccessEnd?.ToString("yyyy-MM-dd") ?? endLocalDate.AddDays(-daysBack).ToString("yyyy-MM-dd"))
+                    : endLocalDate.ToString("yyyy-MM-dd"),
                 ["retry"] = new JsonObject
                 {
                     ["attempts"] = 0,
