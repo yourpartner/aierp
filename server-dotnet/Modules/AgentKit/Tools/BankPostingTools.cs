@@ -304,6 +304,7 @@ WITH oi_with_detail AS (
     JOIN vouchers v ON v.id = oi.voucher_id AND v.company_code = oi.company_code
     WHERE oi.company_code = $1
       AND oi.partner_id = $2
+      AND oi.cleared_flag = false
       AND ABS(oi.residual_amount) > 0.01
 )
 SELECT id, account_code, residual_amount, doc_date, voucher_no, drcr, effective_date
@@ -313,7 +314,11 @@ WHERE drcr = $3
 ORDER BY ABS(ABS(residual_amount) - $5) ASC, ABS(effective_date - $4::date) ASC
 LIMIT 20";
         cmd.Parameters.AddWithValue(companyCode);
-        cmd.Parameters.AddWithValue(partnerIdForQuery);
+        // partner_id 列是 UUID 类型，必须传 Guid 而非 string，否则 uuid = text 比较会失败
+        if (Guid.TryParse(partnerIdForQuery, out var partnerGuid))
+            cmd.Parameters.AddWithValue(partnerGuid);
+        else
+            cmd.Parameters.AddWithValue(partnerIdForQuery);
         cmd.Parameters.AddWithValue(targetDirection);
         cmd.Parameters.AddWithValue(txDate);
         cmd.Parameters.AddWithValue(amount);
