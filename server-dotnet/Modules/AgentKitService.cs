@@ -4783,17 +4783,19 @@ public sealed class AgentKitService
             {
                 await using var bankConn = await _ds.OpenConnectionAsync(ct);
 
-                // 1. 更新 moneytree_transactions: 设置 voucher_id、posting_status
+                // 1. 更新 moneytree_transactions: 设置 voucher_id、voucher_no、posting_status
                 await using var linkCmd = bankConn.CreateCommand();
                 linkCmd.CommandText = @"
 UPDATE moneytree_transactions
 SET voucher_id = $1,
+    voucher_no = $2,
     posting_status = 'posted',
     posting_error = NULL,
     posting_method = 'ChatKitAI',
     updated_at = now()
-WHERE company_code = $2 AND id = $3 AND posting_status NOT IN ('posted', 'linked')";
+WHERE company_code = $3 AND id = $4 AND posting_status NOT IN ('posted', 'linked')";
                 linkCmd.Parameters.AddWithValue(voucherId);
+                linkCmd.Parameters.AddWithValue(voucherNo ?? (object)DBNull.Value);
                 linkCmd.Parameters.AddWithValue(context.CompanyCode);
                 linkCmd.Parameters.AddWithValue(Guid.Parse(context.BankTransactionId));
                 var bankRowsAffected = await linkCmd.ExecuteNonQueryAsync(ct);
