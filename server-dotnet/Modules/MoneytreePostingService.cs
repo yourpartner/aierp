@@ -177,6 +177,8 @@ public sealed class MoneytreePostingService
         }
 
         // Step 2: 过滤掉已配对的手续费（等待主入出金一起处理）
+        // 注意：FetchPendingBatchAsync 已将 pending → processing，所以这里用 pendingIds 判断
+        var pendingIds = new HashSet<Guid>(pendingRows.Select(r => r.Id));
         var txToProcess = new List<(MoneytreeTransactionRow Row, MoneytreeTransactionRow? Fee)>();
         foreach (var row in pendingRows)
         {
@@ -189,10 +191,16 @@ public sealed class MoneytreePostingService
                     stats.Apply(feeStatus == "posted" ? PostingOutcome.Posted : PostingOutcome.Linked, transactionId: row.Id);
                     continue;
                 }
-                var paymentStatus = await GetTransactionStatusAsync(conn, null, pairedPaymentId, ct);
-                if (paymentStatus == "pending" || paymentStatus == "needs_rule")
+                // 如果配对的主交易在本批次中（已被标为 processing），跳过手续费让主交易附带处理
+                if (pendingIds.Contains(pairedPaymentId))
                 {
-                    _logger.LogDebug("[MoneytreePosting] Skipping fee {FeeId} - waiting for paired payment {PaymentId}", row.Id, pairedPaymentId);
+                    _logger.LogDebug("[MoneytreePosting] Skipping fee {FeeId} - paired payment {PaymentId} is in this batch", row.Id, pairedPaymentId);
+                    continue;
+                }
+                var paymentStatus = await GetTransactionStatusAsync(conn, null, pairedPaymentId, ct);
+                if (paymentStatus == "pending" || paymentStatus == "needs_rule" || paymentStatus == "processing")
+                {
+                    _logger.LogDebug("[MoneytreePosting] Skipping fee {FeeId} - waiting for paired payment {PaymentId} (status={Status})", row.Id, pairedPaymentId, paymentStatus);
                     continue;
                 }
             }
@@ -1688,12 +1696,14 @@ WHERE id = $1";
 UPDATE moneytree_transactions 
 SET posting_status = 'posted', 
     voucher_id = $1,
-    posting_error = $2,
+    voucher_no = $2,
+    posting_error = $3,
     posting_method = 'Skill',
-    posting_run_id = $3,
+    posting_run_id = $4,
     updated_at = now()
-WHERE id = $4 AND posting_status NOT IN ('posted', 'linked')";
+WHERE id = $5 AND posting_status NOT IN ('posted', 'linked')";
                 feeCmd.Parameters.AddWithValue(voucherId.Value);
+                feeCmd.Parameters.AddWithValue(voucherNo ?? (object)DBNull.Value);
                 feeCmd.Parameters.AddWithValue($"Skill記帳（主明細に随伴）：{voucherNo}");
                 feeCmd.Parameters.AddWithValue(postingRunId);
                 feeCmd.Parameters.AddWithValue(pairedFee.Id);
