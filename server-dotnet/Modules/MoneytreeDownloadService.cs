@@ -294,8 +294,10 @@ public sealed class MoneytreeDownloadService
                 _logger.LogInformation("[Moneytree] 下载按钮禁用状态: {IsDisabled}", isDisabled);
                 
                 // 如果文本包含「0件」或按钮被禁用，则认为没有数据
+                // 注意：不能用 Contains("0件") 因为 "10件"、"20件" 等也包含 "0件" 子串
                 var hasZeroItems = !string.IsNullOrWhiteSpace(buttonText) && 
-                    (buttonText.Contains("（0件）") || buttonText.Contains("(0件)") || buttonText.Contains("0件"));
+                    (buttonText.Contains("（0件）") || buttonText.Contains("(0件)") || 
+                     System.Text.RegularExpressions.Regex.IsMatch(buttonText, @"(?<!\d)0件"));
                 
                 if (hasZeroItems || isDisabled)
                 {

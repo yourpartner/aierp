@@ -615,6 +615,9 @@ WHERE u.company_code=$1";
         var startDate = BuildLocalDateTimeOffset(startLocalDate, tz, isEndOfDay: false);
         var endDate = BuildLocalDateTimeOffset(endLocalDate, tz, isEndOfDay: true);
 
+        _logger.LogInformation("[TaskScheduler] Moneytree sync date range: lastSuccessEnd={LastSuccessEnd}, start={Start}, end={End}",
+            lastSuccessEnd?.ToString("yyyy-MM-dd") ?? "(null)", startLocalDate.ToString("yyyy-MM-dd"), endLocalDate.ToString("yyyy-MM-dd"));
+
         try
         {
             using var scope = _scopeFactory.CreateScope();
