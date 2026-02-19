@@ -483,32 +483,40 @@ public sealed class SearchHistoricalPatternsTool : AgentToolBase
         await using var conn = await _ds.OpenConnectionAsync(ct);
 
         // 1. ai_learned_patterns から学習済みパターンを検索
+        // 実テーブル構造: id, company_code, pattern_type, conditions(jsonb), recommendation(jsonb), confidence, sample_count, last_updated_at
         var patterns = new List<object>();
         await using var patternCmd = conn.CreateCommand();
         patternCmd.CommandText = @"
-SELECT pattern_key, payload->>'debitAccount' as debit, payload->>'creditAccount' as credit,
-       payload->>'confidence' as confidence, payload->>'description' as desc,
-       payload->>'counterpartyName' as partner
+SELECT id::text,
+       conditions->>'description' AS cond_desc,
+       conditions->>'isWithdrawal' AS cond_withdrawal,
+       recommendation->>'debitAccount' AS debit,
+       recommendation->>'creditAccount' AS credit,
+       recommendation->>'debitAccountName' AS debit_name,
+       recommendation->>'creditAccountName' AS credit_name,
+       confidence
 FROM ai_learned_patterns 
-WHERE company_code = $1 AND pattern_type = 'bank_posting' AND is_active = true
-ORDER BY (payload->>'confidence')::numeric DESC NULLS LAST
+WHERE company_code = $1 AND pattern_type = 'bank_description_account'
+ORDER BY confidence DESC
 LIMIT 50";
         patternCmd.Parameters.AddWithValue(companyCode);
 
+        var isWithdrawal = string.Equals(transactionType, "withdrawal", StringComparison.OrdinalIgnoreCase);
         await using var patternReader = await patternCmd.ExecuteReaderAsync(ct);
         while (await patternReader.ReadAsync(ct))
         {
-            var patternDesc = patternReader.IsDBNull(4) ? "" : patternReader.GetString(4);
+            var patternDesc = patternReader.IsDBNull(1) ? "" : patternReader.GetString(1);
             if (!string.IsNullOrWhiteSpace(patternDesc) && IsSimilarDescription(description, patternDesc))
             {
                 patterns.Add(new
                 {
-                    patternKey = patternReader.GetString(0),
-                    debitAccount = patternReader.IsDBNull(1) ? null : patternReader.GetString(1),
-                    creditAccount = patternReader.IsDBNull(2) ? null : patternReader.GetString(2),
-                    confidence = patternReader.IsDBNull(3) ? null : patternReader.GetString(3),
+                    patternId = patternReader.GetString(0),
                     matchedDescription = patternDesc,
-                    counterpartyName = patternReader.IsDBNull(5) ? null : patternReader.GetString(5)
+                    debitAccount = patternReader.IsDBNull(3) ? null : patternReader.GetString(3),
+                    creditAccount = patternReader.IsDBNull(4) ? null : patternReader.GetString(4),
+                    debitAccountName = patternReader.IsDBNull(5) ? null : patternReader.GetString(5),
+                    creditAccountName = patternReader.IsDBNull(6) ? null : patternReader.GetString(6),
+                    confidence = patternReader.GetDecimal(7).ToString("F2")
                 });
             }
         }

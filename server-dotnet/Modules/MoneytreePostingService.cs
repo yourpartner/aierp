@@ -1568,10 +1568,18 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         string? CounterpartyCode,   // employee_code etc.
         string? CounterpartyName,
         string? ExtractedName,
-        List<OpenItemMatch>? OpenItems);
+        List<OpenItemMatch>? OpenItems,
+        List<LearnedPatternMatch>? LearnedPatterns,
+        List<HistoricalVoucherMatch>? HistoricalVouchers);
 
     private sealed record OpenItemMatch(
         string Id, string AccountCode, decimal ResidualAmount, string? DocDate, string? VoucherNo, string? EffectiveDate);
+
+    private sealed record LearnedPatternMatch(
+        string PatternKey, string? DebitAccount, string? CreditAccount, string? Confidence, string? Description, string? CounterpartyName);
+
+    private sealed record HistoricalVoucherMatch(
+        string Description, string? VoucherNo, string AccountsSummary);
 
     /// <summary>
     /// 对振込类交易，预先在代码中执行取引先识别和未清明细搜索。
@@ -1599,7 +1607,7 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         // 去除括号内容和末尾数字
         extractedName = System.Text.RegularExpressions.Regex.Replace(extractedName, @"\(.+?\)", "").Trim();
         extractedName = System.Text.RegularExpressions.Regex.Replace(extractedName, @"\s+\d+$", "").Trim();
-        if (string.IsNullOrWhiteSpace(extractedName)) return new PreIdentifyResult(true, null, null, null, null, null, null);
+        if (string.IsNullOrWhiteSpace(extractedName)) return new PreIdentifyResult(true, null, null, null, null, null, null, null, null);
 
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
 
@@ -1751,10 +1759,102 @@ LIMIT 5";
             }
         }
 
-        _logger.LogInformation("[MoneytreePosting] PreIdentify: desc={Desc}, extracted={Extracted}, kind={Kind}, partnerId={PartnerId}, name={Name}, openItems={Count}",
-            desc, extractedName, kind ?? "(none)", partnerId ?? "(none)", partnerName ?? "(none)", openItems?.Count ?? 0);
+        // 3. 查询学习模式（ai_learned_patterns, pattern_type='bank_description_account'）
+        List<LearnedPatternMatch>? learnedPatterns = null;
+        {
+            await using var lpCmd = conn.CreateCommand();
+            lpCmd.CommandText = @"
+SELECT id::text,
+       conditions->>'description' AS cond_desc,
+       recommendation->>'debitAccount' AS debit,
+       recommendation->>'creditAccount' AS credit,
+       confidence::text AS conf,
+       recommendation->>'debitAccountName' AS debit_name
+FROM ai_learned_patterns
+WHERE company_code = $1 AND pattern_type = 'bank_description_account'
+ORDER BY confidence DESC
+LIMIT 50";
+            lpCmd.Parameters.AddWithValue(companyCode);
+            await using var lpReader = await lpCmd.ExecuteReaderAsync(ct);
+            while (await lpReader.ReadAsync(ct))
+            {
+                var patternDesc = lpReader.IsDBNull(1) ? "" : lpReader.GetString(1);
+                if (!string.IsNullOrWhiteSpace(patternDesc) && PreIdIsSimilar(desc, patternDesc))
+                {
+                    learnedPatterns ??= new List<LearnedPatternMatch>();
+                    learnedPatterns.Add(new LearnedPatternMatch(
+                        lpReader.GetString(0),
+                        lpReader.IsDBNull(2) ? null : lpReader.GetString(2),
+                        lpReader.IsDBNull(3) ? null : lpReader.GetString(3),
+                        lpReader.IsDBNull(4) ? null : lpReader.GetString(4),
+                        patternDesc,
+                        lpReader.IsDBNull(5) ? null : lpReader.GetString(5)));
+                }
+            }
+        }
 
-        return new PreIdentifyResult(true, kind, partnerId, partnerCode, partnerName, extractedName, openItems);
+        // 4. 查询历史记账实绩（moneytree_transactions + vouchers）
+        List<HistoricalVoucherMatch>? historicalVouchers = null;
+        {
+            await using var hvCmd = conn.CreateCommand();
+            hvCmd.CommandText = @"
+SELECT mt.description, v.voucher_no, v.payload->'lines' AS lines
+FROM moneytree_transactions mt
+JOIN vouchers v ON v.id = mt.voucher_id AND v.company_code = mt.company_code
+WHERE mt.company_code = $1 AND mt.posting_status = 'posted' AND mt.voucher_id IS NOT NULL
+ORDER BY mt.updated_at DESC
+LIMIT 200";
+            hvCmd.Parameters.AddWithValue(companyCode);
+            await using var hvReader = await hvCmd.ExecuteReaderAsync(ct);
+            while (await hvReader.ReadAsync(ct))
+            {
+                var histDesc = hvReader.IsDBNull(0) ? "" : hvReader.GetString(0);
+                if (PreIdIsSimilar(desc, histDesc))
+                {
+                    var voucherNo = hvReader.IsDBNull(1) ? null : hvReader.GetString(1);
+                    var linesJson = hvReader.IsDBNull(2) ? "[]" : hvReader.GetString(2);
+                    var accts = PreIdExtractAccounts(linesJson);
+                    historicalVouchers ??= new List<HistoricalVoucherMatch>();
+                    historicalVouchers.Add(new HistoricalVoucherMatch(histDesc, voucherNo, accts));
+                    if (historicalVouchers.Count >= 5) break;
+                }
+            }
+        }
+
+        _logger.LogInformation("[MoneytreePosting] PreIdentify: desc={Desc}, extracted={Extracted}, kind={Kind}, partnerId={PartnerId}, name={Name}, openItems={OI}, learnedPatterns={LP}, histVouchers={HV}",
+            desc, extractedName, kind ?? "(none)", partnerId ?? "(none)", partnerName ?? "(none)",
+            openItems?.Count ?? 0, learnedPatterns?.Count ?? 0, historicalVouchers?.Count ?? 0);
+
+        return new PreIdentifyResult(true, kind, partnerId, partnerCode, partnerName, extractedName, openItems, learnedPatterns, historicalVouchers);
+    }
+
+    private static bool PreIdIsSimilar(string a, string b)
+    {
+        if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
+        var na = a.Normalize(System.Text.NormalizationForm.FormKC).ToUpperInvariant();
+        var nb = b.Normalize(System.Text.NormalizationForm.FormKC).ToUpperInvariant();
+        if (na.Contains(nb) || nb.Contains(na)) return true;
+        var tokensA = na.Split(new[] { ' ', '　' }, StringSplitOptions.RemoveEmptyEntries);
+        var tokensB = nb.Split(new[] { ' ', '　' }, StringSplitOptions.RemoveEmptyEntries);
+        if (tokensA.Length <= 1 || tokensB.Length <= 1) return false;
+        var overlap = tokensA.Count(t => tokensB.Any(tb => tb.Contains(t) || t.Contains(tb)));
+        return overlap >= Math.Min(tokensA.Length, tokensB.Length) * 0.5;
+    }
+
+    private static string PreIdExtractAccounts(string linesJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(linesJson);
+            var accounts = new HashSet<string>();
+            foreach (var line in doc.RootElement.EnumerateArray())
+            {
+                if (line.TryGetProperty("accountCode", out var ac) && ac.ValueKind == JsonValueKind.String)
+                    accounts.Add(ac.GetString()!);
+            }
+            return string.Join(",", accounts);
+        }
+        catch { return ""; }
     }
 
     // 与 BankPostingTools.SimilarityScore 相同的相似度计算（避免跨类调用）
@@ -1861,21 +1961,46 @@ LIMIT 5";
                 sb.AppendLine("  3. 仕訳作成後、clear_open_item で該当する未清項を消込してください。");
                 sb.AppendLine($"  ※ 取引先ID: {preContext.CounterpartyId}");
             }
-            else if (!string.IsNullOrWhiteSpace(preContext.CounterpartyKind))
-            {
-                sb.AppendLine("■ 未清項の検索結果: 該当する未清項が見つかりませんでした。");
-                sb.AppendLine();
-                sb.AppendLine("【指示】");
-                sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
-                sb.AppendLine("  2. search_historical_patterns で過去の記帳パターンを検索してください。");
-                sb.AppendLine("  3. パターンがあればその科目で記帳、なければデフォルト科目（出金:仮払金183/入金:仮受金319）で記帳してください。");
-            }
             else
             {
+                if (!string.IsNullOrWhiteSpace(preContext.CounterpartyKind))
+                    sb.AppendLine("■ 未清項の検索結果: 該当する未清項が見つかりませんでした。");
+                sb.AppendLine();
+
+                // 嵌入学习模式
+                if (preContext.LearnedPatterns != null && preContext.LearnedPatterns.Count > 0)
+                {
+                    sb.AppendLine("■ 学習済み記帳パターン（過去の手動修正から学習）:");
+                    foreach (var lp in preContext.LearnedPatterns)
+                    {
+                        sb.AppendLine($"  - 摘要パターン: {lp.Description}, 借方: {lp.DebitAccount}, 貸方: {lp.CreditAccount}, 確度: {lp.Confidence}");
+                    }
+                    sb.AppendLine();
+                }
+
+                // 嵌入历史凭证
+                if (preContext.HistoricalVouchers != null && preContext.HistoricalVouchers.Count > 0)
+                {
+                    sb.AppendLine("■ 過去の類似取引の記帳実績:");
+                    foreach (var hv in preContext.HistoricalVouchers)
+                    {
+                        sb.AppendLine($"  - 摘要: {hv.Description}, 伝票番号: {hv.VoucherNo}, 使用科目: {hv.AccountsSummary}");
+                    }
+                    sb.AppendLine();
+                }
+
+                var hasPatterns = (preContext.LearnedPatterns?.Count ?? 0) > 0 || (preContext.HistoricalVouchers?.Count ?? 0) > 0;
                 sb.AppendLine("【指示】");
                 sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
-                sb.AppendLine("  2. 取引先が不明のため、search_historical_patterns で過去パターンを検索してください。");
-                sb.AppendLine("  3. パターンがあればその科目で記帳、なければデフォルト科目（出金:仮払金183/入金:仮受金319）で記帳してください。");
+                if (hasPatterns)
+                {
+                    sb.AppendLine("  2. 上記の学習パターン/過去実績を参考にして、同じ勘定科目で仕訳を作成してください（create_voucher）。");
+                }
+                else
+                {
+                    sb.AppendLine("  2. search_historical_patterns で過去パターンを検索してください。");
+                    sb.AppendLine("  3. パターンがあればその科目で記帳、なければデフォルト科目（出金:仮払金183/入金:仮受金319）で記帳してください。");
+                }
             }
             sb.AppendLine();
             sb.AppendLine("※ identify_bank_counterparty / search_bank_open_items を再度呼ぶ必要はありません（事前調査済み）。");
