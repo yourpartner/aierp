@@ -497,6 +497,7 @@ SELECT id::text,
        confidence
 FROM ai_learned_patterns 
 WHERE company_code = $1 AND pattern_type = 'bank_description_account'
+  AND recommendation->>'debitAccount' NOT IN ('183','319')
 ORDER BY confidence DESC
 LIMIT 50";
         patternCmd.Parameters.AddWithValue(companyCode);
@@ -521,7 +522,7 @@ LIMIT 50";
             }
         }
 
-        // 2. 過去の銀行明細から同様の取引の記帳実績を検索
+        // 2. 過去の銀行明細から同様の取引の記帳実績を検索（仮払金183/仮受金319を除外）
         var historicalVouchers = new List<object>();
         await using var histCmd = conn.CreateCommand();
         histCmd.CommandText = @"
@@ -529,6 +530,11 @@ SELECT mt.description, v.voucher_no, v.payload->'lines' as lines
 FROM moneytree_transactions mt
 JOIN vouchers v ON v.id = mt.voucher_id AND v.company_code = mt.company_code
 WHERE mt.company_code = $1 AND mt.posting_status = 'posted' AND mt.voucher_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements(v.payload->'lines') AS line
+    WHERE line->>'accountCode' IN ('183','319')
+      AND COALESCE(line->>'isTaxLine','false') = 'false'
+  )
 ORDER BY mt.updated_at DESC
 LIMIT 200";
         histCmd.Parameters.AddWithValue(companyCode);

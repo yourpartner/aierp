@@ -1772,6 +1772,7 @@ SELECT id::text,
        recommendation->>'debitAccountName' AS debit_name
 FROM ai_learned_patterns
 WHERE company_code = $1 AND pattern_type = 'bank_description_account'
+  AND recommendation->>'debitAccount' NOT IN ('183','319')
 ORDER BY confidence DESC
 LIMIT 50";
             lpCmd.Parameters.AddWithValue(companyCode);
@@ -1793,7 +1794,7 @@ LIMIT 50";
             }
         }
 
-        // 4. 查询历史记账实绩（moneytree_transactions + vouchers）
+        // 4. 查询历史记账实绩（排除默认科目仮払金183/仮受金319的凭证）
         List<HistoricalVoucherMatch>? historicalVouchers = null;
         {
             await using var hvCmd = conn.CreateCommand();
@@ -1802,6 +1803,11 @@ SELECT mt.description, v.voucher_no, v.payload->'lines' AS lines
 FROM moneytree_transactions mt
 JOIN vouchers v ON v.id = mt.voucher_id AND v.company_code = mt.company_code
 WHERE mt.company_code = $1 AND mt.posting_status = 'posted' AND mt.voucher_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements(v.payload->'lines') AS line
+    WHERE line->>'accountCode' IN ('183','319')
+      AND COALESCE(line->>'isTaxLine','false') = 'false'
+  )
 ORDER BY mt.updated_at DESC
 LIMIT 200";
             hvCmd.Parameters.AddWithValue(companyCode);
@@ -1833,11 +1839,21 @@ LIMIT 200";
         if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
         var na = a.Normalize(System.Text.NormalizationForm.FormKC).ToUpperInvariant();
         var nb = b.Normalize(System.Text.NormalizationForm.FormKC).ToUpperInvariant();
-        if (na.Contains(nb) || nb.Contains(na)) return true;
+        // exact match
+        if (string.Equals(na, nb, StringComparison.OrdinalIgnoreCase)) return true;
+        // Contains: require the shorter string to be substantial
+        var shorter = na.Length <= nb.Length ? na : nb;
+        var longer = na.Length > nb.Length ? na : nb;
+        if (longer.Contains(shorter, StringComparison.OrdinalIgnoreCase)
+            && shorter.Length >= 4
+            && (double)shorter.Length / longer.Length >= 0.5)
+            return true;
+        // Token overlap: require tokens to be at least 3 chars to avoid
+        // short tokens like "カク" matching inside long names like "フジカンコウカイハツ"
         var tokensA = na.Split(new[] { ' ', '　' }, StringSplitOptions.RemoveEmptyEntries);
         var tokensB = nb.Split(new[] { ' ', '　' }, StringSplitOptions.RemoveEmptyEntries);
         if (tokensA.Length <= 1 || tokensB.Length <= 1) return false;
-        var overlap = tokensA.Count(t => tokensB.Any(tb => tb.Contains(t) || t.Contains(tb)));
+        var overlap = tokensA.Count(t => t.Length >= 3 && tokensB.Any(tb => tb.Length >= 3 && string.Equals(t, tb, StringComparison.OrdinalIgnoreCase)));
         return overlap >= Math.Min(tokensA.Length, tokensB.Length) * 0.5;
     }
 
@@ -1846,13 +1862,17 @@ LIMIT 200";
         try
         {
             using var doc = JsonDocument.Parse(linesJson);
-            var accounts = new HashSet<string>();
+            var parts = new List<string>();
             foreach (var line in doc.RootElement.EnumerateArray())
             {
-                if (line.TryGetProperty("accountCode", out var ac) && ac.ValueKind == JsonValueKind.String)
-                    accounts.Add(ac.GetString()!);
+                var code = line.TryGetProperty("accountCode", out var ac) && ac.ValueKind == JsonValueKind.String ? ac.GetString() : null;
+                var drcr = line.TryGetProperty("drcr", out var dr) && dr.ValueKind == JsonValueKind.String ? dr.GetString() : null;
+                var isTax = line.TryGetProperty("isTaxLine", out var tx) && tx.ValueKind == JsonValueKind.True;
+                if (string.IsNullOrWhiteSpace(code)) continue;
+                if (isTax) continue; // skip tax lines for clarity
+                parts.Add($"{drcr ?? "?"}: {code}");
             }
-            return string.Join(",", accounts);
+            return string.Join(", ", parts);
         }
         catch { return ""; }
     }
@@ -1976,39 +1996,62 @@ LIMIT 200";
                     sb.AppendLine("■ 未清項の検索結果: 該当する未清項が見つかりませんでした。");
                 sb.AppendLine();
 
-                // 嵌入学习模式
-                if (preContext.LearnedPatterns != null && preContext.LearnedPatterns.Count > 0)
-                {
-                    sb.AppendLine("■ 学習済み記帳パターン（過去の手動修正から学習）:");
-                    foreach (var lp in preContext.LearnedPatterns)
-                    {
-                        sb.AppendLine($"  - 摘要パターン: {lp.Description}, 借方: {lp.DebitAccount}, 貸方: {lp.CreditAccount}, 確度: {lp.Confidence}");
-                    }
-                    sb.AppendLine();
-                }
+                // 历史凭证优先于学习模式（历史凭证是实际记账结果，更准确）
+                // 检查是否有完全匹配摘要的历史凭证
+                var exactHistMatch = preContext.HistoricalVouchers?.FirstOrDefault(
+                    hv => string.Equals(hv.Description?.Trim(), desc, StringComparison.OrdinalIgnoreCase));
 
-                // 嵌入历史凭证
-                if (preContext.HistoricalVouchers != null && preContext.HistoricalVouchers.Count > 0)
+                if (exactHistMatch != null)
                 {
-                    sb.AppendLine("■ 過去の類似取引の記帳実績:");
-                    foreach (var hv in preContext.HistoricalVouchers)
-                    {
-                        sb.AppendLine($"  - 摘要: {hv.Description}, 伝票番号: {hv.VoucherNo}, 使用科目: {hv.AccountsSummary}");
-                    }
+                    // 有完全匹配的历史凭证 → 直接指定科目，不展示其他可能混淆的信息
+                    sb.AppendLine("■ 過去の同一取引の記帳実績（同じ摘要）:");
+                    sb.AppendLine($"  伝票番号: {exactHistMatch.VoucherNo}");
+                    sb.AppendLine($"  使用科目: {exactHistMatch.AccountsSummary}");
                     sb.AppendLine();
-                }
-
-                var hasPatterns = (preContext.LearnedPatterns?.Count ?? 0) > 0 || (preContext.HistoricalVouchers?.Count ?? 0) > 0;
-                sb.AppendLine("【指示】");
-                sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
-                if (hasPatterns)
-                {
-                    sb.AppendLine("  2. 上記の学習パターン/過去実績を参考にして、同じ勘定科目で仕訳を作成してください（create_voucher）。");
+                    sb.AppendLine("【指示】");
+                    sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
+                    sb.AppendLine($"  2. 過去実績と同じ科目構成で仕訳を作成してください（上記の科目をそのまま使用）。");
+                    sb.AppendLine("  ※ この取引は過去に同じ摘要で記帳実績があります。必ず過去と同じ科目を使ってください。");
+                    sb.AppendLine("  ※ デフォルト科目（仮払金183等）は使わないでください。");
                 }
                 else
                 {
-                    sb.AppendLine("  2. search_historical_patterns で過去パターンを検索してください。");
-                    sb.AppendLine("  3. パターンがあればその科目で記帳、なければデフォルト科目（出金:仮払金183/入金:仮受金319）で記帳してください。");
+                    // 嵌入历史凭证（优先）
+                    if (preContext.HistoricalVouchers != null && preContext.HistoricalVouchers.Count > 0)
+                    {
+                        sb.AppendLine("■ 過去の類似取引の記帳実績:");
+                        foreach (var hv in preContext.HistoricalVouchers)
+                        {
+                            sb.AppendLine($"  - 摘要: {hv.Description}, 伝票番号: {hv.VoucherNo}, 使用科目: {hv.AccountsSummary}");
+                        }
+                        sb.AppendLine();
+                    }
+
+                    // 嵌入学习模式（次优先，且只在没有历史凭证时展示）
+                    if ((preContext.HistoricalVouchers?.Count ?? 0) == 0
+                        && preContext.LearnedPatterns != null && preContext.LearnedPatterns.Count > 0)
+                    {
+                        sb.AppendLine("■ 学習済み記帳パターン（過去の手動修正から学習）:");
+                        foreach (var lp in preContext.LearnedPatterns)
+                        {
+                            sb.AppendLine($"  - 摘要パターン: {lp.Description}, 借方: {lp.DebitAccount}, 貸方: {lp.CreditAccount}, 確度: {lp.Confidence}");
+                        }
+                        sb.AppendLine();
+                    }
+
+                    var hasPatterns = (preContext.LearnedPatterns?.Count ?? 0) > 0 || (preContext.HistoricalVouchers?.Count ?? 0) > 0;
+                    sb.AppendLine("【指示】");
+                    sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
+                    if (hasPatterns)
+                    {
+                        sb.AppendLine("  2. 上記の過去実績/学習パターンを参考にして、同じ勘定科目で仕訳を作成してください（create_voucher）。");
+                        sb.AppendLine("  ※ デフォルト科目（仮払金183等）は使わないでください。過去実績がある場合はそれに従ってください。");
+                    }
+                    else
+                    {
+                        sb.AppendLine("  2. search_historical_patterns で過去パターンを検索してください。");
+                        sb.AppendLine("  3. パターンがあればその科目で記帳、なければデフォルト科目（出金:仮払金183/入金:仮受金319）で記帳してください。");
+                    }
                 }
             }
             sb.AppendLine();

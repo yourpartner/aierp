@@ -284,12 +284,9 @@ DO UPDATE SET
             };
             await InsertEventAsync(companyCode, "bank_voucher_created_via_chat", sessionId, "bank_auto_booking", context, aiOutput, null, "confirmed", ct);
 
-            // 即时更新银行摘要→科目模式
-            if (!string.IsNullOrWhiteSpace(description) && !string.IsNullOrWhiteSpace(debitAccount) && !string.IsNullOrWhiteSpace(creditAccount))
-            {
-                await UpsertBankDescriptionPatternAsync(companyCode, description, isWithdrawal, debitAccount, debitAccountName, creditAccount, creditAccountName, ct);
-            }
-            _logger.LogInformation("[Learning] 记录银行 ChatKit 记账事件: company={Company}, txId={TxId}, desc={Desc}",
+            // AI 自动记账不进入学习历史（只有人工修正才学习）
+            // 仅记录事件，不 upsert 科目模式
+            _logger.LogInformation("[Learning] 记录银行 ChatKit 记账事件（不更新学习模式）: company={Company}, txId={TxId}, desc={Desc}",
                 companyCode, bankTransactionId, description);
         }
         catch (Exception ex)
@@ -343,7 +340,11 @@ DO UPDATE SET
             await InsertEventAsync(companyCode, "bank_voucher_correction", null, "bank_auto_booking", context, null, userAction, "correction", ct);
 
             // 即时更新银行摘要→科目模式（用修正后的科目覆盖）
-            if (!string.IsNullOrWhiteSpace(bankDescription) && !string.IsNullOrWhiteSpace(newDebit) && !string.IsNullOrWhiteSpace(newCredit))
+            // 仮払金(183)/仮受金(319) 是兜底科目，不应作为学习数据
+            var defaultAccounts = new HashSet<string> { "183", "319" };
+            if (!string.IsNullOrWhiteSpace(bankDescription)
+                && !string.IsNullOrWhiteSpace(newDebit) && !string.IsNullOrWhiteSpace(newCredit)
+                && !defaultAccounts.Contains(newDebit) && !defaultAccounts.Contains(newCredit))
             {
                 await UpsertBankDescriptionPatternAsync(companyCode, bankDescription, isWithdrawal ?? true, newDebit, newDebitName, newCredit, newCreditName, ct);
             }
