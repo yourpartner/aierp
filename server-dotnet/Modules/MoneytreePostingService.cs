@@ -1882,11 +1882,20 @@ LIMIT 200";
         var nb = PreIdNormalize(b);
         if (string.IsNullOrWhiteSpace(na) || string.IsNullOrWhiteSpace(nb)) return 0;
         if (string.Equals(na, nb, StringComparison.OrdinalIgnoreCase)) return 1.0;
-        if (na.Contains(nb, StringComparison.OrdinalIgnoreCase) || nb.Contains(na, StringComparison.OrdinalIgnoreCase)) return 0.85;
+        // Contains check: only valid when the shorter string is substantial
+        // (at least 3 chars AND at least 40% of the longer string)
+        // to prevent short nameKana like "カイ" matching long company names
+        var shorter = na.Length <= nb.Length ? na : nb;
+        var longer = na.Length > nb.Length ? na : nb;
+        if (longer.Contains(shorter, StringComparison.OrdinalIgnoreCase)
+            && shorter.Length >= 3
+            && (double)shorter.Length / longer.Length >= 0.4)
+            return 0.85;
         var tokensA = na.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var tokensB = nb.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (tokensA.Length == 0 || tokensB.Length == 0) return 0;
-        var overlap = tokensA.Count(t => tokensB.Any(tb => tb.Contains(t) || t.Contains(tb)));
+        // Token overlap: require the matching token to be at least 2 chars
+        var overlap = tokensA.Count(t => t.Length >= 2 && tokensB.Any(tb => tb.Length >= 2 && (tb.Contains(t) || t.Contains(tb))));
         return (double)overlap / Math.Max(tokensA.Length, tokensB.Length);
     }
 
