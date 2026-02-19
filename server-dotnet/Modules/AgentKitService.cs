@@ -4059,6 +4059,21 @@ public sealed class AgentKitService
         return false;
     }
 
+    private async Task<HashSet<string>> GetOpenItemAccountCodesAsync(string companyCode, CancellationToken ct)
+    {
+        var codes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using var conn = await _ds.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT payload->>'code' FROM accounts WHERE company_code = $1 AND (payload->>'openItem')::boolean = true";
+        cmd.Parameters.AddWithValue(companyCode);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            if (!reader.IsDBNull(0)) codes.Add(reader.GetString(0));
+        }
+        return codes;
+    }
+
     private async Task<ToolExecutionResult> CreateVoucherAsync(AgentExecutionContext context, JsonElement args, CancellationToken ct)
     {
         if (!args.TryGetProperty("header", out var headerEl) || headerEl.ValueKind != JsonValueKind.Object)
@@ -4633,7 +4648,7 @@ public sealed class AgentKitService
             ["attachments"] = attachmentsNode
         };
 
-        // 银行交易：自动为缺少 paymentDate 的明细行补充（科目315等要求此字段）
+        // 银行交易：自动为需要 paymentDate 的明细行（openItem=true 的科目）补充
         if (!string.IsNullOrWhiteSpace(context.BankTransactionId))
         {
             var postingDate = headerNode.TryGetPropertyValue("postingDate", out var pdNode)
@@ -4641,10 +4656,12 @@ public sealed class AgentKitService
                 ? pdStr : null;
             if (!string.IsNullOrWhiteSpace(postingDate))
             {
+                var openItemCodes = await GetOpenItemAccountCodesAsync(context.CompanyCode, ct);
                 foreach (var item in linesNode)
                 {
                     if (item is not JsonObject line) continue;
-                    if (!line.ContainsKey("paymentDate"))
+                    var acctCode = ReadAccountCode(line);
+                    if (!string.IsNullOrWhiteSpace(acctCode) && openItemCodes.Contains(acctCode) && !line.ContainsKey("paymentDate"))
                         line["paymentDate"] = postingDate;
                 }
             }
