@@ -1741,7 +1741,7 @@ WHERE ABS(effective_date - $3::date) <= 60
 ORDER BY ABS(residual_amount - $4) ASC, ABS(effective_date - $3::date) ASC
 LIMIT 5";
             oiCmd.Parameters.AddWithValue(companyCode);
-            oiCmd.Parameters.AddWithValue(pGuid);
+            oiCmd.Parameters.AddWithValue(partnerId);  // partner_id is text, not uuid
             oiCmd.Parameters.AddWithValue(txDate);
             oiCmd.Parameters.AddWithValue(amount);
 
