@@ -4633,6 +4633,23 @@ public sealed class AgentKitService
             ["attachments"] = attachmentsNode
         };
 
+        // 银行交易：自动为缺少 paymentDate 的明细行补充（科目315等要求此字段）
+        if (!string.IsNullOrWhiteSpace(context.BankTransactionId))
+        {
+            var postingDate = headerNode.TryGetPropertyValue("postingDate", out var pdNode)
+                && pdNode is JsonValue pdVal && pdVal.TryGetValue<string>(out var pdStr)
+                ? pdStr : null;
+            if (!string.IsNullOrWhiteSpace(postingDate))
+            {
+                foreach (var item in linesNode)
+                {
+                    if (item is not JsonObject line) continue;
+                    if (!line.ContainsKey("paymentDate"))
+                        line["paymentDate"] = postingDate;
+                }
+            }
+        }
+
         var payloadJson = root.ToJsonString();
         _logger.LogInformation("[AgentKit] create_voucher payload: {Payload}", payloadJson);
         using var payloadDoc = JsonDocument.Parse(payloadJson);
