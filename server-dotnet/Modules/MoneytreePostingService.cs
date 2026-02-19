@@ -1576,6 +1576,7 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
     /// <summary>
     /// 对振込类交易，预先在代码中执行取引先识别和未清明细搜索。
     /// 结果会注入到 AI 消息中，避免依赖 AI 主动调用这些工具。
+    /// 匹配逻辑与 IdentifyBankCounterpartyTool 保持一致（全量读取+相似度打分）。
     /// </summary>
     private async Task<PreIdentifyResult?> PreIdentifyCounterpartyAsync(
         string companyCode, MoneytreeTransactionRow row, CancellationToken ct)
@@ -1585,100 +1586,140 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         var isTransfer = desc.StartsWith("振込 ") || desc.StartsWith("振込　");
         if (!isTransfer) return null;
 
-        // 提取取引先名（去掉「振込 」前缀）
+        // 提取取引先名（与 BankPostingTools.ExtractCounterpartyName 相同逻辑）
         var extractedName = desc;
-        if (desc.StartsWith("振込 ")) extractedName = desc.Substring(3).Trim();
-        else if (desc.StartsWith("振込　")) extractedName = desc.Substring(3).Trim();
+        foreach (var prefix in new[] { "振込 ", "振込　", "振替 ", "振替　" })
+        {
+            if (extractedName.StartsWith(prefix))
+            {
+                extractedName = extractedName[prefix.Length..].TrimStart();
+                break;
+            }
+        }
+        // 去除括号内容和末尾数字
+        extractedName = System.Text.RegularExpressions.Regex.Replace(extractedName, @"\(.+?\)", "").Trim();
+        extractedName = System.Text.RegularExpressions.Regex.Replace(extractedName, @"\s+\d+$", "").Trim();
         if (string.IsNullOrWhiteSpace(extractedName)) return new PreIdentifyResult(true, null, null, null, null, null, null);
 
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
 
-        // 1. 识别取引先
         string? kind = null, partnerId = null, partnerCode = null, partnerName = null;
 
         if (isWithdrawal)
         {
-            // 尝试匹配员工（katakana/romaji → employee）
+            // 1a. 匹配员工（全量读取 payload 后相似度打分，与 MatchEmployeeAsync 相同）
             await using var empCmd = conn.CreateCommand();
-            empCmd.CommandText = @"
-SELECT id, employee_code, name FROM employees 
-WHERE company_code = $1 AND (
-    payload->>'nameKatakana' ILIKE '%' || $2 || '%' OR
-    name ILIKE '%' || $2 || '%' OR
-    payload->>'nameRomaji' ILIKE '%' || $2 || '%'
-) LIMIT 1";
+            empCmd.CommandText = "SELECT id, employee_code, payload FROM employees WHERE company_code = $1 ORDER BY updated_at DESC LIMIT 100";
             empCmd.Parameters.AddWithValue(companyCode);
-            empCmd.Parameters.AddWithValue(extractedName);
-            await using var empReader = await empCmd.ExecuteReaderAsync(ct);
-            if (await empReader.ReadAsync(ct))
+            var empCandidates = new List<(Guid Id, string Code, string? Name, double Score)>();
+            await using (var empReader = await empCmd.ExecuteReaderAsync(ct))
+            {
+                while (await empReader.ReadAsync(ct))
+                {
+                    var id = empReader.GetGuid(0);
+                    var code = empReader.GetString(1);
+                    using var doc = JsonDocument.Parse(empReader.GetString(2));
+                    var root = doc.RootElement;
+                    var eName = root.TryGetProperty("name", out var n) ? n.GetString() : null;
+                    var eKana = root.TryGetProperty("nameKana", out var nk) ? nk.GetString() : null;
+                    double score = 0;
+                    if (!string.IsNullOrWhiteSpace(eKana)) score = Math.Max(score, PreIdSimilarity(extractedName, eKana));
+                    if (!string.IsNullOrWhiteSpace(eName)) score = Math.Max(score, PreIdSimilarity(extractedName, eName));
+                    if (score >= 0.6) empCandidates.Add((id, code, eName, score));
+                }
+            }
+            var bestEmp = empCandidates.OrderByDescending(c => c.Score).FirstOrDefault();
+            if (bestEmp.Score >= 0.7)
             {
                 kind = "employee";
-                partnerId = empReader.GetGuid(0).ToString();
-                partnerCode = empReader.IsDBNull(1) ? null : empReader.GetString(1);
-                partnerName = empReader.IsDBNull(2) ? null : empReader.GetString(2);
+                partnerId = bestEmp.Id.ToString();
+                partnerCode = bestEmp.Code;
+                partnerName = bestEmp.Name;
             }
-            await empReader.CloseAsync();
 
-            // 尝试匹配供应商
+            // 1b. 匹配供应商（全量读取 businesspartners payload）
             if (kind == null)
             {
                 await using var vendorCmd = conn.CreateCommand();
-                vendorCmd.CommandText = @"
-SELECT id, name FROM business_partners 
-WHERE company_code = $1 AND partner_type = 'vendor' AND (
-    name ILIKE '%' || $2 || '%' OR
-    payload->>'nameKatakana' ILIKE '%' || $2 || '%'
-) LIMIT 1";
+                vendorCmd.CommandText = "SELECT id, payload->>'code', payload FROM businesspartners WHERE company_code = $1 AND (payload->>'isVendor')::boolean = true ORDER BY updated_at DESC LIMIT 200";
                 vendorCmd.Parameters.AddWithValue(companyCode);
-                vendorCmd.Parameters.AddWithValue(extractedName);
-                await using var vendorReader = await vendorCmd.ExecuteReaderAsync(ct);
-                if (await vendorReader.ReadAsync(ct))
+                var vendorCandidates = new List<(string Id, string? Code, string? Name, double Score)>();
+                await using (var vendorReader = await vendorCmd.ExecuteReaderAsync(ct))
+                {
+                    while (await vendorReader.ReadAsync(ct))
+                    {
+                        var vid = vendorReader.GetGuid(0).ToString();
+                        var vcode = vendorReader.IsDBNull(1) ? null : vendorReader.GetString(1);
+                        using var doc = JsonDocument.Parse(vendorReader.GetString(2));
+                        var root = doc.RootElement;
+                        var vName = root.TryGetProperty("name", out var n) ? n.GetString() : null;
+                        var vKana = root.TryGetProperty("nameKana", out var nk) ? nk.GetString() : null;
+                        double score = 0;
+                        if (!string.IsNullOrWhiteSpace(vKana)) score = Math.Max(score, PreIdSimilarity(extractedName, vKana));
+                        if (!string.IsNullOrWhiteSpace(vName)) score = Math.Max(score, PreIdSimilarity(extractedName, vName));
+                        if (score >= 0.6) vendorCandidates.Add((vid, vcode, vName, score));
+                    }
+                }
+                var bestVendor = vendorCandidates.OrderByDescending(c => c.Score).FirstOrDefault();
+                if (bestVendor.Score >= 0.7)
                 {
                     kind = "vendor";
-                    partnerId = vendorReader.GetGuid(0).ToString();
-                    partnerName = vendorReader.IsDBNull(1) ? null : vendorReader.GetString(1);
+                    partnerId = bestVendor.Id;
+                    partnerCode = bestVendor.Code;
+                    partnerName = bestVendor.Name;
                 }
-                await vendorReader.CloseAsync();
             }
         }
         else
         {
-            // 入金 → 客户
+            // 1c. 入金 → 匹配客户
             await using var custCmd = conn.CreateCommand();
-            custCmd.CommandText = @"
-SELECT id, name FROM business_partners 
-WHERE company_code = $1 AND partner_type = 'customer' AND (
-    name ILIKE '%' || $2 || '%' OR
-    payload->>'nameKatakana' ILIKE '%' || $2 || '%'
-) LIMIT 1";
+            custCmd.CommandText = "SELECT id, payload->>'code', payload FROM businesspartners WHERE company_code = $1 AND (payload->>'isCustomer')::boolean = true ORDER BY updated_at DESC LIMIT 200";
             custCmd.Parameters.AddWithValue(companyCode);
-            custCmd.Parameters.AddWithValue(extractedName);
-            await using var custReader = await custCmd.ExecuteReaderAsync(ct);
-            if (await custReader.ReadAsync(ct))
+            var custCandidates = new List<(string Id, string? Code, string? Name, double Score)>();
+            await using (var custReader = await custCmd.ExecuteReaderAsync(ct))
+            {
+                while (await custReader.ReadAsync(ct))
+                {
+                    var cid = custReader.GetGuid(0).ToString();
+                    var ccode = custReader.IsDBNull(1) ? null : custReader.GetString(1);
+                    using var doc = JsonDocument.Parse(custReader.GetString(2));
+                    var root = doc.RootElement;
+                    var cName = root.TryGetProperty("name", out var n) ? n.GetString() : null;
+                    var cKana = root.TryGetProperty("nameKana", out var nk) ? nk.GetString() : null;
+                    double score = 0;
+                    if (!string.IsNullOrWhiteSpace(cKana)) score = Math.Max(score, PreIdSimilarity(extractedName, cKana));
+                    if (!string.IsNullOrWhiteSpace(cName)) score = Math.Max(score, PreIdSimilarity(extractedName, cName));
+                    if (score >= 0.6) custCandidates.Add((cid, ccode, cName, score));
+                }
+            }
+            var bestCust = custCandidates.OrderByDescending(c => c.Score).FirstOrDefault();
+            if (bestCust.Score >= 0.7)
             {
                 kind = "customer";
-                partnerId = custReader.GetGuid(0).ToString();
-                partnerName = custReader.IsDBNull(1) ? null : custReader.GetString(1);
+                partnerId = bestCust.Id;
+                partnerCode = bestCust.Code;
+                partnerName = bestCust.Name;
             }
-            await custReader.CloseAsync();
         }
 
         // 2. 搜索未清明细
         List<OpenItemMatch>? openItems = null;
-        if (!string.IsNullOrWhiteSpace(partnerId))
+        if (!string.IsNullOrWhiteSpace(partnerId) && Guid.TryParse(partnerId, out var pGuid))
         {
             var txDate = row.TransactionDate ?? DateTime.Today;
             var amount = row.GetPositiveAmount();
             await using var oiCmd = conn.CreateCommand();
             oiCmd.CommandText = @"
 WITH oi_with_detail AS (
-    SELECT oi.id, oi.account_code, oi.residual_amount, oi.doc_date, 
+    SELECT oi.id, oi.account_code, oi.residual_amount, oi.doc_date,
            v.voucher_no,
            COALESCE(
-               (SELECT (line->>'paymentDate')::date FROM jsonb_array_elements(v.payload->'lines') AS line 
+               (SELECT (line->>'paymentDate')::date
+                FROM jsonb_array_elements(v.payload->'lines') AS line
                 WHERE (line->>'lineNo')::int = oi.voucher_line_no AND line->>'paymentDate' IS NOT NULL LIMIT 1),
                oi.doc_date
-           ) as effective_date
+           ) AS effective_date
     FROM open_items oi
     JOIN vouchers v ON v.id = oi.voucher_id AND v.company_code = oi.company_code
     WHERE oi.company_code = $1
@@ -1692,10 +1733,7 @@ WHERE ABS(effective_date - $3::date) <= 60
 ORDER BY ABS(residual_amount - $4) ASC, ABS(effective_date - $3::date) ASC
 LIMIT 5";
             oiCmd.Parameters.AddWithValue(companyCode);
-            if (Guid.TryParse(partnerId, out var pGuid))
-                oiCmd.Parameters.AddWithValue(pGuid);
-            else
-                oiCmd.Parameters.AddWithValue(partnerId);
+            oiCmd.Parameters.AddWithValue(pGuid);
             oiCmd.Parameters.AddWithValue(txDate);
             oiCmd.Parameters.AddWithValue(amount);
 
@@ -1711,13 +1749,45 @@ LIMIT 5";
                     oiReader.IsDBNull(4) ? null : oiReader.GetString(4),
                     oiReader.IsDBNull(5) ? null : oiReader.GetString(5)));
             }
-            await oiReader.CloseAsync();
         }
 
-        _logger.LogInformation("[MoneytreePosting] PreIdentify: desc={Desc}, kind={Kind}, partnerId={PartnerId}, name={Name}, openItems={Count}",
-            desc, kind ?? "(none)", partnerId ?? "(none)", partnerName ?? "(none)", openItems?.Count ?? 0);
+        _logger.LogInformation("[MoneytreePosting] PreIdentify: desc={Desc}, extracted={Extracted}, kind={Kind}, partnerId={PartnerId}, name={Name}, openItems={Count}",
+            desc, extractedName, kind ?? "(none)", partnerId ?? "(none)", partnerName ?? "(none)", openItems?.Count ?? 0);
 
         return new PreIdentifyResult(true, kind, partnerId, partnerCode, partnerName, extractedName, openItems);
+    }
+
+    // 与 BankPostingTools.SimilarityScore 相同的相似度计算（避免跨类调用）
+    private static readonly System.Text.RegularExpressions.Regex _preIdNoiseRegex =
+        new(@"[^\p{L}\p{N}\s]", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly string[] _preIdStopWords =
+        { "振込", "振替", "ﾌﾘｺﾐ", "ﾌﾘｶｴ", "入金", "出金", "普通預金", "当座預金", "銀行" };
+    private static readonly string[] _preIdCorpTokens =
+        { "株式会社", "（株）", "(株)", "有限会社", "合同会社", "KK", "K.K.", "CO.", "LTD", "LLC", "INC" };
+
+    private static string PreIdNormalize(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return string.Empty;
+        var s = input.Normalize(System.Text.NormalizationForm.FormKC).ToUpperInvariant()
+            .Replace('\u3000', ' ').Replace('\t', ' ');
+        foreach (var t in _preIdCorpTokens) s = s.Replace(t.ToUpperInvariant(), " ");
+        foreach (var w in _preIdStopWords) s = s.Replace(w.ToUpperInvariant(), " ");
+        s = _preIdNoiseRegex.Replace(s, " ");
+        return System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ").Trim();
+    }
+
+    private static double PreIdSimilarity(string a, string b)
+    {
+        var na = PreIdNormalize(a);
+        var nb = PreIdNormalize(b);
+        if (string.IsNullOrWhiteSpace(na) || string.IsNullOrWhiteSpace(nb)) return 0;
+        if (string.Equals(na, nb, StringComparison.OrdinalIgnoreCase)) return 1.0;
+        if (na.Contains(nb, StringComparison.OrdinalIgnoreCase) || nb.Contains(na, StringComparison.OrdinalIgnoreCase)) return 0.85;
+        var tokensA = na.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var tokensB = nb.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tokensA.Length == 0 || tokensB.Length == 0) return 0;
+        var overlap = tokensA.Count(t => tokensB.Any(tb => tb.Contains(t) || t.Contains(tb)));
+        return (double)overlap / Math.Max(tokensA.Length, tokensB.Length);
     }
 
     /// <summary>
