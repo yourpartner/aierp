@@ -395,9 +395,12 @@ public static class HrPayrollModule
         return sum;
     }
 
-    private static List<JournalLine> BuildJournalLinesFromDsl(JsonElement journalRulesEl, List<JsonObject> sheetOut)
+    private static List<JournalLine> BuildJournalLinesFromDsl(JsonElement journalRulesEl, List<JsonObject> sheetOut,
+        out List<(string Code, string? Name, decimal Amount)>? unmappedItems)
     {
+        unmappedItems = null;
         var amountByItem = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        var nameByItem = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in sheetOut)
         {
             var code = ReadJsonString(entry, "itemCode");
@@ -406,6 +409,8 @@ public static class HrPayrollModule
             if (amount == 0m) continue;
             if (amountByItem.TryGetValue(code, out var existing)) amountByItem[code] = existing + amount;
             else amountByItem[code] = amount;
+            if (!nameByItem.ContainsKey(code))
+                nameByItem[code] = ReadJsonString(entry, "itemName");
         }
 
         var aggregated = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
@@ -428,6 +433,7 @@ public static class HrPayrollModule
             }
         }
 
+        var mappedCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var rule in journalRulesEl.EnumerateArray())
         {
             if (rule.ValueKind != JsonValueKind.Object) continue;
@@ -456,6 +462,7 @@ public static class HrPayrollModule
                     }
                 }
                 if (string.IsNullOrWhiteSpace(code)) continue;
+                mappedCodes.Add(code);
                 if (!amountByItem.TryGetValue(code, out var amt)) continue;
                 sum += amt * sign;
             }
@@ -463,6 +470,14 @@ public static class HrPayrollModule
             Acc("DR", debitAccount!, sum);
             Acc("CR", creditAccount!, sum);
         }
+
+        // 检测有金额但未被任何 journalRule 映射的项目
+        var missed = amountByItem.Keys
+            .Where(k => !mappedCodes.Contains(k))
+            .Select(k => (Code: k, Name: nameByItem.GetValueOrDefault(k), Amount: amountByItem[k]))
+            .ToList();
+        if (missed.Count > 0)
+            unmappedItems = missed;
 
         var journal = new List<JournalLine>();
         int lineNo = 1;
@@ -1186,7 +1201,12 @@ public static class HrPayrollModule
             }
             
             // 生成会计分录
-            var journal = BuildJournalLinesFromDsl(journalRulesEl.Value, sheetOut);
+            var journal = BuildJournalLinesFromDsl(journalRulesEl.Value, sheetOut, out var previewUnmapped);
+            if (previewUnmapped is { Count: > 0 })
+            {
+                var items = string.Join("、", previewUnmapped.Select(u => $"{u.Name ?? u.Code}({u.Amount:N0}円)"));
+                return Results.BadRequest(new { error = $"以下の給与項目に対応する会計科目が設定されていません: {items}", unmappedItems = previewUnmapped.Select(u => new { u.Code, u.Name, u.Amount }) });
+            }
             
             // 获取科目名称
             var codes = journal.Select(j => j.AccountCode).Distinct().ToArray();
@@ -4019,7 +4039,14 @@ LIMIT @pageSize OFFSET @offset";
             compiledJournalRulesElement.Value.ValueKind == JsonValueKind.Array &&
             compiledJournalRulesElement.Value.GetArrayLength() > 0)
         {
-            journal = BuildJournalLinesFromDsl(compiledJournalRulesElement.Value, sheetOut);
+            journal = BuildJournalLinesFromDsl(compiledJournalRulesElement.Value, sheetOut, out var runUnmapped);
+            if (runUnmapped is { Count: > 0 })
+            {
+                var items = string.Join("、", runUnmapped.Select(u => $"{u.Name ?? u.Code}({u.Amount:N0}円)"));
+                throw new PayrollExecutionException(StatusCodes.Status400BadRequest,
+                    new { error = $"以下の給与項目に対応する会計科目が設定されていません: {items}", unmappedItems = runUnmapped.Select(u => new { u.Code, u.Name, u.Amount }) },
+                    $"Unmapped payroll items: {items}");
+            }
             if (debug)
             {
                 trace?.Add(new

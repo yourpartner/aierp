@@ -205,6 +205,11 @@
                         {{ row.displayAmount || formatAmount(row.amount) }}
                       </template>
                     </el-table-column>
+                    <el-table-column label="備考" min-width="100">
+                      <template #default="{ row }">
+                        {{ row.adjustmentReason || row.note || row.memo || '' }}
+                      </template>
+                    </el-table-column>
                   </el-table>
                 </div>
               </div>
