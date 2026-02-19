@@ -1890,10 +1890,30 @@ LIMIT 200";
         if (string.IsNullOrWhiteSpace(input)) return string.Empty;
         var s = input.Normalize(System.Text.NormalizationForm.FormKC).ToUpperInvariant()
             .Replace('\u3000', ' ').Replace('\t', ' ');
+        // 银行系统常用大假名代替小假名，统一为大假名以保证匹配
+        s = NormalizeSmallKana(s);
         foreach (var t in _preIdCorpTokens) s = s.Replace(t.ToUpperInvariant(), " ");
         foreach (var w in _preIdStopWords) s = s.Replace(w.ToUpperInvariant(), " ");
         s = _preIdNoiseRegex.Replace(s, " ");
         return System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ").Trim();
+    }
+
+    private static string NormalizeSmallKana(string s)
+    {
+        var sb = new StringBuilder(s.Length);
+        foreach (var c in s)
+        {
+            sb.Append(c switch
+            {
+                'ァ' => 'ア', 'ィ' => 'イ', 'ゥ' => 'ウ', 'ェ' => 'エ', 'ォ' => 'オ',
+                'ッ' => 'ツ', 'ャ' => 'ヤ', 'ュ' => 'ユ', 'ョ' => 'ヨ', 'ヮ' => 'ワ',
+                'ヵ' => 'カ', 'ヶ' => 'ケ',
+                'ぁ' => 'あ', 'ぃ' => 'い', 'ぅ' => 'う', 'ぇ' => 'え', 'ぉ' => 'お',
+                'っ' => 'つ', 'ゃ' => 'や', 'ゅ' => 'ゆ', 'ょ' => 'よ', 'ゎ' => 'わ',
+                _ => c
+            });
+        }
+        return sb.ToString();
     }
 
     private static double PreIdSimilarity(string a, string b)

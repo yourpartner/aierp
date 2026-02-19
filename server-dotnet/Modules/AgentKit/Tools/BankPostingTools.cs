@@ -149,10 +149,29 @@ public sealed class IdentifyBankCounterpartyTool : AgentToolBase
         if (string.IsNullOrWhiteSpace(input)) return string.Empty;
         var s = input.Normalize(System.Text.NormalizationForm.FormKC).ToUpperInvariant()
             .Replace('\u3000', ' ').Replace('\t', ' ');
+        s = NormalizeSmallKana(s);
         foreach (var t in CorpTokens) s = s.Replace(t.ToUpperInvariant(), " ");
         foreach (var w in StopWords) s = s.Replace(w.ToUpperInvariant(), " ");
         s = NoiseRegex.Replace(s, " ");
         return Regex.Replace(s, @"\s+", " ").Trim();
+    }
+
+    private static string NormalizeSmallKana(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length);
+        foreach (var c in s)
+        {
+            sb.Append(c switch
+            {
+                'ァ' => 'ア', 'ィ' => 'イ', 'ゥ' => 'ウ', 'ェ' => 'エ', 'ォ' => 'オ',
+                'ッ' => 'ツ', 'ャ' => 'ヤ', 'ュ' => 'ユ', 'ョ' => 'ヨ', 'ヮ' => 'ワ',
+                'ヵ' => 'カ', 'ヶ' => 'ケ',
+                'ぁ' => 'あ', 'ぃ' => 'い', 'ぅ' => 'う', 'ぇ' => 'え', 'ぉ' => 'お',
+                'っ' => 'つ', 'ゃ' => 'や', 'ゅ' => 'ゆ', 'ょ' => 'よ', 'ゎ' => 'わ',
+                _ => c
+            });
+        }
+        return sb.ToString();
     }
 
     private static double SimilarityScore(string a, string b)
