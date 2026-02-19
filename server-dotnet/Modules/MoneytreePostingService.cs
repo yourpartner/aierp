@@ -1890,26 +1890,47 @@ LIMIT 200";
         if (string.IsNullOrWhiteSpace(input)) return string.Empty;
         var s = input.Normalize(System.Text.NormalizationForm.FormKC).ToUpperInvariant()
             .Replace('\u3000', ' ').Replace('\t', ' ');
-        // 银行系统常用大假名代替小假名，统一为大假名以保证匹配
-        s = NormalizeSmallKana(s);
+        s = NormalizeBankKana(s);
         foreach (var t in _preIdCorpTokens) s = s.Replace(t.ToUpperInvariant(), " ");
         foreach (var w in _preIdStopWords) s = s.Replace(w.ToUpperInvariant(), " ");
         s = _preIdNoiseRegex.Replace(s, " ");
         return System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ").Trim();
     }
 
-    private static string NormalizeSmallKana(string s)
+    /// <summary>
+    /// 银行系统常用大假名代替小假名、浊音/半浊音不区分，统一标准化以保证匹配。
+    /// 小假名→大假名、浊音/半浊音→清音（ビ→ヒ, ピ→ヒ, ガ→カ 等）
+    /// </summary>
+    private static string NormalizeBankKana(string s)
     {
         var sb = new StringBuilder(s.Length);
         foreach (var c in s)
         {
             sb.Append(c switch
             {
+                // 小假名 → 大假名
                 'ァ' => 'ア', 'ィ' => 'イ', 'ゥ' => 'ウ', 'ェ' => 'エ', 'ォ' => 'オ',
                 'ッ' => 'ツ', 'ャ' => 'ヤ', 'ュ' => 'ユ', 'ョ' => 'ヨ', 'ヮ' => 'ワ',
                 'ヵ' => 'カ', 'ヶ' => 'ケ',
+                // 浊音 → 清音（カ行）
+                'ガ' => 'カ', 'ギ' => 'キ', 'グ' => 'ク', 'ゲ' => 'ケ', 'ゴ' => 'コ',
+                // サ行
+                'ザ' => 'サ', 'ジ' => 'シ', 'ズ' => 'ス', 'ゼ' => 'セ', 'ゾ' => 'ソ',
+                // タ行
+                'ダ' => 'タ', 'ヂ' => 'チ', 'ヅ' => 'ツ', 'デ' => 'テ', 'ド' => 'ト',
+                // ハ行（浊音+半浊音 → 清音）
+                'バ' => 'ハ', 'ビ' => 'ヒ', 'ブ' => 'フ', 'ベ' => 'ヘ', 'ボ' => 'ホ',
+                'パ' => 'ハ', 'ピ' => 'ヒ', 'プ' => 'フ', 'ペ' => 'ヘ', 'ポ' => 'ホ',
+                'ヴ' => 'ウ',
+                // 平假名の小假名
                 'ぁ' => 'あ', 'ぃ' => 'い', 'ぅ' => 'う', 'ぇ' => 'え', 'ぉ' => 'お',
                 'っ' => 'つ', 'ゃ' => 'や', 'ゅ' => 'ゆ', 'ょ' => 'よ', 'ゎ' => 'わ',
+                // 平假名の浊音 → 清音
+                'が' => 'か', 'ぎ' => 'き', 'ぐ' => 'く', 'げ' => 'け', 'ご' => 'こ',
+                'ざ' => 'さ', 'じ' => 'し', 'ず' => 'す', 'ぜ' => 'せ', 'ぞ' => 'そ',
+                'だ' => 'た', 'ぢ' => 'ち', 'づ' => 'つ', 'で' => 'て', 'ど' => 'と',
+                'ば' => 'は', 'び' => 'ひ', 'ぶ' => 'ふ', 'べ' => 'へ', 'ぼ' => 'ほ',
+                'ぱ' => 'は', 'ぴ' => 'ひ', 'ぷ' => 'ふ', 'ぺ' => 'へ', 'ぽ' => 'ほ',
                 _ => c
             });
         }
@@ -1922,9 +1943,6 @@ LIMIT 200";
         var nb = PreIdNormalize(b);
         if (string.IsNullOrWhiteSpace(na) || string.IsNullOrWhiteSpace(nb)) return 0;
         if (string.Equals(na, nb, StringComparison.OrdinalIgnoreCase)) return 1.0;
-        // Contains check: only valid when the shorter string is substantial
-        // (at least 3 chars AND at least 40% of the longer string)
-        // to prevent short nameKana like "カイ" matching long company names
         var shorter = na.Length <= nb.Length ? na : nb;
         var longer = na.Length > nb.Length ? na : nb;
         if (longer.Contains(shorter, StringComparison.OrdinalIgnoreCase)
@@ -1934,9 +1952,21 @@ LIMIT 200";
         var tokensA = na.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var tokensB = nb.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (tokensA.Length == 0 || tokensB.Length == 0) return 0;
-        // Token overlap: require the matching token to be at least 2 chars
-        var overlap = tokensA.Count(t => t.Length >= 2 && tokensB.Any(tb => tb.Length >= 2 && (tb.Contains(t) || t.Contains(tb))));
+        var overlap = tokensA.Count(t => t.Length >= 2 && tokensB.Any(tb =>
+            tb.Length >= 2 && TokenMatch(t, tb)));
         return (double)overlap / Math.Max(tokensA.Length, tokensB.Length);
+    }
+
+    private static bool TokenMatch(string t1, string t2)
+    {
+        if (string.Equals(t1, t2, StringComparison.OrdinalIgnoreCase)) return true;
+        var s = t1.Length <= t2.Length ? t1 : t2;
+        var l = t1.Length > t2.Length ? t1 : t2;
+        if (l.Contains(s, StringComparison.OrdinalIgnoreCase)
+            && s.Length >= 2
+            && (double)s.Length / l.Length >= 0.6)
+            return true;
+        return false;
     }
 
     /// <summary>

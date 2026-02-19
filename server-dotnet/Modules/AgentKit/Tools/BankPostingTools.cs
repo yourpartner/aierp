@@ -149,14 +149,14 @@ public sealed class IdentifyBankCounterpartyTool : AgentToolBase
         if (string.IsNullOrWhiteSpace(input)) return string.Empty;
         var s = input.Normalize(System.Text.NormalizationForm.FormKC).ToUpperInvariant()
             .Replace('\u3000', ' ').Replace('\t', ' ');
-        s = NormalizeSmallKana(s);
+        s = NormalizeBankKana(s);
         foreach (var t in CorpTokens) s = s.Replace(t.ToUpperInvariant(), " ");
         foreach (var w in StopWords) s = s.Replace(w.ToUpperInvariant(), " ");
         s = NoiseRegex.Replace(s, " ");
         return Regex.Replace(s, @"\s+", " ").Trim();
     }
 
-    private static string NormalizeSmallKana(string s)
+    private static string NormalizeBankKana(string s)
     {
         var sb = new System.Text.StringBuilder(s.Length);
         foreach (var c in s)
@@ -166,8 +166,19 @@ public sealed class IdentifyBankCounterpartyTool : AgentToolBase
                 'ァ' => 'ア', 'ィ' => 'イ', 'ゥ' => 'ウ', 'ェ' => 'エ', 'ォ' => 'オ',
                 'ッ' => 'ツ', 'ャ' => 'ヤ', 'ュ' => 'ユ', 'ョ' => 'ヨ', 'ヮ' => 'ワ',
                 'ヵ' => 'カ', 'ヶ' => 'ケ',
+                'ガ' => 'カ', 'ギ' => 'キ', 'グ' => 'ク', 'ゲ' => 'ケ', 'ゴ' => 'コ',
+                'ザ' => 'サ', 'ジ' => 'シ', 'ズ' => 'ス', 'ゼ' => 'セ', 'ゾ' => 'ソ',
+                'ダ' => 'タ', 'ヂ' => 'チ', 'ヅ' => 'ツ', 'デ' => 'テ', 'ド' => 'ト',
+                'バ' => 'ハ', 'ビ' => 'ヒ', 'ブ' => 'フ', 'ベ' => 'ヘ', 'ボ' => 'ホ',
+                'パ' => 'ハ', 'ピ' => 'ヒ', 'プ' => 'フ', 'ペ' => 'ヘ', 'ポ' => 'ホ',
+                'ヴ' => 'ウ',
                 'ぁ' => 'あ', 'ぃ' => 'い', 'ぅ' => 'う', 'ぇ' => 'え', 'ぉ' => 'お',
                 'っ' => 'つ', 'ゃ' => 'や', 'ゅ' => 'ゆ', 'ょ' => 'よ', 'ゎ' => 'わ',
+                'が' => 'か', 'ぎ' => 'き', 'ぐ' => 'く', 'げ' => 'け', 'ご' => 'こ',
+                'ざ' => 'さ', 'じ' => 'し', 'ず' => 'す', 'ぜ' => 'せ', 'ぞ' => 'そ',
+                'だ' => 'た', 'ぢ' => 'ち', 'づ' => 'つ', 'で' => 'て', 'ど' => 'と',
+                'ば' => 'は', 'び' => 'ひ', 'ぶ' => 'ふ', 'べ' => 'へ', 'ぼ' => 'ほ',
+                'ぱ' => 'は', 'ぴ' => 'ひ', 'ぷ' => 'ふ', 'ぺ' => 'へ', 'ぽ' => 'ほ',
                 _ => c
             });
         }
@@ -180,12 +191,30 @@ public sealed class IdentifyBankCounterpartyTool : AgentToolBase
         var nb = Normalize(b);
         if (string.IsNullOrWhiteSpace(na) || string.IsNullOrWhiteSpace(nb)) return 0;
         if (string.Equals(na, nb, StringComparison.OrdinalIgnoreCase)) return 1.0;
-        if (na.Contains(nb, StringComparison.OrdinalIgnoreCase) || nb.Contains(na, StringComparison.OrdinalIgnoreCase)) return 0.85;
+        var shorter = na.Length <= nb.Length ? na : nb;
+        var longer = na.Length > nb.Length ? na : nb;
+        if (longer.Contains(shorter, StringComparison.OrdinalIgnoreCase)
+            && shorter.Length >= 3
+            && (double)shorter.Length / longer.Length >= 0.4)
+            return 0.85;
         var tokensA = na.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var tokensB = nb.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (tokensA.Length == 0 || tokensB.Length == 0) return 0;
-        var overlap = tokensA.Count(t => tokensB.Any(tb => tb.Contains(t) || t.Contains(tb)));
+        var overlap = tokensA.Count(t => t.Length >= 2 && tokensB.Any(tb =>
+            tb.Length >= 2 && TokenMatch(t, tb)));
         return (double)overlap / Math.Max(tokensA.Length, tokensB.Length);
+    }
+
+    private static bool TokenMatch(string t1, string t2)
+    {
+        if (string.Equals(t1, t2, StringComparison.OrdinalIgnoreCase)) return true;
+        var s = t1.Length <= t2.Length ? t1 : t2;
+        var l = t1.Length > t2.Length ? t1 : t2;
+        if (l.Contains(s, StringComparison.OrdinalIgnoreCase)
+            && s.Length >= 2
+            && (double)s.Length / l.Length >= 0.6)
+            return true;
+        return false;
     }
 
     // 返回 UUID + employee_code + name
