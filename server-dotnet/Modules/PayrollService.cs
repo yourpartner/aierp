@@ -859,33 +859,31 @@ public sealed class PayrollService
         await using var conn = await _ds.OpenConnectionAsync(ct);
         var paymentTerms = await LoadPayrollPaymentTermsAsync(conn, companyCode, ct);
         var paymentDateStr = CalculatePaymentDate(postingDate, paymentTerms);
-        var paymentDateRuleCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        async Task<string?> GetPaymentDateRuleAsync(string accountCode)
+        var fieldRulesCache = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        async Task<Dictionary<string, string>> GetFieldRulesAsync(string accountCode)
         {
-            if (string.IsNullOrWhiteSpace(accountCode)) return null;
-            if (paymentDateRuleCache.TryGetValue(accountCode, out var cached)) return cached;
+            if (string.IsNullOrWhiteSpace(accountCode)) return new();
+            if (fieldRulesCache.TryGetValue(accountCode, out var cached)) return cached;
+            var rules = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             await using var q = conn.CreateCommand();
             q.CommandText = "SELECT payload FROM accounts WHERE company_code=$1 AND account_code=$2 LIMIT 1";
             q.Parameters.AddWithValue(companyCode);
             q.Parameters.AddWithValue(accountCode);
             var payloadText = (string?)await q.ExecuteScalarAsync(ct);
-            if (string.IsNullOrWhiteSpace(payloadText))
+            if (!string.IsNullOrWhiteSpace(payloadText))
             {
-                paymentDateRuleCache[accountCode] = null;
-                return null;
-            }
-            using var doc = JsonDocument.Parse(payloadText);
-            if (doc.RootElement.TryGetProperty("fieldRules", out var fr) && fr.ValueKind == JsonValueKind.Object)
-            {
-                if (fr.TryGetProperty("paymentDate", out var pd) && pd.ValueKind == JsonValueKind.String)
+                using var doc = JsonDocument.Parse(payloadText);
+                if (doc.RootElement.TryGetProperty("fieldRules", out var fr) && fr.ValueKind == JsonValueKind.Object)
                 {
-                    var rule = pd.GetString();
-                    paymentDateRuleCache[accountCode] = rule;
-                    return rule;
+                    foreach (var prop in fr.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(prop.Value.GetString()))
+                            rules[prop.Name] = prop.Value.GetString()!;
+                    }
                 }
             }
-            paymentDateRuleCache[accountCode] = null;
-            return null;
+            fieldRulesCache[accountCode] = rules;
+            return rules;
         }
 
         try
@@ -893,19 +891,15 @@ public sealed class PayrollService
             foreach (var entry in entries)
             {
                 if (entry.AccountingDraft.ValueKind != JsonValueKind.Array) continue;
-                var paymentDateRequiredAccounts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var accountFieldRules = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
                 foreach (var line in entry.AccountingDraft.EnumerateArray())
                 {
                     if (line.ValueKind != JsonValueKind.Object) continue;
                     var accountCode = ReadJsonString(line, "accountCode");
-                    if (string.IsNullOrWhiteSpace(accountCode)) continue;
-                    var rule = await GetPaymentDateRuleAsync(accountCode);
-                    if (string.Equals(rule, "required", StringComparison.OrdinalIgnoreCase))
-                    {
-                        paymentDateRequiredAccounts.Add(accountCode);
-                    }
+                    if (string.IsNullOrWhiteSpace(accountCode) || accountFieldRules.ContainsKey(accountCode)) continue;
+                    accountFieldRules[accountCode] = await GetFieldRulesAsync(accountCode);
                 }
-                var payload = BuildVoucherPayload(entry, postingDate, month, paymentDateRequiredAccounts, paymentDateStr);
+                var payload = BuildVoucherPayload(entry, postingDate, month, accountFieldRules, paymentDateStr);
                 if (payload is null)
                 {
                     // Accounting draft exists but no valid lines -> fail fast
@@ -964,7 +958,7 @@ public sealed class PayrollService
         PayrollManualSaveEntry entry,
         DateOnly postingDate,
         string month,
-        ISet<string> paymentDateRequiredAccounts,
+        IDictionary<string, Dictionary<string, string>> accountFieldRules,
         string? paymentDateStr)
     {
         if (entry.AccountingDraft.ValueKind != JsonValueKind.Array) return null;
@@ -985,31 +979,39 @@ public sealed class PayrollService
                 ["drcr"] = drcr,
                 ["amount"] = Math.Abs(amount)
             };
-            if (!string.IsNullOrWhiteSpace(paymentDateStr) && paymentDateRequiredAccounts.Contains(accountCode!))
+
+            accountFieldRules.TryGetValue(accountCode!, out var rules);
+            bool IsAllowed(string field) =>
+                rules is null || !rules.TryGetValue(field, out var state)
+                || !string.Equals(state, "hidden", StringComparison.OrdinalIgnoreCase);
+
+            if (IsAllowed("paymentDate") && !string.IsNullOrWhiteSpace(paymentDateStr))
             {
-                lineObj["paymentDate"] = paymentDateStr;
+                var hasPaymentDateRule = rules is not null && rules.TryGetValue("paymentDate", out var pdState)
+                    && string.Equals(pdState, "required", StringComparison.OrdinalIgnoreCase);
+                if (hasPaymentDateRule)
+                    lineObj["paymentDate"] = paymentDateStr;
             }
 
-            // Employee ID - use entry's EmployeeId (required by some accounts like 社会保険預り金)
-            if (entry.EmployeeId != Guid.Empty)
+            if (IsAllowed("employeeId") && entry.EmployeeId != Guid.Empty)
             {
                 lineObj["employeeId"] = entry.EmployeeId.ToString();
             }
 
-            // Employee code - prefer from line, fallback to entry (only save code, not name)
-            var employeeCode = ReadJsonString(line, "employeeCode");
-            if (string.IsNullOrWhiteSpace(employeeCode)) employeeCode = entry.EmployeeCode;
-            if (!string.IsNullOrWhiteSpace(employeeCode))
+            if (IsAllowed("employeeId"))
             {
-                lineObj["employeeCode"] = employeeCode;
+                var employeeCode = ReadJsonString(line, "employeeCode");
+                if (string.IsNullOrWhiteSpace(employeeCode)) employeeCode = entry.EmployeeCode;
+                if (!string.IsNullOrWhiteSpace(employeeCode))
+                    lineObj["employeeCode"] = employeeCode;
             }
 
-            // Department code - prefer from line, fallback to entry (only save code, not name)
-            var deptCode = ReadJsonString(line, "departmentCode");
-            if (string.IsNullOrWhiteSpace(deptCode)) deptCode = entry.DepartmentCode;
-            if (!string.IsNullOrWhiteSpace(deptCode))
+            if (IsAllowed("departmentId"))
             {
-                lineObj["departmentCode"] = deptCode;
+                var deptCode = ReadJsonString(line, "departmentCode");
+                if (string.IsNullOrWhiteSpace(deptCode)) deptCode = entry.DepartmentCode;
+                if (!string.IsNullOrWhiteSpace(deptCode))
+                    lineObj["departmentCode"] = deptCode;
             }
 
             var description = ReadJsonString(line, "description");

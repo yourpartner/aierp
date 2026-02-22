@@ -70,18 +70,16 @@ const defaultApiBase = (() => {
     } catch {}
   }
 
-  // 3) In dev mode (localhost), always force backend on port 5179 to avoid stale overrides
+  // 3) In dev mode (localhost), 使用同源 /api，由 Vite 代理到 5179，避免跨域导致 Network Error
   if (typeof window !== 'undefined') {
     try {
       const origin = new URL(window.location.href)
       const hostname = origin.hostname
       const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1'
       if (isLocalHost) {
-        const localDefault = `${origin.protocol}//${hostname}:5179`
-        // 始终覆盖本地缓存，避免残留地址导致 Network Error
-        stored = localDefault
+        stored = '/api'
         safeSet('api_base_url', stored)
-        return localDefault
+        return '/api'
       }
     } catch {}
   }

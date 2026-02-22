@@ -509,6 +509,14 @@ public static class HrPayrollModule
 
             if (string.IsNullOrWhiteSpace(overrideAcct))
             {
+                // Adjust salaryPayableAccount now; the specific contra-account
+                // will be filled in by the user via the needsAccount placeholder row.
+                var kindU = kindByItem.GetValueOrDefault(m.Code);
+                var isDeductionU = string.Equals(kindU, "deduction", StringComparison.OrdinalIgnoreCase);
+                if (isDeductionU)
+                    Acc("DR", salaryPayableAccount, m.Amount);
+                else
+                    Acc("CR", salaryPayableAccount, m.Amount);
                 stillUnmapped.Add(m);
                 continue;
             }
@@ -2245,6 +2253,14 @@ LIMIT 1";
             if (!await reader.ReadAsync(ct))
                 return Results.NotFound(new { error = "entry not found" });
 
+            var runType = reader.GetString(2);
+            var periodMonth = reader.GetString(1);
+            var entryIdVal = reader.GetGuid(3);
+            var employeeId = reader.GetGuid(4);
+            var employeeCode = reader.IsDBNull(5) ? null : reader.GetString(5);
+            var employeeName = reader.IsDBNull(6) ? null : reader.GetString(6);
+            var departmentCode = reader.IsDBNull(7) ? null : reader.GetString(7);
+            var totalAmount = reader.GetDecimal(8);
             var payrollSheet = reader.IsDBNull(9) ? null : JsonNode.Parse(reader.GetString(9));
             var accountingDraft = reader.IsDBNull(10) ? null : JsonNode.Parse(reader.GetString(10));
             var diffSummary = reader.IsDBNull(11) ? null : JsonNode.Parse(reader.GetString(11));
@@ -2252,24 +2268,38 @@ LIMIT 1";
             var trace = reader.IsDBNull(13) ? null : JsonNode.Parse(reader.GetString(13));
             var voucherId = reader.IsDBNull(14) ? (Guid?)null : reader.GetGuid(14);
             var voucherNo = reader.IsDBNull(15) ? null : reader.GetString(15);
+            await reader.CloseAsync();
+
+            var canEdit = true;
+            if (voucherId.HasValue)
+            {
+                await using var oiCmd = conn.CreateCommand();
+                oiCmd.CommandText = "SELECT EXISTS(SELECT 1 FROM open_items WHERE company_code=$1 AND voucher_id=$2 AND cleared_flag=true)";
+                oiCmd.Parameters.AddWithValue(companyCode);
+                oiCmd.Parameters.AddWithValue(voucherId.Value);
+                var hasCleared = (bool)(await oiCmd.ExecuteScalarAsync(ct))!;
+                if (hasCleared) canEdit = false;
+            }
 
             return Results.Json(new
             {
-                runType = reader.GetString(2),
-                periodMonth = reader.GetString(1),
-                entryId = reader.GetGuid(3),
-                employeeId = reader.GetGuid(4),
-                employeeCode = reader.IsDBNull(5) ? null : reader.GetString(5),
-                employeeName = reader.IsDBNull(6) ? null : reader.GetString(6),
-                departmentCode = reader.IsDBNull(7) ? null : reader.GetString(7),
-                totalAmount = reader.GetDecimal(8),
+                runType,
+                periodMonth,
+                runId,
+                entryId = entryIdVal,
+                employeeId,
+                employeeCode,
+                employeeName,
+                departmentCode,
+                totalAmount,
                 payrollSheet,
                 accountingDraft,
                 diffSummary,
                 metadata,
                 trace,
                 voucherId,
-                voucherNo
+                voucherNo,
+                canEdit
             });
         }).RequireAuthorization();
 
