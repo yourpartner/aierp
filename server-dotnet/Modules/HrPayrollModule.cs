@@ -479,6 +479,54 @@ public static class HrPayrollModule
         if (missed.Count > 0)
             unmappedItems = missed;
 
+        // 未映射项目中如果 sheetOut 带有 overrideAccountCode，正常纳入分录
+        string? salaryPayableAccount = null;
+        foreach (var rule in journalRulesEl.EnumerateArray())
+        {
+            if (rule.ValueKind != JsonValueKind.Object) continue;
+            if (rule.TryGetProperty("items", out var ritems) && ritems.ValueKind == JsonValueKind.Array && ritems.GetArrayLength() > 0)
+            {
+                var da2 = rule.TryGetProperty("debitAccount", out var dv2) && dv2.ValueKind == JsonValueKind.String ? dv2.GetString() : null;
+                var ca2 = rule.TryGetProperty("creditAccount", out var cv2) && cv2.ValueKind == JsonValueKind.String ? cv2.GetString() : null;
+                if (!string.IsNullOrWhiteSpace(da2) && !string.IsNullOrWhiteSpace(ca2)) { salaryPayableAccount = da2; break; }
+            }
+        }
+        salaryPayableAccount ??= "315";
+        var kindByItem = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in sheetOut)
+        {
+            var code = ReadJsonString(entry, "itemCode");
+            if (string.IsNullOrWhiteSpace(code) || kindByItem.ContainsKey(code)) continue;
+            kindByItem[code] = ReadJsonString(entry, "kind");
+        }
+        var stillUnmapped = new List<(string Code, string? Name, decimal Amount)>();
+        foreach (var m in missed)
+        {
+            var overrideAcct = sheetOut
+                .Where(e => string.Equals(ReadJsonString(e, "itemCode"), m.Code, StringComparison.OrdinalIgnoreCase))
+                .Select(e => ReadJsonString(e, "overrideAccountCode"))
+                .FirstOrDefault(a => !string.IsNullOrWhiteSpace(a));
+
+            if (string.IsNullOrWhiteSpace(overrideAcct))
+            {
+                stillUnmapped.Add(m);
+                continue;
+            }
+            var kind = kindByItem.GetValueOrDefault(m.Code);
+            var isDeduction = string.Equals(kind, "deduction", StringComparison.OrdinalIgnoreCase);
+            if (isDeduction)
+            {
+                Acc("DR", salaryPayableAccount, m.Amount);
+                Acc("CR", overrideAcct!, m.Amount);
+            }
+            else
+            {
+                Acc("DR", overrideAcct!, m.Amount);
+                Acc("CR", salaryPayableAccount, m.Amount);
+            }
+        }
+        unmappedItems = stillUnmapped.Count > 0 ? stillUnmapped : null;
+
         var journal = new List<JournalLine>();
         int lineNo = 1;
         foreach (var account in order)
@@ -1054,11 +1102,18 @@ public static class HrPayrollModule
                     amount = fa.GetDecimal();
                 }
                 if (string.IsNullOrWhiteSpace(itemCode)) continue;
-                sheetOut.Add(new JsonObject
+                var itemName = item.TryGetProperty("itemName", out var inm) && inm.ValueKind == JsonValueKind.String ? inm.GetString() : null;
+                var kind = item.TryGetProperty("kind", out var kv) && kv.ValueKind == JsonValueKind.String ? kv.GetString() : null;
+                var overrideAcc = item.TryGetProperty("overrideAccountCode", out var oa) && oa.ValueKind == JsonValueKind.String ? oa.GetString() : null;
+                var node = new JsonObject
                 {
                     ["itemCode"] = itemCode,
+                    ["itemName"] = itemName,
                     ["amount"] = JsonValue.Create(amount)
-                });
+                };
+                if (!string.IsNullOrWhiteSpace(kind)) node["kind"] = kind;
+                if (!string.IsNullOrWhiteSpace(overrideAcc)) node["overrideAccountCode"] = overrideAcc;
+                sheetOut.Add(node);
             }
             
             // 获取活跃的 Policy 的 journalRules
@@ -1202,11 +1257,6 @@ public static class HrPayrollModule
             
             // 生成会计分录
             var journal = BuildJournalLinesFromDsl(journalRulesEl.Value, sheetOut, out var previewUnmapped);
-            if (previewUnmapped is { Count: > 0 })
-            {
-                var items = string.Join("、", previewUnmapped.Select(u => $"{u.Name ?? u.Code}({u.Amount:N0}円)"));
-                return Results.BadRequest(new { error = $"以下の給与項目に対応する会計科目が設定されていません: {items}", unmappedItems = previewUnmapped.Select(u => new { u.Code, u.Name, u.Amount }) });
-            }
             
             // 获取科目名称
             var codes = journal.Select(j => j.AccountCode).Distinct().ToArray();
@@ -1241,6 +1291,36 @@ public static class HrPayrollModule
                     ["departmentName"] = departmentName
                 };
             }).ToList();
+
+            // 未映射项目追加占位行，科目列留空让前端编辑
+            if (previewUnmapped is { Count: > 0 })
+            {
+                int nextLine = accountingDraft.Count > 0
+                    ? accountingDraft.Max(o => o["lineNo"]?.GetValue<int>() ?? 0) + 1
+                    : 1;
+                foreach (var u in previewUnmapped)
+                {
+                    var kind = sheetOut
+                        .Where(e => string.Equals(ReadJsonString(e, "itemCode"), u.Code, StringComparison.OrdinalIgnoreCase))
+                        .Select(e => ReadJsonString(e, "kind"))
+                        .FirstOrDefault();
+                    var isDeduction = string.Equals(kind, "deduction", StringComparison.OrdinalIgnoreCase);
+                    accountingDraft.Add(new JsonObject
+                    {
+                        ["lineNo"] = nextLine++,
+                        ["accountCode"] = "",
+                        ["accountName"] = $"⚠ {u.Name ?? u.Code}",
+                        ["drcr"] = isDeduction ? "CR" : "DR",
+                        ["amount"] = JsonValue.Create(u.Amount),
+                        ["employeeCode"] = employeeCode,
+                        ["departmentCode"] = departmentCode,
+                        ["departmentName"] = departmentName,
+                        ["needsAccount"] = true,
+                        ["itemCode"] = u.Code,
+                        ["itemName"] = u.Name
+                    });
+                }
+            }
             
             return Results.Ok(new { accountingDraft });
         }).RequireAuthorization();

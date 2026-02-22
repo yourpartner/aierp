@@ -317,9 +317,36 @@
                         <span>再計算</span>
                       </el-button>
                     </div>
-                    <el-table :data="entry.accountingDraft || []" size="small" border>
-                      <el-table-column prop="accountCode" label="科目コード" width="100" />
-                      <el-table-column prop="accountName" label="科目名" min-width="120" />
+                    <el-table :data="entry.accountingDraft || []" size="small" border :row-class-name="journalRowClass">
+                      <el-table-column label="科目コード" width="160">
+                        <template #default="{ row }">
+                          <el-select
+                            v-if="row.needsAccount"
+                            v-model="row.accountCode"
+                            placeholder="科目を選択"
+                            filterable
+                            size="small"
+                            style="width: 100%"
+                            @change="(val: string) => onOverrideAccountChange(entry, row, val)"
+                          >
+                            <el-option
+                              v-for="acc in accountOptions"
+                              :key="acc.code"
+                              :label="`${acc.code} ${acc.name}`"
+                              :value="acc.code"
+                            />
+                          </el-select>
+                          <span v-else>{{ row.accountCode }}</span>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="科目名" min-width="120">
+                        <template #default="{ row }">
+                          <span v-if="row.needsAccount" :class="{ 'needs-account': !row.accountCode }">
+                            {{ row.accountCode ? accountNameMap[row.accountCode] || '' : row.accountName }}
+                          </span>
+                          <span v-else>{{ row.accountName }}</span>
+                        </template>
+                      </el-table-column>
                       <el-table-column prop="drcr" label="借/貸" width="60" align="center" />
                       <el-table-column label="金額" width="100" align="right">
                       <template #default="{ row }">
@@ -390,6 +417,45 @@ const workHourItems = [
 const warningDescriptions: Record<string, string> = {
   workHoursMissing: '勤怠データが未登録のため、残業・控除は実績無しとして計算されています。',
   usedStandardHours: '勤怠データが未登録のため、月標準工時で計算されています。'
+}
+
+// 科目マスタ（仕訳ドラフトの未マッピング行で使用）
+const accountOptions = ref<{ code: string; name: string }[]>([])
+const accountNameMap = ref<Record<string, string>>({})
+
+async function loadAccountOptions() {
+  try {
+    const resp = await api.post('/objects/account/search', { where: [], page: 1, pageSize: 500, orderBy: [{ field: 'account_code', dir: 'ASC' }] })
+    const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
+    accountOptions.value = rows.map((a: any) => ({
+      code: a.account_code || a.payload?.code,
+      name: a.payload?.name || a.account_code
+    }))
+    const map: Record<string, string> = {}
+    for (const acc of accountOptions.value) { map[acc.code] = acc.name }
+    accountNameMap.value = map
+  } catch (e) {
+    console.error('Failed to load accounts:', e)
+  }
+}
+
+function journalRowClass({ row }: { row: any }) {
+  return row.needsAccount ? 'needs-account-row' : ''
+}
+
+function onOverrideAccountChange(entry: any, row: any, accountCode: string) {
+  row.accountName = accountNameMap.value[accountCode] || ''
+  const itemCode = row.itemCode
+  if (itemCode && entry.payrollSheet) {
+    const sheetRow = entry.payrollSheet.find((r: any) => r.itemCode === itemCode)
+    if (sheetRow) {
+      sheetRow.overrideAccountCode = accountCode
+    }
+  }
+  entry._rawAccountingDraft = (entry.accountingDraft || []).map((r: any) => {
+    const { displayAmount, ...rest } = r
+    return rest
+  })
 }
 
 // 手動工時入力ダイアログ
@@ -591,8 +657,11 @@ async function regenerateJournal(entry: any) {
     const payload = {
       payrollSheet: entry.payrollSheet.map((row: any) => ({
         itemCode: row.itemCode,
+        itemName: row.itemName || row.displayName,
         amount: isDeductionItem(row) ? Math.abs(row.finalAmount || 0) : (row.finalAmount || 0),
-        finalAmount: row.finalAmount
+        finalAmount: row.finalAmount,
+        kind: row.kind,
+        ...(row.overrideAccountCode ? { overrideAccountCode: row.overrideAccountCode } : {})
       })),
       employeeId: entry.employeeId,
       employeeCode: entry.employeeCode,
@@ -851,6 +920,18 @@ async function saveResults(){
     }
   }
   
+  // 未指定科目チェック
+  for (const entry of runResult.value.entries) {
+    const draft = entry.accountingDraft || []
+    const missing = draft.filter((r: any) => r.needsAccount && !r.accountCode)
+    if (missing.length > 0) {
+      const name = entry.employeeName || entry.employeeCode || entry.employeeId
+      const items = missing.map((r: any) => r.itemName || r.itemCode || '不明').join('、')
+      ElMessage.warning(`${name} の仕訳に科目が未選択の行があります（${items}）。科目を選択してください。`)
+      return
+    }
+  }
+
   // 既存データの上書き確認：対象員工に既存データがある場合のみ確認ダイアログを表示
   const existingEmployeeIds: string[] = runResult.value.existingEmployeeIds || []
   const currentEmployeeIds = runResult.value.entries.map((e: any) => e.employeeId)
@@ -905,12 +986,13 @@ async function doSave(overwrite: boolean) {
         const cleanPayrollSheet = currentPayrollSheet.map((row: any) => ({
           itemCode: row.itemCode,
           itemName: row.itemName || row.displayName,
-          amount: isDeductionItem(row) ? Math.abs(row.finalAmount || 0) : (row.finalAmount || 0), // 使用最终金额
+          amount: isDeductionItem(row) ? Math.abs(row.finalAmount || 0) : (row.finalAmount || 0),
           calculatedAmount: row.calculatedAmount,
           adjustment: row.adjustment || 0,
           adjustmentReason: row.adjustmentReason || '',
           isManuallyAdded: row.isManuallyAdded || false,
-          kind: row.kind
+          kind: row.kind,
+          ...(row.overrideAccountCode ? { overrideAccountCode: row.overrideAccountCode } : {})
         }))
         
         const cleanAccountingDraft = rawAccountingDraft.map((row: any) => {
@@ -1032,6 +1114,7 @@ watch(month, () => {
 
 onMounted(() => {
   loadEmployeesForMonth()
+  loadAccountOptions()
 })
 </script>
 
@@ -1183,6 +1266,15 @@ onMounted(() => {
 
 .manual-item {
   color: #409eff;
+  font-style: italic;
+}
+
+:deep(.needs-account-row) {
+  background-color: #fdf6ec !important;
+}
+
+.needs-account {
+  color: #e6a23c;
   font-style: italic;
 }
 
