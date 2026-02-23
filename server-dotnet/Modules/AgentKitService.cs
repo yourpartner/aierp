@@ -801,74 +801,9 @@ public sealed class AgentKitService
             messages.Add(new Dictionary<string, object?> { ["role"] = role, ["content"] = content });
         }
 
-        // 从 Skill behavior_config 读取餐饮费阈值
-        var diningAmountThreshold = 20000m;
-        var perPersonThreshold = 10000m;
-        if (taskSkill.BehaviorConfig is not null)
-        {
-            var bc = taskSkill.BehaviorConfig;
-            if (bc.TryGetPropertyValue("diningExpenseThreshold", out var detNode) && detNode is JsonValue detVal)
-            {
-                if (detVal.TryGetValue<decimal>(out var det)) diningAmountThreshold = det;
-                else if (detVal.TryGetValue<double>(out var detD)) diningAmountThreshold = (decimal)detD;
-            }
-            if (bc.TryGetPropertyValue("perPersonThreshold", out var pptNode) && pptNode is JsonValue pptVal)
-            {
-                if (pptVal.TryGetValue<decimal>(out var ppt)) perPersonThreshold = ppt;
-                else if (pptVal.TryGetValue<double>(out var pptD)) perPersonThreshold = (decimal)pptD;
-            }
-        }
+        // 餐饮科目判定（交際費/会議費/人均计算）完全由 AI 根据 Skill 规则处理，
+        // 后端不再注入硬编码的科目建议。
 
-        // 如果票据中已经识别出人数，则无需再询问人数，仅询问姓名并直接计算人均
-        if (clarification is null && task.Analysis is JsonObject autoAnalysis)
-        {
-            var netAmount = TryGetJsonDecimal(autoAnalysis, "totalAmount") - (TryGetJsonDecimal(autoAnalysis, "taxAmount") ?? 0m);
-            if (netAmount >= diningAmountThreshold)
-            {
-                var detectedCount = TryGetPersonCount(autoAnalysis);
-                if (detectedCount is not null && detectedCount.Value > 0)
-                {
-                    var perPerson = netAmount.Value / detectedCount.Value;
-                    var suggestedAccount = perPerson > perPersonThreshold ? "交際費" : "会議費";
-                    var partnerName = ReadString(autoAnalysis, "partnerName") ?? task.FileName;
-                    messages.Add(new Dictionary<string, object?>
-                    {
-                        ["role"] = "system",
-                        ["content"] =
-                            $"[SYSTEM CALCULATION] 票据中已识别用餐人数 = {detectedCount.Value}人。人均金额 = {perPerson:N0} JPY ({netAmount:N0} / {detectedCount.Value}人)。根据 {perPersonThreshold:N0} JPY 规则，科目判定应为：【{suggestedAccount}】。" +
-                            "请不要再询问人数，只需向用户确认“参加者氏名”。" +
-                            "请调用 lookup_account 获取该科目的最新代码，并在凭证摘要中体现人数与参加者信息。" +
-                            $" 凭证摘要建议：{suggestedAccount} | {partnerName} ({detectedCount.Value}人, 参加者: 未确认)"
-                    });
-                }
-            }
-        }
-
-        // 如果是回答澄清问题的流程，且金额较大，后端计算好科目建议注入 AI，防止其选错
-        if (clarification is not null && task.Analysis is JsonObject analysis)
-        {
-            var netAmount = TryGetJsonDecimal(analysis, "totalAmount") - (TryGetJsonDecimal(analysis, "taxAmount") ?? 0m);
-            if (netAmount >= diningAmountThreshold)
-            {
-                // 尝试从回答中提取数字
-                var match = Regex.Match(request.Message, @"(\d+)");
-                if (match.Success && int.TryParse(match.Groups[1].Value, out var personCount) && personCount > 0)
-                {
-                    var perPerson = netAmount.Value / personCount;
-                    var suggestedAccount = perPerson > perPersonThreshold ? "交際費" : "会議費";
-                    
-                    // 尝试获取商户名
-                    var partnerName = ReadString(analysis, "partnerName") ?? task.FileName;
-
-                    messages.Add(new Dictionary<string, object?>
-                    {
-                        ["role"] = "system",
-                        ["content"] = $"[SYSTEM INFO] 当前正在处理的文件 ID 为：\"{task.FileId}\" (标签: {task.DocumentLabel ?? "无"})。如果需要再次提取数据，请务必使用此 ID。\n" + 
-                                     $"[SYSTEM CALCULATION] 人均金额 = {perPerson:N0} JPY ({netAmount:N0} / {personCount}人)。根据 {perPersonThreshold:N0} JPY 规则，科目判定应为：【{suggestedAccount}】。请调用 lookup_account 获取该科目的最新代码。同时，请将凭证摘要（header.summary）更新为：「{suggestedAccount} | {partnerName} ({request.Message})」。"
-                    });
-                }
-            }
-        }
 
         var summaryBuilder = new StringBuilder();
         if (!string.IsNullOrWhiteSpace(task.DocumentLabel))
@@ -4370,84 +4305,8 @@ public sealed class AgentKitService
                 }
             }
 
-            // 优先使用发票识别出的税额，如果没有则使用从分录中检测到的税额
-            var finalTaxAmount = taxAmount ?? detectedTaxAmount;
-
-            if (finalTaxAmount > 0.0001m && totalAmount.HasValue && totalAmount.Value >= finalTaxAmount)
+            if (totalAmount.HasValue)
             {
-                // 标准价税分离流程
-                var netAmount = Math.Max(0m, totalAmount.Value - finalTaxAmount);
-
-                if (existingExpenseLine is null)
-                {
-                    // 不再硬编码科目代码，让 LLM 根据场景规则来决定科目（如 6200 或 6250）
-                    // 仅在已有分录时才进行价税分离调整
-                    _logger.LogInformation("[AgentKit] 未找到借方费用分录，跳过后端自动调整，交由 AI 处理");
-                    return; 
-                }
-
-                if (!existingExpenseLine.ContainsKey("note"))
-                {
-                    existingExpenseLine["note"] = "飲食費";
-                }
-
-                WriteAmount(existingExpenseLine, Math.Round(netAmount, 2));
-
-                // 统一扁平化生成税金分录
-                if (existingTaxLine is null && !string.IsNullOrWhiteSpace(inputTaxAccountCode))
-                {
-                    existingTaxLine = new JsonObject
-                    {
-                        ["accountCode"] = inputTaxAccountCode,
-                        ["drcr"] = "DR",
-                        ["note"] = "仮払消費税",
-                        ["isTaxLine"] = true
-                    };
-                    linesNode.Add(existingTaxLine);
-                }
-                
-                if (existingTaxLine is not null)
-                {
-                    WriteAmount(existingTaxLine, Math.Round(finalTaxAmount, 2));
-                    existingTaxLine["isTaxLine"] = true;
-
-                    if (existingExpenseLine is not null && existingExpenseLine.TryGetPropertyValue("lineNo", out var baseLineNoNode) && baseLineNoNode is not null)
-                    {
-                        existingTaxLine["baseLineNo"] = baseLineNoNode.DeepClone();
-                    }
-                    else if (existingExpenseLine is not null)
-                    {
-                        // 如果还没有 lineNo，我们将在后面统一设置，或者在这里先假设一个
-                        // 但在 CreateVoucherAsync 中，我们会在最后统一设置 lineNo
-                    }
-                    
-                    if (taxRate.HasValue)
-                    {
-                        var rateValue = taxRate.Value;
-                        if (rateValue > 0 && rateValue < 1) rateValue *= 100;
-                        existingTaxLine["taxRate"] = Math.Round(rateValue, 0);
-                    }
-                }
-
-                expectedTotalAmount = Math.Round(totalAmount.Value, 2);
-                _logger.LogInformation("[AgentKit] 已完成价税分离: 费用={Net}, 税金={Tax}", netAmount, finalTaxAmount);
-            }
-            else if (totalAmount.HasValue && existingTaxLine is not null && detectedTaxAmount > 0.0001m && existingExpenseLine is not null)
-            {
-                // taxAmount 为空，但 LLM 已经生成了税金分录
-                // 需要调整费用分录金额 = totalAmount - 已有税金金额
-                // 这样可以避免税额被重复计算导致借贷不平衡
-                var currentExpenseAmount = ReadAmount(existingExpenseLine);
-                var expectedExpenseAmount = Math.Max(0m, totalAmount.Value - detectedTaxAmount);
-                
-                // 只有当费用分录金额等于含税总额时才调整（说明 LLM 误用了含税金额）
-                if (Math.Abs(currentExpenseAmount - totalAmount.Value) < 0.01m)
-                {
-                    WriteAmount(existingExpenseLine, Math.Round(expectedExpenseAmount, 2));
-                    _logger.LogInformation("[AgentKit] 自动调整费用分录金额: {Original} -> {Adjusted} (扣除税金 {Tax})", 
-                        currentExpenseAmount, expectedExpenseAmount, detectedTaxAmount);
-                }
-
                 expectedTotalAmount = Math.Round(totalAmount.Value, 2);
             }
         }
@@ -6763,26 +6622,16 @@ WHERE company_code = $1 AND id = $2";
                             lines = new
                             {
                                 type = "array",
-                                description = "按借贷方向列出分录，需至少一借一贷，金额相等。",
+                                description = "分録の配列。各行は独立した借方/貸方行。消費税がある場合も独立行として追加し、借方合計=貸方合計を確保すること。",
                                 items = new
                                 {
                                     type = "object",
                                     properties = new
                                     {
-                                        accountCode = new { type = "string" },
-                                        amount = new { type = "number" },
-                                        side = new { type = "string", description = "DR/CR 或 debit/credit" },
-                                        note = new { type = "string" },
-                                        tax = new
-                                        {
-                                            type = "object",
-                                            properties = new
-                                            {
-                                                amount = new { type = "number" },
-                                                accountCode = new { type = "string" },
-                                                side = new { type = "string" }
-                                            }
-                                        }
+                                        accountCode = new { type = "string", description = "勘定科目コード（lookup_accountで取得）" },
+                                        amount = new { type = "number", description = "金額（税込ではなく各行の実額）" },
+                                        side = new { type = "string", description = "DR または CR" },
+                                        note = new { type = "string" }
                                     },
                                     required = new[] { "accountCode", "amount", "side" }
                                 },
@@ -6792,7 +6641,7 @@ WHERE company_code = $1 AND id = $2";
                             {
                                 type = "array",
                                 items = new { type = "string" },
-                                description = "关联的文件 ID 列表"
+                                description = "関連ファイルIDリスト"
                             },
                             documentSessionId = new { type = "string", description = "当前文档上下文标识，必须匹配已注册的文件会话" }
                         },

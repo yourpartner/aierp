@@ -154,6 +154,19 @@ public sealed class SkillPromptBuilder2
             if (!string.IsNullOrWhiteSpace(category))
                 line.Append(isZh ? "；类别：" : "；カテゴリ：").Append(category);
 
+            // 提取 conditions 中的金额范围
+            if (rule.Conditions?.TryGetPropertyValue("amountRange", out var rangeNode) == true && rangeNode is JsonObject rangeObj)
+            {
+                var minAmt = GetJsonString(rangeObj, "min");
+                var maxAmt = GetJsonString(rangeObj, "max");
+                if (!string.IsNullOrWhiteSpace(minAmt) && !string.IsNullOrWhiteSpace(maxAmt))
+                    line.Append(isZh ? $"；金额范围：{minAmt}～{maxAmt}" : $"；金額範囲：{minAmt}～{maxAmt}");
+                else if (!string.IsNullOrWhiteSpace(minAmt))
+                    line.Append(isZh ? $"；金额≥{minAmt}" : $"；金額≥{minAmt}");
+                else if (!string.IsNullOrWhiteSpace(maxAmt))
+                    line.Append(isZh ? $"；金额<{maxAmt}" : $"；金額<{maxAmt}");
+            }
+
             // 提取 conditions 中的交易类型
             var txType = GetJsonString(rule.Conditions, "transactionType");
             if (!string.IsNullOrWhiteSpace(txType))
@@ -167,11 +180,14 @@ public sealed class SkillPromptBuilder2
             if (!string.IsNullOrWhiteSpace(descRegex))
                 line.Append(isZh ? "；摘要匹配：" : "；摘要パターン：").Append(descRegex);
 
-            // 提取 actions 中的科目（兼容 accountCode 和 debitAccount/creditAccount 两种格式）
+            // 提取 actions 中的科目（兼容 accountCode / accountHint / debitAccount 等多种格式）
             var accountCode = GetJsonString(rule.Actions, "accountCode");
-            var accountName = GetJsonString(rule.Actions, "accountName");
-            var debitAccount = GetJsonString(rule.Actions, "debitAccount") ?? GetJsonString(rule.Actions, "debitAccountHint");
-            var creditAccount = GetJsonString(rule.Actions, "creditAccount") ?? GetJsonString(rule.Actions, "creditAccountHint");
+            var accountName = GetJsonString(rule.Actions, "accountName")
+                           ?? GetJsonString(rule.Actions, "accountHint");
+            var debitAccount = GetJsonString(rule.Actions, "debitAccount")
+                            ?? GetJsonString(rule.Actions, "debitAccountHint");
+            var creditAccount = GetJsonString(rule.Actions, "creditAccount")
+                             ?? GetJsonString(rule.Actions, "creditAccountHint");
             if (!string.IsNullOrWhiteSpace(accountCode) || !string.IsNullOrWhiteSpace(accountName))
             {
                 line.Append(isZh ? "；推荐借方：" : "；推奨借方：");
@@ -208,10 +224,13 @@ public sealed class SkillPromptBuilder2
             if (!string.IsNullOrWhiteSpace(threshold))
             {
                 var altCode = GetJsonString(rule.Actions, "alternativeAccountCode");
-                var altName = GetJsonString(rule.Actions, "alternativeAccountName");
+                var altName = GetJsonString(rule.Actions, "alternativeAccountName")
+                           ?? GetJsonString(rule.Actions, "alternativeAccountHint");
+                var mainLabel = accountName ?? accountCode ?? "";
+                var altLabel = altName ?? altCode ?? "";
                 line.Append(isZh
-                    ? $"；人均>={threshold}用{accountCode} {accountName}，人均<{threshold}用{altCode} {altName}"
-                    : $"；一人当たり>={threshold}の場合{accountCode} {accountName}、<{threshold}の場合{altCode} {altName}");
+                    ? $"；人均>{threshold}→{mainLabel}，人均≤{threshold}→{altLabel}"
+                    : $"；一人当たり>{threshold}→{mainLabel}、≤{threshold}→{altLabel}");
             }
 
             sb.AppendLine(line.ToString());

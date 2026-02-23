@@ -625,6 +625,10 @@ const loadingCustomers = ref(false)
 const loadingVendors = ref(false)
 const loadingDepartments = ref(false)
 const loadingEmployees = ref(false)
+const employeeOptionsPreloaded = ref(false)
+const departmentOptionsPreloaded = ref(false)
+const customerOptionsPreloaded = ref(false)
+const vendorOptionsPreloaded = ref(false)
 
 function normalizeCode(input: unknown) {
   return (input ?? '').toString().trim()
@@ -911,33 +915,32 @@ function updateOptionLabelFromCache(list: typeof customerOptions, value: unknown
 function handleCustomerFocus(row: any) {
   ensureOption(customerOptions, row.customerId, 'cust')
   updateOptionLabelFromCache(customerOptions, row.customerId, 'cust')
-  if (customerOptions.value.length === 0) {
-    searchCustomers('')
+  if (!customerOptionsPreloaded.value) {
+    searchCustomers('').then(() => { customerOptionsPreloaded.value = true })
   }
 }
 
 function handleVendorFocus(row: any) {
   ensureOption(vendorOptions, row.vendorId, 'vend')
   updateOptionLabelFromCache(vendorOptions, row.vendorId, 'vend')
-  if (vendorOptions.value.length === 0) {
-    searchVendors('')
+  if (!vendorOptionsPreloaded.value) {
+    searchVendors('').then(() => { vendorOptionsPreloaded.value = true })
   }
 }
 
 function handleDepartmentFocus(row: any) {
   ensureOption(departmentOptions, row.departmentId, 'dept')
-  // 更新选项的 label（如果缓存中有更好的名称）
   updateOptionLabelFromCache(departmentOptions, row.departmentId, 'dept')
-  if (departmentOptions.value.length === 0) {
-    searchDepartments('')
+  if (!departmentOptionsPreloaded.value) {
+    searchDepartments('').then(() => { departmentOptionsPreloaded.value = true })
   }
 }
 
 function handleEmployeeFocus(row: any) {
   ensureOption(employeeOptions, row.employeeId, 'emp')
   updateOptionLabelFromCache(employeeOptions, row.employeeId, 'emp')
-  if (employeeOptions.value.length === 0) {
-    searchEmployees('')
+  if (!employeeOptionsPreloaded.value) {
+    searchEmployees('').then(() => { employeeOptionsPreloaded.value = true })
   }
 }
 
@@ -1005,6 +1008,15 @@ watch(
       value,
       label
     }))
+
+    if (props.editMode && !employeeOptionsPreloaded.value) {
+      await Promise.allSettled([
+        searchEmployees('').then(() => { employeeOptionsPreloaded.value = true }),
+        searchDepartments('').then(() => { departmentOptionsPreloaded.value = true }),
+        searchCustomers('').then(() => { customerOptionsPreloaded.value = true }),
+        searchVendors('').then(() => { vendorOptionsPreloaded.value = true })
+      ])
+    }
   },
   { immediate: true, deep: true }
 )
