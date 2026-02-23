@@ -832,8 +832,12 @@ async function searchDepartments(keyword: string) {
     const q = (keyword || '').trim()
     const where: any[] = []
     if (q) {
-      where.push({ json: 'name', op: 'contains', value: q })
-      where.push({ field: 'department_code', op: 'contains', value: q })
+      where.push({
+        anyOf: [
+          { json: 'name', op: 'contains', value: q },
+          { field: 'department_code', op: 'contains', value: q }
+        ]
+      })
     }
     const resp = await api.post('/objects/department/search', {
       where,
@@ -860,9 +864,13 @@ async function searchEmployees(keyword: string) {
     const q = (keyword || '').trim()
     const where: any[] = []
     if (q) {
-      where.push({ json: 'nameKanji', op: 'contains', value: q })
-      where.push({ json: 'nameKana', op: 'contains', value: q })
-      where.push({ field: 'employee_code', op: 'contains', value: q })
+      where.push({
+        anyOf: [
+          { json: 'nameKanji', op: 'contains', value: q },
+          { json: 'nameKana', op: 'contains', value: q },
+          { field: 'employee_code', op: 'contains', value: q }
+        ]
+      })
     }
     const resp = await api.post('/objects/employee/search', {
       where,
