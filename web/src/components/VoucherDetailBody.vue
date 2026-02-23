@@ -24,13 +24,8 @@
               <el-select
                 v-model="row.accountCode"
                 filterable
-                remote
-                reserve-keyword
                 placeholder="勘定科目を検索"
                 style="width: 100%"
-                :remote-method="searchAccounts"
-                :loading="accountsLoading"
-                @focus="handleAccountFocus(row.accountCode)"
               >
                 <el-option
                   v-for="item in accountOptions"
@@ -68,14 +63,9 @@
                 v-if="isVisible(row, 'customerId')"
                 v-model="row.customerId"
                 filterable
-                remote
-                reserve-keyword
                 clearable
                 style="width: 100%"
                 :placeholder="customerColumnLabel"
-                :remote-method="searchCustomers"
-                :loading="loadingCustomers"
-                @focus="handleCustomerFocus(row)"
               >
                 <el-option
                   v-for="item in customerOptions"
@@ -93,14 +83,9 @@
                 v-if="isVisible(row, 'vendorId')"
                 v-model="row.vendorId"
                 filterable
-                remote
-                reserve-keyword
                 clearable
                 style="width: 100%"
                 :placeholder="listText.vendor"
-                :remote-method="searchVendors"
-                :loading="loadingVendors"
-                @focus="handleVendorFocus(row)"
               >
                 <el-option
                   v-for="item in vendorOptions"
@@ -118,14 +103,9 @@
                 v-if="isVisible(row, 'departmentId')"
                 v-model="row.departmentId"
                 filterable
-                remote
-                reserve-keyword
                 clearable
                 style="width: 100%"
                 :placeholder="listText.department"
-                :remote-method="searchDepartments"
-                :loading="loadingDepartments"
-                @focus="handleDepartmentFocus(row)"
               >
                 <el-option
                   v-for="item in departmentOptions"
@@ -143,14 +123,9 @@
                 v-if="isVisible(row, 'employeeId')"
                 v-model="row.employeeId"
                 filterable
-                remote
-                reserve-keyword
                 clearable
                 style="width: 100%"
                 :placeholder="listText.employee"
-                :remote-method="searchEmployees"
-                :loading="loadingEmployees"
-                @focus="handleEmployeeFocus(row)"
               >
                 <el-option
                   v-for="item in employeeOptions"
@@ -625,10 +600,6 @@ const loadingCustomers = ref(false)
 const loadingVendors = ref(false)
 const loadingDepartments = ref(false)
 const loadingEmployees = ref(false)
-const employeeOptionsPreloaded = ref(false)
-const departmentOptionsPreloaded = ref(false)
-const customerOptionsPreloaded = ref(false)
-const vendorOptionsPreloaded = ref(false)
 
 function normalizeCode(input: unknown) {
   return (input ?? '').toString().trim()
@@ -738,12 +709,11 @@ async function loadAccountRules(codes: string[]) {
   }
 }
 
-async function searchAccounts(keyword: string) {
+async function loadAccounts() {
   if (!props.fetchAccountOptions) return
-  const trimmed = (keyword || '').trim()
   accountsLoading.value = true
   try {
-    const result = await props.fetchAccountOptions(trimmed)
+    const result = await props.fetchAccountOptions('')
     if (Array.isArray(result)) {
       result.forEach((item: AccountOption) => {
         if (item?.value) {
@@ -760,135 +730,60 @@ async function searchAccounts(keyword: string) {
   }
 }
 
-async function ensureAccountOptions(code?: string) {
-  const normalized = normalizeCode(code)
-  if (!normalized || !props.fetchAccountOptions) return
-  if (accountOptions.value.some(opt => opt.value === normalized)) {
-    if (!codeToRules.has(normalized)) {
-      await loadAccountRules([normalized])
-      applyFieldRulesToLines(props.editableLines as any[])
-    }
-    return
-  }
-  await searchAccounts(normalized)
-  await loadAccountRules([normalized])
-  applyFieldRulesToLines(props.editableLines as any[])
-}
-
-async function handleAccountFocus(code?: string) {
-  if (accountOptions.value.length === 0) {
-    await searchAccounts('')
-  }
-  if (code) {
-    await ensureAccountOptions(code)
-  }
-}
-
-async function searchCustomers(keyword: string) {
+async function loadCustomers() {
   loadingCustomers.value = true
   try {
-    const base = [{ field: 'flag_customer', op: 'eq', value: true }]
-    const where = keyword?.trim()
-      ? [...base, { json: 'name', op: 'contains', value: keyword }]
-      : base
-    const resp = await api.post('/objects/businesspartner/search', { where, page: 1, pageSize: keyword?.trim() ? 50 : 0 })
+    const resp = await api.post('/objects/businesspartner/search', {
+      where: [{ field: 'flag_customer', op: 'eq', value: true }], page: 1, pageSize: 0
+    })
     const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
-    const mapped: OptionItem[] = rows.map((item: any) => ({
+    customerOptions.value = rows.map((item: any) => ({
       label: `${item.payload?.name || item.payload?.displayName || ''} (${item.partner_code || item.payload?.code || ''})`,
       value: item.partner_code || item.payload?.code || item.id || ''
-    }))
-    customerOptions.value = mapped.filter((item) => !!item.value)
-  } catch {
-    customerOptions.value = []
-  } finally {
-    loadingCustomers.value = false
-  }
+    })).filter((item) => !!item.value)
+  } catch { customerOptions.value = [] } finally { loadingCustomers.value = false }
 }
 
-async function searchVendors(keyword: string) {
+async function loadVendors() {
   loadingVendors.value = true
   try {
-    const base = [{ field: 'flag_vendor', op: 'eq', value: true }]
-    const where = keyword?.trim()
-      ? [...base, { json: 'name', op: 'contains', value: keyword }]
-      : base
-    const resp = await api.post('/objects/businesspartner/search', { where, page: 1, pageSize: keyword?.trim() ? 50 : 0 })
+    const resp = await api.post('/objects/businesspartner/search', {
+      where: [{ field: 'flag_vendor', op: 'eq', value: true }], page: 1, pageSize: 0
+    })
     const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
-    const mapped: OptionItem[] = rows.map((item: any) => ({
+    vendorOptions.value = rows.map((item: any) => ({
       label: `${item.payload?.name || item.payload?.displayName || ''} (${item.partner_code || item.payload?.code || ''})`,
       value: item.partner_code || item.payload?.code || item.id || ''
-    }))
-    vendorOptions.value = mapped.filter((item) => !!item.value)
-  } catch {
-    vendorOptions.value = []
-  } finally {
-    loadingVendors.value = false
-  }
+    })).filter((item) => !!item.value)
+  } catch { vendorOptions.value = [] } finally { loadingVendors.value = false }
 }
 
-async function searchDepartments(keyword: string) {
+async function loadDepartments() {
   loadingDepartments.value = true
   try {
-    const q = (keyword || '').trim()
-    const where: any[] = []
-    if (q) {
-      where.push({
-        anyOf: [
-          { json: 'name', op: 'contains', value: q },
-          { field: 'department_code', op: 'contains', value: q }
-        ]
-      })
-    }
     const resp = await api.post('/objects/department/search', {
-      where,
-      page: 1,
-      pageSize: q ? 50 : 0,
-      orderBy: [{ field: 'department_code', dir: 'ASC' }]
+      where: [], page: 1, pageSize: 0, orderBy: [{ field: 'department_code', dir: 'ASC' }]
     })
     const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
-    const mapped: OptionItem[] = rows.map((item: any) => ({
+    departmentOptions.value = rows.map((item: any) => ({
       label: `${item.payload?.name || item.name || ''} (${item.department_code || item.payload?.code || ''})`,
       value: item.id || item.department_code || item.payload?.code || ''
-    }))
-    departmentOptions.value = mapped.filter((item) => !!item.value)
-  } catch {
-    departmentOptions.value = []
-  } finally {
-    loadingDepartments.value = false
-  }
+    })).filter((item) => !!item.value)
+  } catch { departmentOptions.value = [] } finally { loadingDepartments.value = false }
 }
 
-async function searchEmployees(keyword: string) {
+async function loadEmployees() {
   loadingEmployees.value = true
   try {
-    const q = (keyword || '').trim()
-    const where: any[] = []
-    if (q) {
-      where.push({
-        anyOf: [
-          { json: 'nameKanji', op: 'contains', value: q },
-          { json: 'nameKana', op: 'contains', value: q },
-          { field: 'employee_code', op: 'contains', value: q }
-        ]
-      })
-    }
     const resp = await api.post('/objects/employee/search', {
-      where,
-      page: 1,
-      pageSize: q ? 50 : 0,
-      orderBy: [{ field: 'employee_code', dir: 'ASC' }]
+      where: [], page: 1, pageSize: 0, orderBy: [{ field: 'employee_code', dir: 'ASC' }]
     })
     const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
-    const mapped: OptionItem[] = rows.map((item: any) => ({
+    employeeOptions.value = rows.map((item: any) => ({
       label: `${item.payload?.nameKanji || item.payload?.name || item.name || ''} (${item.employee_code || item.payload?.code || ''})`,
       value: item.id || item.employee_code || item.payload?.code || ''
-    }))
-    employeeOptions.value = mapped.filter((item) => !!item.value)
-  } catch {
-    employeeOptions.value = []
-  } finally {
-    loadingEmployees.value = false
-  }
+    })).filter((item) => !!item.value)
+  } catch { employeeOptions.value = [] } finally { loadingEmployees.value = false }
 }
 
 function ensureOption(list: typeof customerOptions, value: unknown, cachePrefix?: string) {
@@ -908,50 +803,6 @@ function ensureOption(list: typeof customerOptions, value: unknown, cachePrefix?
 }
 
 // 更新选项的 label（如果当前是 GUID 显示，但缓存中有了正确的标签）
-function updateOptionLabelFromCache(list: typeof customerOptions, value: unknown, cachePrefix: string) {
-  const normalized = (value ?? '').toString().trim()
-  if (!normalized) return
-  const cachedLabel = nameCache.value[`${cachePrefix}:${normalized}`]
-  if (!cachedLabel) return
-  const opt = list.value.find(item => item.value === normalized)
-  // 如果当前 label 是 GUID 或与缓存不同，则更新
-  if (opt && (opt.label === normalized || opt.label !== cachedLabel)) {
-    opt.label = cachedLabel
-  }
-}
-
-function handleCustomerFocus(row: any) {
-  ensureOption(customerOptions, row.customerId, 'cust')
-  updateOptionLabelFromCache(customerOptions, row.customerId, 'cust')
-  if (!customerOptionsPreloaded.value) {
-    searchCustomers('').then(() => { customerOptionsPreloaded.value = true })
-  }
-}
-
-function handleVendorFocus(row: any) {
-  ensureOption(vendorOptions, row.vendorId, 'vend')
-  updateOptionLabelFromCache(vendorOptions, row.vendorId, 'vend')
-  if (!vendorOptionsPreloaded.value) {
-    searchVendors('').then(() => { vendorOptionsPreloaded.value = true })
-  }
-}
-
-function handleDepartmentFocus(row: any) {
-  ensureOption(departmentOptions, row.departmentId, 'dept')
-  updateOptionLabelFromCache(departmentOptions, row.departmentId, 'dept')
-  if (!departmentOptionsPreloaded.value) {
-    searchDepartments('').then(() => { departmentOptionsPreloaded.value = true })
-  }
-}
-
-function handleEmployeeFocus(row: any) {
-  ensureOption(employeeOptions, row.employeeId, 'emp')
-  updateOptionLabelFromCache(employeeOptions, row.employeeId, 'emp')
-  if (!employeeOptionsPreloaded.value) {
-    searchEmployees('').then(() => { employeeOptionsPreloaded.value = true })
-  }
-}
-
 function formatEditableAmount(value: string | number | null | undefined) {
   const num = Number(value)
   if (!Number.isFinite(num)) return ''
@@ -1017,13 +868,8 @@ watch(
       label
     }))
 
-    if (props.editMode && !employeeOptionsPreloaded.value) {
-      await Promise.allSettled([
-        searchEmployees('').then(() => { employeeOptionsPreloaded.value = true }),
-        searchDepartments('').then(() => { departmentOptionsPreloaded.value = true }),
-        searchCustomers('').then(() => { customerOptionsPreloaded.value = true }),
-        searchVendors('').then(() => { vendorOptionsPreloaded.value = true })
-      ])
+    if (props.editMode) {
+      await Promise.allSettled([loadAccounts(), loadEmployees(), loadDepartments(), loadCustomers(), loadVendors()])
     }
   },
   { immediate: true, deep: true }

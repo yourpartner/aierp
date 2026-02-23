@@ -80,7 +80,7 @@
             <el-table-column label="#" width="32" type="index" />
             <el-table-column :label="voucherText.lines.account" min-width="180">
               <template #default="{ row }">
-                <el-select v-model="row.accountCode" filterable remote reserve-keyword :remote-method="searchAccounts" :loading="loadingAccounts" style="width:100%" :placeholder="voucherText.placeholders.account">
+                <el-select v-model="row.accountCode" filterable style="width:100%" :placeholder="voucherText.placeholders.account">
                   <el-option v-for="a in accountOptions" :key="a.value" :label="a.label" :value="a.value" />
                 </el-select>
               </template>
@@ -142,10 +142,6 @@
                   v-model="row.departmentId"
                   :class="{ req: isRequired(row,'departmentId') }"
                   filterable
-                  remote
-                  reserve-keyword
-                  :remote-method="searchDepartments"
-                  :loading="loadingDepartments"
                   style="width:100%"
                   :placeholder="voucherText.placeholders.department"
                   clearable
@@ -161,10 +157,6 @@
                   v-model="row.employeeId"
                   :class="{ req: isRequired(row,'employeeId') }"
                   filterable
-                  remote
-                  reserve-keyword
-                  :remote-method="searchEmployees"
-                  :loading="loadingEmployees"
                   style="width:100%"
                   :placeholder="voucherText.placeholders.employee"
                   clearable
@@ -175,21 +167,21 @@
             </el-table-column>
             <el-table-column :label="voucherText.lines.customer" min-width="180">
               <template #default="{ row }">
-                <el-select v-if="isVisible(row,'customerId')" v-model="row.customerId" :class="{ req: isRequired(row,'customerId') }" filterable remote reserve-keyword :remote-method="searchCustomers" :loading="loadingCustomers" style="width:100%" :placeholder="voucherText.placeholders.customer">
+                <el-select v-if="isVisible(row,'customerId')" v-model="row.customerId" :class="{ req: isRequired(row,'customerId') }" filterable style="width:100%" :placeholder="voucherText.placeholders.customer" clearable>
                   <el-option v-for="c in customerOptions" :key="c.value" :label="c.label" :value="c.value" />
                 </el-select>
               </template>
             </el-table-column>
             <el-table-column :label="voucherText.lines.vendor" min-width="180">
               <template #default="{ row }">
-                <el-select v-if="isVisible(row,'vendorId')" v-model="row.vendorId" :class="{ req: isRequired(row,'vendorId') }" filterable remote reserve-keyword :remote-method="searchVendors" :loading="loadingVendors" style="width:100%" :placeholder="voucherText.placeholders.vendor">
+                <el-select v-if="isVisible(row,'vendorId')" v-model="row.vendorId" :class="{ req: isRequired(row,'vendorId') }" filterable style="width:100%" :placeholder="voucherText.placeholders.vendor" clearable>
                   <el-option v-for="v in vendorOptions" :key="v.value" :label="v.label" :value="v.value" />
                 </el-select>
               </template>
             </el-table-column>
             <el-table-column label="固定資産" min-width="180">
               <template #default="{ row }">
-                <el-select v-if="isAssetAccountSelected(row)" v-model="row.assetId" filterable remote reserve-keyword :remote-method="searchAssets" :loading="loadingAssets" style="width:100%" placeholder="資産を選択" clearable>
+                <el-select v-if="isAssetAccountSelected(row)" v-model="row.assetId" filterable style="width:100%" placeholder="資産を選択" clearable>
                   <el-option v-for="a in assetOptions" :key="a.value" :label="a.label" :value="a.value" />
                 </el-select>
               </template>
@@ -1060,30 +1052,15 @@ async function loadCompanySettings() {
   }
 }
 
-async function searchAccounts(query: string) {
+async function loadAccounts() {
   loadingAccounts.value = true
   try {
-    pendingRequests++
-    const where: any[] = []
-    const q = query?.trim()
-    if (q) {
-      // 使用 anyOf 实现 OR 逻辑：名称包含 OR 科目代码包含
-      where.push({
-        anyOf: [
-          { json: 'name', op: 'contains', value: q },
-          { field: 'account_code', op: 'contains', value: q }
-        ]
-      })
-    }
-    // pageSize: 0 表示不限制，全量返回
-    const dsl = { where, page: 1, pageSize: 0 }
-    const r = await api.post('/objects/account/search', dsl)
+    const r = await api.post('/objects/account/search', { where: [], page: 1, pageSize: 0 })
     const rows = Array.isArray(r.data?.data) ? r.data.data : []
     accountOptions.value = rows.map((x:any) => ({
       label: `${x.payload?.name || ''} (${x.account_code})`,
       value: x.account_code
     }))
-    // 缓存规则: 从返回数据的 payload 读取 openItem/openItemBaseline/fieldRules
     rows.forEach((x:any) => {
       codeToRules.set(x.account_code, {
         openItem: !!x.payload?.openItem,
@@ -1096,104 +1073,59 @@ async function searchAccounts(query: string) {
     accountOptions.value = []
   } finally {
     loadingAccounts.value = false
-    pendingRequests = Math.max(0, pendingRequests - 1)
   }
 }
 
-async function searchCustomers(query: string) {
+async function loadCustomers() {
   loadingCustomers.value = true
   try {
-    pendingRequests++
-    const base = [{ field: 'flag_customer', op: 'eq', value: true }]
-    const where = query?.trim() ? [ ...base, { json: 'name', op: 'contains', value: query } ] : base
-    const r = await api.post('/objects/businesspartner/search', { where, page:1, pageSize: query?.trim() ? 50 : 0 })
-    const rows = Array.isArray(r.data?.data) ? r.data.data : []
-    customerOptions.value = rows.map((x:any) => ({ label: `${x.payload?.name || ''} (${x.partner_code})`, value: x.partner_code }))
-  } catch { customerOptions.value = [] } finally { loadingCustomers.value = false; pendingRequests = Math.max(0, pendingRequests - 1) }
+    const r = await api.post('/objects/businesspartner/search', { where: [{ field: 'flag_customer', op: 'eq', value: true }], page: 1, pageSize: 0 })
+    customerOptions.value = (Array.isArray(r.data?.data) ? r.data.data : []).map((x:any) => ({ label: `${x.payload?.name || ''} (${x.partner_code})`, value: x.partner_code }))
+  } catch { customerOptions.value = [] } finally { loadingCustomers.value = false }
 }
 
-async function searchVendors(query: string) {
+async function loadVendors() {
   loadingVendors.value = true
   try {
-    pendingRequests++
-    const base = [{ field: 'flag_vendor', op: 'eq', value: true }]
-    const where = query?.trim() ? [ ...base, { json: 'name', op: 'contains', value: query } ] : base
-    const r = await api.post('/objects/businesspartner/search', { where, page:1, pageSize: query?.trim() ? 50 : 0 })
-    const rows = Array.isArray(r.data?.data) ? r.data.data : []
-    vendorOptions.value = rows.map((x:any) => ({ label: `${x.payload?.name || ''} (${x.partner_code})`, value: x.partner_code }))
-  } catch { vendorOptions.value = [] } finally { loadingVendors.value = false; pendingRequests = Math.max(0, pendingRequests - 1) }
+    const r = await api.post('/objects/businesspartner/search', { where: [{ field: 'flag_vendor', op: 'eq', value: true }], page: 1, pageSize: 0 })
+    vendorOptions.value = (Array.isArray(r.data?.data) ? r.data.data : []).map((x:any) => ({ label: `${x.payload?.name || ''} (${x.partner_code})`, value: x.partner_code }))
+  } catch { vendorOptions.value = [] } finally { loadingVendors.value = false }
 }
 
-async function searchAssets(query: string) {
+async function loadAssets() {
   loadingAssets.value = true
   try {
-    pendingRequests++
-    let url = '/fixed-assets/assets'
-    if (query?.trim()) {
-      url += `?assetName=${encodeURIComponent(query)}`
-    }
-    const r = await api.get(url)
-    const rows = Array.isArray(r.data) ? r.data : []
-    assetOptions.value = rows.map((x:any) => ({ 
-      label: `${x.asset_no} ${x.asset_name || ''}`, 
-      value: x.id 
-    }))
-  } catch { assetOptions.value = [] } finally { loadingAssets.value = false; pendingRequests = Math.max(0, pendingRequests - 1) }
+    const r = await api.get('/fixed-assets/assets')
+    assetOptions.value = (Array.isArray(r.data) ? r.data : []).map((x:any) => ({ label: `${x.asset_no} ${x.asset_name || ''}`, value: x.id }))
+  } catch { assetOptions.value = [] } finally { loadingAssets.value = false }
 }
 
 function isAssetAccountSelected(row: any): boolean {
-  // 使用和其他字段（vendorId、customerId等）相同的逻辑
   return isVisible(row, 'assetId')
 }
 
-async function searchDepartments(query: string) {
+async function loadDepartments() {
   loadingDepartments.value = true
   try {
-    pendingRequests++
-    const q = (query || '').trim()
-    const where: any[] = []
-    if (q) {
-      where.push({ anyOf: [{ json: 'name', op: 'contains', value: q }, { field: 'department_code', op: 'contains', value: q }] })
-    }
-    const r = await api.post('/objects/department/search', { where, page: 1, pageSize: q ? 50 : 0, orderBy: [{ field: 'department_code', dir: 'ASC' }] })
-    const rows = Array.isArray(r.data?.data) ? r.data.data : []
-    departmentOptions.value = rows.map((x:any) => {
+    const r = await api.post('/objects/department/search', { where: [], page: 1, pageSize: 0, orderBy: [{ field: 'department_code', dir: 'ASC' }] })
+    departmentOptions.value = (Array.isArray(r.data?.data) ? r.data.data : []).map((x:any) => {
       const name = x.payload?.name || x.name || ''
       const code = x.department_code || x.payload?.code || ''
       return { label: `${name} (${code})`, value: x.id || code }
     })
-    return departmentOptions.value
-  } catch {
-    departmentOptions.value = []
-  } finally {
-    loadingDepartments.value = false
-    pendingRequests = Math.max(0, pendingRequests - 1)
-  }
+  } catch { departmentOptions.value = [] } finally { loadingDepartments.value = false }
 }
 
-async function searchEmployees(query: string) {
+async function loadEmployees() {
   loadingEmployees.value = true
   try {
-    pendingRequests++
-    const q = (query || '').trim()
-    const where: any[] = []
-    if (q) {
-      where.push({ anyOf: [{ json: 'nameKanji', op: 'contains', value: q }, { json: 'nameKana', op: 'contains', value: q }, { field: 'employee_code', op: 'contains', value: q }] })
-    }
-    const r = await api.post('/objects/employee/search', { where, page: 1, pageSize: q ? 50 : 0, orderBy: [{ field: 'employee_code', dir: 'ASC' }] })
-    const rows = Array.isArray(r.data?.data) ? r.data.data : []
-    employeeOptions.value = rows.map((x:any) => {
+    const r = await api.post('/objects/employee/search', { where: [], page: 1, pageSize: 0, orderBy: [{ field: 'employee_code', dir: 'ASC' }] })
+    employeeOptions.value = (Array.isArray(r.data?.data) ? r.data.data : []).map((x:any) => {
       const name = x.payload?.nameKanji || x.payload?.name || x.name || ''
       const code = x.employee_code || x.payload?.code || ''
       return { label: `${name} (${code})`, value: x.id || code }
     })
-    return employeeOptions.value
-  } catch {
-    employeeOptions.value = []
-  } finally {
-    loadingEmployees.value = false
-    pendingRequests = Math.max(0, pendingRequests - 1)
-  }
+  } catch { employeeOptions.value = [] } finally { loadingEmployees.value = false }
 }
 
 async function save() {
@@ -1410,7 +1342,7 @@ async function checkPostingPeriod(date: string) {
 
 onMounted(async () => {
   await Promise.all([loadUi(), loadCompanySettings()])
-  await Promise.all([searchDepartments(''), searchEmployees('')])
+  await Promise.all([loadAccounts(), loadDepartments(), loadEmployees(), loadCustomers(), loadVendors(), loadAssets()])
   // 默认日期今天
   const d = new Date()
   const yyyy = d.getFullYear()
