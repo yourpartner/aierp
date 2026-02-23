@@ -1106,7 +1106,7 @@ async function searchCustomers(query: string) {
     pendingRequests++
     const base = [{ field: 'flag_customer', op: 'eq', value: true }]
     const where = query?.trim() ? [ ...base, { json: 'name', op: 'contains', value: query } ] : base
-    const r = await api.post('/objects/businesspartner/search', { where, page:1, pageSize: 50 })
+    const r = await api.post('/objects/businesspartner/search', { where, page:1, pageSize: query?.trim() ? 50 : 0 })
     const rows = Array.isArray(r.data?.data) ? r.data.data : []
     customerOptions.value = rows.map((x:any) => ({ label: `${x.payload?.name || ''} (${x.partner_code})`, value: x.partner_code }))
   } catch { customerOptions.value = [] } finally { loadingCustomers.value = false; pendingRequests = Math.max(0, pendingRequests - 1) }
@@ -1118,7 +1118,7 @@ async function searchVendors(query: string) {
     pendingRequests++
     const base = [{ field: 'flag_vendor', op: 'eq', value: true }]
     const where = query?.trim() ? [ ...base, { json: 'name', op: 'contains', value: query } ] : base
-    const r = await api.post('/objects/businesspartner/search', { where, page:1, pageSize: 50 })
+    const r = await api.post('/objects/businesspartner/search', { where, page:1, pageSize: query?.trim() ? 50 : 0 })
     const rows = Array.isArray(r.data?.data) ? r.data.data : []
     vendorOptions.value = rows.map((x:any) => ({ label: `${x.payload?.name || ''} (${x.partner_code})`, value: x.partner_code }))
   } catch { vendorOptions.value = [] } finally { loadingVendors.value = false; pendingRequests = Math.max(0, pendingRequests - 1) }
@@ -1156,7 +1156,7 @@ async function searchDepartments(query: string) {
       where.push({ json: 'name', op: 'contains', value: q })
       where.push({ field: 'department_code', op: 'contains', value: q })
     }
-    const r = await api.post('/objects/department/search', { where, page: 1, pageSize: 50, orderBy: [{ field: 'department_code', dir: 'ASC' }] })
+    const r = await api.post('/objects/department/search', { where, page: 1, pageSize: q ? 50 : 0, orderBy: [{ field: 'department_code', dir: 'ASC' }] })
     const rows = Array.isArray(r.data?.data) ? r.data.data : []
     departmentOptions.value = rows.map((x:any) => {
       const name = x.payload?.name || x.name || ''
@@ -1183,7 +1183,7 @@ async function searchEmployees(query: string) {
       where.push({ json: 'nameKana', op: 'contains', value: q })
       where.push({ field: 'employee_code', op: 'contains', value: q })
     }
-    const r = await api.post('/objects/employee/search', { where, page: 1, pageSize: 50, orderBy: [{ field: 'employee_code', dir: 'ASC' }] })
+    const r = await api.post('/objects/employee/search', { where, page: 1, pageSize: q ? 50 : 0, orderBy: [{ field: 'employee_code', dir: 'ASC' }] })
     const rows = Array.isArray(r.data?.data) ? r.data.data : []
     employeeOptions.value = rows.map((x:any) => {
       const name = x.payload?.nameKanji || x.payload?.name || x.name || ''

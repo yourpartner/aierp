@@ -791,7 +791,7 @@ async function searchCustomers(keyword: string) {
     const where = keyword?.trim()
       ? [...base, { json: 'name', op: 'contains', value: keyword }]
       : base
-    const resp = await api.post('/objects/businesspartner/search', { where, page: 1, pageSize: 50 })
+    const resp = await api.post('/objects/businesspartner/search', { where, page: 1, pageSize: keyword?.trim() ? 50 : 0 })
     const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
     const mapped: OptionItem[] = rows.map((item: any) => ({
       label: `${item.payload?.name || item.payload?.displayName || ''} (${item.partner_code || item.payload?.code || ''})`,
@@ -812,7 +812,7 @@ async function searchVendors(keyword: string) {
     const where = keyword?.trim()
       ? [...base, { json: 'name', op: 'contains', value: keyword }]
       : base
-    const resp = await api.post('/objects/businesspartner/search', { where, page: 1, pageSize: 50 })
+    const resp = await api.post('/objects/businesspartner/search', { where, page: 1, pageSize: keyword?.trim() ? 50 : 0 })
     const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
     const mapped: OptionItem[] = rows.map((item: any) => ({
       label: `${item.payload?.name || item.payload?.displayName || ''} (${item.partner_code || item.payload?.code || ''})`,
@@ -838,7 +838,7 @@ async function searchDepartments(keyword: string) {
     const resp = await api.post('/objects/department/search', {
       where,
       page: 1,
-      pageSize: 50,
+      pageSize: q ? 50 : 0,
       orderBy: [{ field: 'department_code', dir: 'ASC' }]
     })
     const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
@@ -867,7 +867,7 @@ async function searchEmployees(keyword: string) {
     const resp = await api.post('/objects/employee/search', {
       where,
       page: 1,
-      pageSize: 50,
+      pageSize: q ? 50 : 0,
       orderBy: [{ field: 'employee_code', dir: 'ASC' }]
     })
     const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
