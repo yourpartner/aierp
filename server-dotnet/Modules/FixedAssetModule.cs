@@ -1530,9 +1530,14 @@ public static class FixedAssetModule
             // 償却保証額 = 取得価額 × 保証率
             var guaranteedAmount = Math.Floor(acquisitionCost * guaranteeRate);
             
-            // 从当前时间开始，按事业年度循环
-            var now = DateTime.Now;
-            var startMonth = depreciationStartDate > now ? depreciationStartDate : new DateTime(now.Year, now.Month, 1);
+            // 从最后记账月份的下一个月开始（若无记账月份，则从折旧开始日起）
+            var startMonth = depreciationStartDate;
+            if (postedMonths.Count > 0)
+            {
+                var lastPosted = postedMonths.OrderByDescending(x => x).First();
+                if (DateTime.TryParse(lastPosted + "-01", out var lastDate))
+                    startMonth = lastDate.AddMonths(1);
+            }
             var currentFiscalYear = GetFiscalYear(startMonth, fiscalYearEndMonth);
             
             // 计算最大折旧期限（通常定率法在耐用年数+2年内折完）
@@ -1649,9 +1654,14 @@ public static class FixedAssetModule
             // 计算折旧结束日期（耐用年数 × 12 个月后）
             var depreciationEndDate = depreciationStartDate.AddMonths(usefulLife * 12 - 1);
             
-            // 从当前时间的下一个月开始生成预定（或从折旧开始日开始，取较晚者）
-            var now = DateTime.Now;
-            var startMonth = depreciationStartDate > now ? depreciationStartDate : new DateTime(now.Year, now.Month, 1);
+            // 从最后记账月份的下一个月开始（若无记账月份，则从折旧开始日起）
+            var startMonth = depreciationStartDate;
+            if (postedMonths.Count > 0)
+            {
+                var lastPosted = postedMonths.OrderByDescending(x => x).First();
+                if (DateTime.TryParse(lastPosted + "-01", out var lastDate))
+                    startMonth = lastDate.AddMonths(1);
+            }
             
             // 遍历从startMonth到折旧结束日期的每个月
             var currentMonth = startMonth;
