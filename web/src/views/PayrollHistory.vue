@@ -282,8 +282,7 @@
                     </el-table-column>
                     <el-table-column label="科目名" min-width="100">
                       <template #default="{ row }">
-                        <span v-if="row.needsAccount">{{ row.accountCode ? (accountNameMap[row.accountCode] || '') : row.accountName }}</span>
-                        <span v-else>{{ row.accountName }}</span>
+                        {{ row.accountName || accountNameMap[row.accountCode] || '' }}
                       </template>
                     </el-table-column>
                     <el-table-column prop="drcr" label="借/貸" width="60" align="center" />

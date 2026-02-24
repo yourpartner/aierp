@@ -23,6 +23,8 @@
       
       <!-- 検索条件 -->
       <div class="payroll-filters">
+        <el-date-picker v-model="month" type="month" value-format="YYYY-MM" placeholder="対象月" class="payroll-filters__month" />
+
           <el-select
             v-model="employeeIds"
             multiple
@@ -34,11 +36,16 @@
           :loading="loadingEmployees"
           class="payroll-filters__employee"
           >
-            <el-option v-for="e in employeeOptions" :key="e.value" :label="e.label" :value="e.value" />
+            <el-option v-for="e in employeeOptions" :key="e.value" :label="e.label" :value="e.value">
+              <span class="employee-option">
+                <span>{{ e.label }}</span>
+                <el-tag v-if="e.calculated" size="small" type="success" effect="plain" class="employee-option__tag">済</el-tag>
+                <el-tag v-else size="small" type="info" effect="plain" class="employee-option__tag">未</el-tag>
+              </span>
+            </el-option>
           </el-select>
         <el-button type="primary" text size="small" @click="selectAllEmployees">全選択</el-button>
-        
-        <el-date-picker v-model="month" type="month" value-format="YYYY-MM" placeholder="対象月" class="payroll-filters__month" />
+        <el-button type="warning" text size="small" @click="selectUncalculated">未計算のみ</el-button>
         
         <div class="payroll-filters__switches">
           <el-checkbox v-model="debug">トレース</el-checkbox>
@@ -396,7 +403,8 @@ const employeeIds = ref<string[]>([])
 const employeeOptions = ref<any[]>([])
 const allEmployees = ref<any[]>([])
 const loadingEmployees = ref(false)
-const contractorTypeCodes = ref<Set<string>>(new Set()) // 个人事业主的雇用类型代码/名称集合
+const calculatedEmployeeIds = ref<Set<string>>(new Set())
+const contractorTypeCodes = ref<Set<string>>(new Set())
 const month = ref(new Date().toISOString().slice(0,7))
 const loading = ref(false)
 const saving = ref(false)
@@ -1034,6 +1042,7 @@ async function doSave(overwrite: boolean) {
     if (runResult.value){
       runResult.value.hasExisting = true
     }
+    refreshCalculatedStatus()
   }catch(e:any){
     // 409 冲突：既存データとの競合（通常は saveResults で事前確認済みなのでここには来ない）
     if (e?.response?.status === 409) {
@@ -1091,9 +1100,16 @@ async function loadEmployeesForMonth(){
       })
     })
     allEmployees.value = activeEmployees
+
+    try {
+      const calcResp = await api.get('/payroll/run-entries/calculated-employees', { params: { month: month.value } })
+      calculatedEmployeeIds.value = new Set((calcResp.data || []) as string[])
+    } catch { calculatedEmployeeIds.value = new Set() }
+
     employeeOptions.value = activeEmployees.map(x => ({
       label: `${x.payload?.nameKanji || x.payload?.name || x.name || ''} (${x.employee_code || x.payload?.code || ''})`,
-        value: x.id
+      value: x.id,
+      calculated: calculatedEmployeeIds.value.has(x.id)
     }))
     const validIds = new Set(activeEmployees.map(e => e.id))
     employeeIds.value = employeeIds.value.filter(id => validIds.has(id))
@@ -1106,6 +1122,22 @@ async function loadEmployeesForMonth(){
 
 function selectAllEmployees() {
   employeeIds.value = employeeOptions.value.map(e => e.value)
+}
+
+function selectUncalculated() {
+  employeeIds.value = employeeOptions.value.filter(e => !e.calculated).map(e => e.value)
+}
+
+async function refreshCalculatedStatus() {
+  if (!month.value) return
+  try {
+    const resp = await api.get('/payroll/run-entries/calculated-employees', { params: { month: month.value } })
+    calculatedEmployeeIds.value = new Set((resp.data || []) as string[])
+    employeeOptions.value = employeeOptions.value.map(e => ({
+      ...e,
+      calculated: calculatedEmployeeIds.value.has(e.value)
+    }))
+  } catch {}
 }
 
 watch(month, () => {
@@ -1173,7 +1205,19 @@ onMounted(() => {
 }
 
 .payroll-filters__month {
-  width: 130px;
+  width: 140px;
+}
+
+.employee-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.employee-option__tag {
+  margin-left: 8px;
+  flex-shrink: 0;
 }
 
 .payroll-filters__switches {

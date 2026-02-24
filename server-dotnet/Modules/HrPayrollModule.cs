@@ -2484,6 +2484,33 @@ LIMIT @pageSize OFFSET @offset";
             });
         }).RequireAuthorization();
 
+        // GET /payroll/run-entries/calculated-employees?month=YYYY-MM
+        // Returns the set of employee_id values that already have payroll entries for the given month.
+        app.MapGet("/payroll/run-entries/calculated-employees", async (HttpRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+            var companyCode = cc.ToString();
+            var month = req.Query["month"].ToString();
+            if (string.IsNullOrWhiteSpace(month))
+                return Results.BadRequest(new { error = "month is required" });
+
+            await using var conn = await ds.OpenConnectionAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+SELECT DISTINCT e.employee_id
+FROM payroll_run_entries e
+JOIN payroll_runs r ON e.run_id = r.id
+WHERE r.company_code = @company AND r.period_month = @month";
+            cmd.Parameters.AddWithValue("company", companyCode);
+            cmd.Parameters.AddWithValue("month", month);
+            var ids = new List<string>();
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                ids.Add(reader.GetGuid(0).ToString());
+            return Results.Json(ids);
+        }).RequireAuthorization();
+
         // GET /payroll/run-entries/export
         app.MapGet("/payroll/run-entries/export", async (HttpRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
         {
