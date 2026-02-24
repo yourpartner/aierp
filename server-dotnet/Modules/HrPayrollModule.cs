@@ -4395,9 +4395,9 @@ ORDER BY r.period_month DESC, e.employee_code ASC";
         }).ToArray();
         if (missing.Length > 0)
         {
-            var msg = "会计科目不存在: " + string.Join(",", missing);
+            var msg = "会計科目が存在しません: " + string.Join(",", missing);
             if (debug)
-                throw new PayrollExecutionException(StatusCodes.Status400BadRequest, new { error = msg, missingAccounts = missing, hint = "请在‘会计科目’主数据中维护，或调用 /admin/accounts/seed/payroll 初始化。" }, msg);
+                throw new PayrollExecutionException(StatusCodes.Status400BadRequest, new { error = msg, missingAccounts = missing, hint = "「会計科目」マスタで登録するか、/admin/accounts/seed/payroll で初期化してください。" }, msg);
             throw new PayrollExecutionException(StatusCodes.Status400BadRequest, new { error = msg }, msg);
         }
 
