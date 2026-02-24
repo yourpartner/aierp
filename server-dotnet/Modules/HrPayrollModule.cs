@@ -488,7 +488,7 @@ public static class HrPayrollModule
             {
                 var da2 = rule.TryGetProperty("debitAccount", out var dv2) && dv2.ValueKind == JsonValueKind.String ? dv2.GetString() : null;
                 var ca2 = rule.TryGetProperty("creditAccount", out var cv2) && cv2.ValueKind == JsonValueKind.String ? cv2.GetString() : null;
-                if (!string.IsNullOrWhiteSpace(da2) && !string.IsNullOrWhiteSpace(ca2)) { salaryPayableAccount = da2; break; }
+                if (!string.IsNullOrWhiteSpace(da2) && !string.IsNullOrWhiteSpace(ca2)) { salaryPayableAccount = ca2; break; }
             }
         }
         salaryPayableAccount ??= "315";
