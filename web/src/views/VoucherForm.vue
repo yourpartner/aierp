@@ -5,6 +5,18 @@
         <div class="page-header">
           <div class="page-header-title">{{ voucherText.title }}</div>
           <div class="page-actions">
+            <div class="copy-voucher-group">
+              <el-input
+                v-model="copyVoucherNo"
+                placeholder="既存伝票番号"
+                size="small"
+                style="width: 160px"
+                @keyup.enter="copyFromVoucher"
+              />
+              <el-button size="small" :loading="copyLoading" @click="copyFromVoucher">
+                コピー
+              </el-button>
+            </div>
             <el-tag v-if="savedVoucherNo" type="info" size="large" class="voucher-no-tag">{{ savedVoucherNo }}</el-tag>
             <el-button type="primary" :loading="saving" @click="save">
               {{ savedVoucherId ? (voucherText.actions.update || '更新') : voucherText.actions.save }}
@@ -362,6 +374,8 @@ const saving = ref(false)
 // 首次保存后，记住该凭证 ID/番号；后续保存走更新而不是再次新建（避免重复创建）
 const savedVoucherId = ref('')
 const savedVoucherNo = ref('')
+const copyVoucherNo = ref('')
+const copyLoading = ref(false)
 const message = ref('')
 const error = ref('')
 const saveClicked = ref(false)
@@ -1019,6 +1033,131 @@ function reset() {
   savedVoucherNo.value = ''
 }
 
+async function copyFromVoucher() {
+  const no = (copyVoucherNo.value || '').trim()
+  if (!no) return
+  copyLoading.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    const r = await api.post('/objects/voucher/search', {
+      page: 1,
+      pageSize: 1,
+      where: [{ field: 'voucher_no', op: 'eq', value: no }],
+      orderBy: []
+    })
+    const rows = Array.isArray(r.data?.data) ? r.data.data : []
+    if (rows.length === 0) {
+      error.value = `伝票 ${no} が見つかりません`
+      return
+    }
+    const voucher = rows[0]
+    const payload = voucher.payload || {}
+    const header = payload.header || {}
+    const lines: any[] = Array.isArray(payload.lines) ? payload.lines : []
+
+    // Build tax line map: baseLineNo -> taxLine
+    const taxByBase = new Map<number, any>()
+    const normalLines: any[] = []
+    for (const line of lines) {
+      if (line.isTaxLine) {
+        const base = Number(line.baseLineNo || line.lineNo || 0)
+        if (base > 0) taxByBase.set(base, line)
+      } else {
+        normalLines.push(line)
+      }
+    }
+
+    // Populate header (keep current companyCode and reset voucher-specific fields)
+    model.header.postingDate = header.postingDate || model.header.postingDate
+    model.header.voucherType = header.voucherType || model.header.voucherType
+    model.header.currency = header.currency || model.header.currency
+    model.header.summary = header.summary || ''
+    if (header.invoiceRegistrationNo) {
+      model.header.invoiceRegistrationNo = header.invoiceRegistrationNo
+    }
+
+    // Build code -> option value lookup maps for fields whose dropdown value
+    // may differ from the code stored in the voucher (value=UUID, stored=code).
+    function buildCodeMap(options: {label:string, value:string}[]) {
+      const map = new Map<string, string>()
+      for (const opt of options) {
+        map.set(opt.value, opt.value)
+        const m = opt.label.match(/\(([^)]+)\)\s*$/)
+        if (m) map.set(m[1], opt.value)
+      }
+      return map
+    }
+    function resolveOption(codeOrId: string | null | undefined, map: Map<string, string>): string | null {
+      if (!codeOrId) return null
+      return map.get(codeOrId) || null
+    }
+    const deptMap = buildCodeMap(departmentOptions.value)
+    const empMap = buildCodeMap(employeeOptions.value)
+    const custMap = buildCodeMap(customerOptions.value)
+    const vendMap = buildCodeMap(vendorOptions.value)
+
+    // Reconstruct form lines: merge tax lines back into their parent
+    const formLines: any[] = []
+    for (const line of normalLines) {
+      const lineNo = Number(line.lineNo || 0)
+      const taxLine = lineNo > 0 ? taxByBase.get(lineNo) : undefined
+      const netAmount = Math.abs(Number(line.amount || 0))
+      const taxAmount = taxLine ? Math.abs(Number(taxLine.amount || 0)) : 0
+      const grossAmount = netAmount + taxAmount
+
+      let taxRate = defaultTaxRate
+      if (taxLine) {
+        const rawRate = Number(taxLine.taxRate || 0)
+        // taxRate in DB may be stored as decimal (0.1) or percentage (10)
+        taxRate = rawRate > 0 && rawRate < 1 ? Math.round(rawRate * 100) : (rawRate > 0 ? Math.round(rawRate) : defaultTaxRate)
+      }
+
+      const taxType = taxLine
+        ? (taxLine.taxType || getTaxType(line.accountCode || ''))
+        : getTaxType(line.accountCode || '')
+
+      const formLine: any = {
+        accountCode: line.accountCode || '',
+        drcr: line.drcr || 'DR',
+        amount: netAmount,
+        grossAmount: taxAmount > 0 ? grossAmount : netAmount,
+        taxAmount: taxAmount,
+        taxRate: taxAmount > 0 ? taxRate : defaultTaxRate,
+        taxType: taxType,
+        departmentId: resolveOption(line.departmentId || line.departmentCode, deptMap),
+        employeeId: resolveOption(line.employeeId || line.employeeCode, empMap),
+        customerId: resolveOption(line.customerId || line.customerCode, custMap),
+        vendorId: resolveOption(line.vendorId || line.vendorCode, vendMap),
+        paymentDate: line.paymentDate || '',
+        note: line.note || ''
+      }
+      ensureLineShape(formLine)
+      syncNetAmount(formLine)
+      formLines.push(formLine)
+    }
+
+    if (formLines.length === 0) {
+      error.value = '伝票にコピー可能な明細がありません'
+      return
+    }
+
+    // Replace model lines
+    model.lines.splice(0, model.lines.length, ...formLines)
+    // Reset saved state so the next save creates a new voucher
+    savedVoucherId.value = ''
+    savedVoucherNo.value = ''
+    attachments.value = []
+    saveClicked.value = false
+    message.value = `伝票 ${no} の内容をコピーしました`
+  } catch (e: any) {
+    console.error('copy voucher failed', e)
+    error.value = e?.response?.data?.error || e?.message || 'コピーに失敗しました'
+  } finally {
+    copyLoading.value = false
+  }
+}
+
 async function loadUi() {
   try {
     await api.get('/schemas/voucher')
@@ -1444,6 +1583,13 @@ defineExpose({ applyIntent })
 
 .voucher-header-form :deep(.nowrap-label .el-form-item__label) {
   white-space: nowrap;
+}
+
+.copy-voucher-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 12px;
 }
 
 .voucher-no-tag{
