@@ -2639,6 +2639,34 @@ ORDER BY r.period_month DESC, e.employee_code ASC";
                 row++;
             }
 
+            // 合計行
+            if (rows.Count > 0)
+            {
+                int sumRow = row;
+                col = 1;
+                ws.Cell(sumRow, col).Value = "合計";
+                ws.Cell(sumRow, col).Style.Font.Bold = true;
+                col = 6; // 工資項目列の開始位置（年月,社員コード,社員名,部門コード,部門名 の次）
+                int firstDataRow = 2;
+                int lastDataRow = sumRow - 1;
+                foreach (var _ in allItemCodes)
+                {
+                    var cell = ws.Cell(sumRow, col);
+                    cell.FormulaA1 = $"SUM({ws.Cell(firstDataRow, col).Address}:{ws.Cell(lastDataRow, col).Address})";
+                    cell.Style.NumberFormat.Format = "#,##0";
+                    col++;
+                }
+                // 差引支給額の合計
+                var totalSumCell = ws.Cell(sumRow, col);
+                totalSumCell.FormulaA1 = $"SUM({ws.Cell(firstDataRow, col).Address}:{ws.Cell(lastDataRow, col).Address})";
+                totalSumCell.Style.NumberFormat.Format = "#,##0";
+
+                int lastCol = 5 + allItemCodes.Count + 3; // 年月～計算日時
+                var sumRange = ws.Range(sumRow, 1, sumRow, lastCol);
+                sumRange.Style.Font.Bold = true;
+                sumRange.Style.Fill.BackgroundColor = XLColor.LightGreen;
+            }
+
             ws.Columns().AdjustToContents();
 
             using var ms = new MemoryStream();
