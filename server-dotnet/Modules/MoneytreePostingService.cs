@@ -3859,6 +3859,181 @@ LIMIT 1";
     }
 
     /// <summary>
+    /// 科目確定後の後期清帳：指定された科目コード上の未清項を金額で検索
+    /// 対手方によるマッチが失敗した場合でも、科目が判明していれば当科目の未清項を消込できる
+    /// </summary>
+    private async Task<SmartOpenItemMatchResult?> FindOpenItemsByAccountAndAmountAsync(
+        NpgsqlConnection conn,
+        NpgsqlTransaction? tx,
+        string companyCode,
+        string accountCode,
+        decimal amount,
+        bool isWithdrawal,
+        DateTime transactionDate,
+        SmartCounterpartyResult? counterparty,
+        CancellationToken ct)
+    {
+        var targetDirection = isWithdrawal ? "CR" : "DR";
+
+        _logger.LogInformation("[SmartPosting] Account+Amount open item search: account={Account}, amount={Amount}, direction={Dir}, counterparty={Cp}",
+            accountCode, amount, targetDirection, counterparty != null ? $"{counterparty.Kind}:{counterparty.Id}" : "none");
+
+        // 如果有对手方且是员工，先解析 UUID
+        string? partnerIdForQuery = null;
+        if (counterparty != null)
+        {
+            partnerIdForQuery = counterparty.Id;
+            if (string.Equals(counterparty.Kind, "employee", StringComparison.OrdinalIgnoreCase) && !Guid.TryParse(counterparty.Id, out _))
+            {
+                await using var resolveCmd = conn.CreateCommand();
+                if (tx != null) resolveCmd.Transaction = tx;
+                resolveCmd.CommandText = "SELECT id FROM employees WHERE company_code = $1 AND employee_code = $2 LIMIT 1";
+                resolveCmd.Parameters.AddWithValue(companyCode);
+                resolveCmd.Parameters.AddWithValue(counterparty.Id);
+                var resolvedId = await resolveCmd.ExecuteScalarAsync(ct);
+                if (resolvedId is Guid g)
+                    partnerIdForQuery = g.ToString();
+            }
+        }
+
+        await using var cmd = conn.CreateCommand();
+        if (tx != null) cmd.Transaction = tx;
+
+        // 有对手方时先按 account+partner+amount 搜索，没有则按 account+amount
+        if (!string.IsNullOrWhiteSpace(partnerIdForQuery))
+        {
+            cmd.CommandText = @"
+                WITH oi_with_drcr AS (
+                    SELECT oi.id, oi.account_code, oi.residual_amount, oi.doc_date,
+                           v.voucher_no,
+                           COALESCE((SELECT line->>'drcr' FROM jsonb_array_elements(v.payload->'lines') AS line
+                                     WHERE (line->>'lineNo')::int = oi.voucher_line_no LIMIT 1), 'DR') as drcr
+                    FROM open_items oi
+                    JOIN vouchers v ON v.id = oi.voucher_id AND v.company_code = oi.company_code
+                    WHERE oi.company_code = $1
+                      AND oi.account_code = $2
+                      AND oi.partner_id = $5
+                      AND ABS(oi.residual_amount) > 0.01
+                      AND oi.doc_date <= $4
+                )
+                SELECT id, account_code, residual_amount, doc_date, voucher_no, drcr
+                FROM oi_with_drcr
+                WHERE drcr = $3
+                ORDER BY ABS(ABS(residual_amount) - $6) ASC, doc_date DESC
+                LIMIT 20";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(accountCode);
+            cmd.Parameters.AddWithValue(targetDirection);
+            cmd.Parameters.AddWithValue(transactionDate);
+            cmd.Parameters.AddWithValue(partnerIdForQuery);
+            cmd.Parameters.AddWithValue(amount);
+        }
+        else
+        {
+            cmd.CommandText = @"
+                WITH oi_with_drcr AS (
+                    SELECT oi.id, oi.account_code, oi.residual_amount, oi.doc_date,
+                           v.voucher_no,
+                           COALESCE((SELECT line->>'drcr' FROM jsonb_array_elements(v.payload->'lines') AS line
+                                     WHERE (line->>'lineNo')::int = oi.voucher_line_no LIMIT 1), 'DR') as drcr
+                    FROM open_items oi
+                    JOIN vouchers v ON v.id = oi.voucher_id AND v.company_code = oi.company_code
+                    WHERE oi.company_code = $1
+                      AND oi.account_code = $2
+                      AND ABS(oi.residual_amount) > 0.01
+                      AND oi.doc_date <= $4
+                )
+                SELECT id, account_code, residual_amount, doc_date, voucher_no, drcr
+                FROM oi_with_drcr
+                WHERE drcr = $3
+                  AND ABS(ABS(residual_amount) - $5) < 0.01
+                ORDER BY doc_date DESC
+                LIMIT 10";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(accountCode);
+            cmd.Parameters.AddWithValue(targetDirection);
+            cmd.Parameters.AddWithValue(transactionDate);
+            cmd.Parameters.AddWithValue(amount);
+        }
+
+        var candidates = new List<SmartOpenItemCandidate>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            candidates.Add(new SmartOpenItemCandidate(
+                reader.GetGuid(0),
+                reader.GetString(1),
+                reader.GetDecimal(2),
+                reader.GetDateTime(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.GetString(5)
+            ));
+        }
+
+        if (candidates.Count == 0)
+        {
+            _logger.LogInformation("[SmartPosting] Account+Amount search: no candidates found on account {Account}", accountCode);
+            return null;
+        }
+
+        // 精确金额匹配
+        var exactMatch = candidates.FirstOrDefault(c => Math.Abs(Math.Abs(c.ResidualAmount) - amount) < 0.01m);
+        if (exactMatch != null)
+        {
+            _logger.LogInformation("[SmartPosting] Account+Amount exact match: openItemId={Id}, amount={Amount}, voucher={Voucher}",
+                exactMatch.Id, exactMatch.ResidualAmount, exactMatch.VoucherNo);
+            return new SmartOpenItemMatchResult(
+                new List<SmartOpenItemCandidate> { exactMatch },
+                exactMatch.AccountCode,
+                OpenItemMatchType.Exact,
+                0m
+            );
+        }
+
+        // 组合匹配
+        var combination = FindSmartOpenItemCombination(candidates, amount);
+        if (combination != null && combination.Count > 0)
+        {
+            var comboTotal = combination.Sum(c => Math.Abs(c.ResidualAmount));
+            if (Math.Abs(comboTotal - amount) < 0.01m)
+            {
+                _logger.LogInformation("[SmartPosting] Account+Amount combo match: {Count} items, total={Total}", combination.Count, comboTotal);
+                return new SmartOpenItemMatchResult(
+                    combination,
+                    accountCode,
+                    OpenItemMatchType.Combination,
+                    0m
+                );
+            }
+        }
+
+        // 无对手方时要求唯一匹配
+        if (string.IsNullOrWhiteSpace(partnerIdForQuery) && candidates.Count > 1)
+        {
+            _logger.LogInformation("[SmartPosting] Account+Amount search: {Count} candidates without counterparty, too ambiguous", candidates.Count);
+            return null;
+        }
+
+        // 容差匹配（差异不超过5%且不超过1000）
+        var tolerance = Math.Min(amount * 0.05m, 1000m);
+        var closeMatch = candidates.FirstOrDefault(c => Math.Abs(Math.Abs(c.ResidualAmount) - amount) <= tolerance);
+        if (closeMatch != null)
+        {
+            _logger.LogInformation("[SmartPosting] Account+Amount tolerance match: openItemId={Id}, residual={Residual}, diff={Diff}",
+                closeMatch.Id, closeMatch.ResidualAmount, Math.Abs(closeMatch.ResidualAmount) - amount);
+            return new SmartOpenItemMatchResult(
+                new List<SmartOpenItemCandidate> { closeMatch },
+                closeMatch.AccountCode,
+                OpenItemMatchType.Exact,
+                Math.Abs(Math.Abs(closeMatch.ResidualAmount) - amount)
+            );
+        }
+
+        _logger.LogInformation("[SmartPosting] Account+Amount search: no suitable match on account {Account}", accountCode);
+        return null;
+    }
+
+    /// <summary>
     /// 从银行明细关联的历史凭证中学习科目
     /// </summary>
     private async Task<LearnedAccountInfo?> LearnFromBankLinkedVouchersAsync(
@@ -4229,6 +4404,28 @@ LIMIT 1";
                 confidence = 0.40m; // 兜底科目 → 低置信度，需要用户确认
                 matchSource = "fallback";
                 _logger.LogInformation("[SmartPosting] Using fallback account: {Code} ({Name}), confidence={Confidence}", targetAccountCode, targetAccountName, confidence);
+            }
+        }
+
+        // Step 5: 科目確定済みだが未清帳 → その科目の未清項を検索して清帳を試みる
+        if (targetAccountCode != null && !clearedOpenItem)
+        {
+            _logger.LogInformation("[SmartPosting] Step 5: Attempting late clearing on determined account {Account}", targetAccountCode);
+            openItemMatch = await FindOpenItemsByAccountAndAmountAsync(
+                conn, tx, companyCode, targetAccountCode, amount, isWithdrawal, transactionDate, counterparty, ct);
+            if (openItemMatch == null && feeAmount > 0m)
+            {
+                openItemMatch = await FindOpenItemsByAccountAndAmountAsync(
+                    conn, tx, companyCode, targetAccountCode, totalAmount, isWithdrawal, transactionDate, counterparty, ct);
+                if (openItemMatch != null)
+                    matchedWithTotalAmount = true;
+            }
+            if (openItemMatch != null)
+            {
+                clearedOpenItem = true;
+                confidence = Math.Max(confidence, 0.80m);
+                _logger.LogInformation("[SmartPosting] Late clearing matched: account={Account}, matchedWithTotal={MatchedTotal}",
+                    targetAccountCode, matchedWithTotalAmount);
             }
         }
 
