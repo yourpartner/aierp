@@ -25,6 +25,26 @@ namespace Server.Infrastructure
                 await ensure.ExecuteNonQueryAsync();
             }
 
+            // 防御策略：先检查 vouchers 表中该 yymm 前缀的最大编号，确保序列不落后
+            await using (var sync = conn.CreateCommand())
+            {
+                sync.Transaction = tx;
+                sync.CommandText = @"
+                    UPDATE voucher_sequences
+                    SET last_number = GREATEST(last_number, COALESCE((
+                        SELECT MAX(SUBSTRING(voucher_no FROM 5)::bigint)
+                        FROM vouchers
+                        WHERE company_code = $1
+                          AND voucher_no LIKE $2 || '%'
+                          AND LENGTH(voucher_no) = 10
+                    ), 0)),
+                    updated_at = now()
+                    WHERE company_code = $1 AND yymm = $2";
+                sync.Parameters.AddWithValue(companyCode);
+                sync.Parameters.AddWithValue(yymm);
+                await sync.ExecuteNonQueryAsync();
+            }
+
             // Atomically increment and return
             long next;
             await using (var inc = conn.CreateCommand())
