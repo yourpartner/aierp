@@ -289,9 +289,9 @@ public sealed class IdentifyBankCounterpartyTool : AgentToolBase
 }
 
 /// <summary>
-/// 搜索对手方的未清项（应收/应付），用于银行入出金的清账匹配。
-/// 使用 paymentDate（凭证行的支付日）+ 30天容差来匹配，而非 doc_date。
-/// counterparty_id 支持 UUID 和 employee_code 两种格式（自动解析）。
+/// 搜索未清项（应收/应付），用于银行入出金的清账匹配。
+/// counterparty_id 可选：有则按对手方+金额+日期搜索，无则只按金额+日期搜索。
+/// fee_amount 可选：有则同时用 amount 和 amount+fee_amount 两个金额匹配。
 /// </summary>
 public sealed class SearchBankOpenItemsTool : AgentToolBase
 {
@@ -306,41 +306,50 @@ public sealed class SearchBankOpenItemsTool : AgentToolBase
     public override async Task<AgentKitService.ToolExecutionResult> ExecuteAsync(
         JsonElement args, AgentKitService.AgentExecutionContext context, CancellationToken ct)
     {
-        var counterpartyId = GetString(args, "counterparty_id") ?? GetString(args, "counterpartyId") ?? "";
+        var counterpartyId = GetString(args, "counterparty_id") ?? GetString(args, "counterpartyId");
         var amountVal = GetDecimal(args, "amount");
+        var feeAmountVal = GetDecimal(args, "fee_amount") ?? GetDecimal(args, "feeAmount");
         var transactionType = GetString(args, "transaction_type") ?? GetString(args, "transactionType") ?? "withdrawal";
         var transactionDate = GetString(args, "transaction_date") ?? GetString(args, "transactionDate");
         var companyCode = context.CompanyCode;
 
-        if (string.IsNullOrWhiteSpace(counterpartyId))
-            return ErrorResult(Localize(context.Language, "counterparty_id は必須です", "counterparty_id 为必填项"));
-
         var isWithdrawal = string.Equals(transactionType, "withdrawal", StringComparison.OrdinalIgnoreCase);
         var amount = amountVal ?? 0m;
+        var feeAmount = feeAmountVal ?? 0m;
+        var totalAmount = amount + feeAmount;
         var txDate = DateTime.TryParse(transactionDate, out var pd) ? pd : DateTime.Today;
         var targetDirection = isWithdrawal ? "CR" : "DR";
 
+        if (amount <= 0)
+            return ErrorResult(Localize(context.Language, "amount は必須です（正の数値）", "amount 为必填项（正数）"));
+
         await using var conn = await _ds.OpenConnectionAsync(ct);
 
-        // employee_code → UUID 解析
-        var partnerIdForQuery = counterpartyId;
-        if (!Guid.TryParse(counterpartyId, out _))
+        var hasCounterparty = !string.IsNullOrWhiteSpace(counterpartyId);
+        string? partnerIdForQuery = null;
+
+        if (hasCounterparty)
         {
-            await using var resolveCmd = conn.CreateCommand();
-            resolveCmd.CommandText = "SELECT id FROM employees WHERE company_code = $1 AND employee_code = $2 LIMIT 1";
-            resolveCmd.Parameters.AddWithValue(companyCode);
-            resolveCmd.Parameters.AddWithValue(counterpartyId);
-            var resolved = await resolveCmd.ExecuteScalarAsync(ct);
-            if (resolved is Guid g)
-                partnerIdForQuery = g.ToString();
+            partnerIdForQuery = counterpartyId;
+            if (!Guid.TryParse(counterpartyId, out _))
+            {
+                await using var resolveCmd = conn.CreateCommand();
+                resolveCmd.CommandText = "SELECT id FROM employees WHERE company_code = $1 AND employee_code = $2 LIMIT 1";
+                resolveCmd.Parameters.AddWithValue(companyCode);
+                resolveCmd.Parameters.AddWithValue(counterpartyId!);
+                var resolved = await resolveCmd.ExecuteScalarAsync(ct);
+                if (resolved is Guid g)
+                    partnerIdForQuery = g.ToString();
+            }
         }
 
-        // paymentDate ベースの検索: 凭证行の paymentDate と銀行取引日の差が 30日以内
+        // 构建查询：有对手方 → 按 partner_id 过滤；无对手方 → 仅按金额+日期
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = @"
+        var partnerFilter = hasCounterparty ? "AND oi.partner_id = $6" : "";
+        cmd.CommandText = $@"
 WITH oi_with_detail AS (
     SELECT oi.id, oi.account_code, oi.residual_amount, oi.doc_date, 
-           v.voucher_no,
+           v.voucher_no, oi.partner_id,
            COALESCE((SELECT line->>'drcr' FROM jsonb_array_elements(v.payload->'lines') AS line 
                      WHERE (line->>'lineNo')::int = oi.voucher_line_no LIMIT 1), 'DR') as drcr,
            COALESCE(
@@ -351,32 +360,40 @@ WITH oi_with_detail AS (
     FROM open_items oi
     JOIN vouchers v ON v.id = oi.voucher_id AND v.company_code = oi.company_code
     WHERE oi.company_code = $1
-      AND oi.partner_id = $2
       AND oi.cleared_flag = false
       AND ABS(oi.residual_amount) > 0.01
+      {partnerFilter}
 )
-SELECT id, account_code, residual_amount, doc_date, voucher_no, drcr, effective_date
+SELECT id, account_code, residual_amount, doc_date, voucher_no, drcr, effective_date, partner_id
 FROM oi_with_detail
-WHERE drcr = $3
-  AND ABS(effective_date - $4::date) <= 30
-ORDER BY ABS(ABS(residual_amount) - $5) ASC, ABS(effective_date - $4::date) ASC
+WHERE drcr = $2
+  AND effective_date <= ($3::date + interval '5 day')
+ORDER BY ABS(ABS(residual_amount) - $4) ASC, ABS(effective_date - $3::date) ASC
 LIMIT 20";
-        cmd.Parameters.AddWithValue(companyCode);
-        // partner_id 列是 UUID 类型，必须传 Guid 而非 string，否则 uuid = text 比较会失败
-        if (Guid.TryParse(partnerIdForQuery, out var partnerGuid))
-            cmd.Parameters.AddWithValue(partnerGuid);
-        else
-            cmd.Parameters.AddWithValue(partnerIdForQuery);
-        cmd.Parameters.AddWithValue(targetDirection);
-        cmd.Parameters.AddWithValue(txDate);
-        cmd.Parameters.AddWithValue(amount);
+        cmd.Parameters.AddWithValue(companyCode);       // $1
+        cmd.Parameters.AddWithValue(targetDirection);    // $2
+        cmd.Parameters.AddWithValue(txDate);             // $3
+        cmd.Parameters.AddWithValue(amount);             // $4
+        // $5 unused (reserved for totalAmount in result formatting)
+        if (hasCounterparty)
+        {
+            cmd.Parameters.AddWithValue(DBNull.Value);   // $5 placeholder
+            if (Guid.TryParse(partnerIdForQuery, out var partnerGuid))
+                cmd.Parameters.AddWithValue(partnerGuid);    // $6
+            else
+                cmd.Parameters.AddWithValue(partnerIdForQuery!); // $6
+        }
 
         var items = new List<object>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
             var residual = reader.GetDecimal(2);
-            var diff = amount > 0 ? Math.Abs(Math.Abs(residual) - amount) : 0m;
+            var diffNet = Math.Abs(Math.Abs(residual) - amount);
+            var diffTotal = feeAmount > 0 ? Math.Abs(Math.Abs(residual) - totalAmount) : decimal.MaxValue;
+            var bestDiff = Math.Min(diffNet, diffTotal);
+            var matchedAmount = diffTotal < diffNet ? "total" : "net";
+
             items.Add(new
             {
                 openItemId = reader.GetGuid(0).ToString(),
@@ -386,23 +403,44 @@ LIMIT 20";
                 voucherNo = reader.IsDBNull(4) ? null : reader.GetString(4),
                 direction = reader.GetString(5),
                 effectiveDate = reader.GetDateTime(6).ToString("yyyy-MM-dd"),
-                amountDifference = diff,
-                isExactMatch = diff < 0.01m,
-                isCloseMatch = diff <= Math.Min(amount * 0.05m, 1000m)
+                partnerId = reader.IsDBNull(7) ? null : reader.GetGuid(7).ToString(),
+                amountDifference = bestDiff,
+                matchedAmount,
+                isExactMatch = bestDiff < 0.01m,
+                isCloseMatch = bestDiff <= Math.Min(amount * 0.05m, 1000m),
+                feeIncluded = matchedAmount == "total" && diffTotal < 0.01m
             });
+        }
+
+        // 无对手方时只返回精确匹配或近似匹配（避免歧义）
+        if (!hasCounterparty)
+        {
+            var exactItems = items.Where(i => ((dynamic)i).isExactMatch == true).ToList();
+            if (exactItems.Count > 0) items = exactItems;
+            else items = items.Where(i => ((dynamic)i).isCloseMatch == true).Take(5).ToList();
         }
 
         return SuccessResult(new
         {
             counterpartyId = partnerIdForQuery,
+            hasCounterparty,
             transactionType,
             searchAmount = amount,
-            dateToleranceDays = 30,
+            feeAmount,
+            totalAmount = feeAmount > 0 ? totalAmount : (decimal?)null,
             totalFound = items.Count,
             items,
             hint = items.Count == 0
-                ? Localize(context.Language, "該当する未清項が見つかりませんでした。兜底科目を使用してください。", "未找到匹配的未清项。请使用兜底科目。")
-                : Localize(context.Language, "上記の未清項から最適なものを選んで清账してください。isExactMatch=true の項目を優先してください。", "请从以上未清项中选择最合适的进行清账。优先选择 isExactMatch=true 的项目。")
+                ? Localize(context.Language,
+                    "該当する未清項が見つかりませんでした。search_historical_patterns で過去の記帳パターンを参照するか、適切な科目を選択してください。",
+                    "未找到匹配的未清项。请使用 search_historical_patterns 参照历史记账模式，或自行选择合适科目。")
+                : feeAmount > 0
+                    ? Localize(context.Language,
+                        "上記の未清項から最適なものを選んでください。feeIncluded=true の場合は手数料先方負担（振込金額=未清項金額）、false の場合は手数料当方負担です。",
+                        "请选择最合适的未清项。feeIncluded=true 表示手续费由对方承担，false 表示手续费由我方承担。")
+                    : Localize(context.Language,
+                        "上記の未清項から最適なものを選んで清账してください。isExactMatch=true の項目を優先してください。",
+                        "请选择最合适的未清项进行清账。优先选择 isExactMatch=true 的项目。")
         });
     }
 }
@@ -670,6 +708,7 @@ public sealed class ClearOpenItemTool : AgentToolBase
     {
         var openItemId = GetString(args, "open_item_id") ?? GetString(args, "openItemId") ?? "";
         var voucherNo = GetString(args, "voucher_no") ?? GetString(args, "voucherNo") ?? "";
+        var clearingAmountVal = GetDecimal(args, "clearing_amount") ?? GetDecimal(args, "clearingAmount");
         var companyCode = context.CompanyCode;
 
         if (!Guid.TryParse(openItemId, out var oiGuid))
@@ -680,7 +719,6 @@ public sealed class ClearOpenItemTool : AgentToolBase
 
         await using var conn = await _ds.OpenConnectionAsync(ct);
 
-        // 获取清账凭证的 ID
         Guid? voucherId = null;
         await using var vCmd = conn.CreateCommand();
         vCmd.CommandText = "SELECT id FROM vouchers WHERE company_code = $1 AND voucher_no = $2 LIMIT 1";
@@ -692,30 +730,51 @@ public sealed class ClearOpenItemTool : AgentToolBase
         if (!voucherId.HasValue)
             return ErrorResult(Localize(context.Language, $"伝票 {voucherNo} が見つかりません", $"凭证 {voucherNo} 不存在"));
 
-        // 执行清账
+        // clearing_amount 指定时部分清账，未指定时全额清账
         await using var clearCmd = conn.CreateCommand();
-        clearCmd.CommandText = @"
+        if (clearingAmountVal.HasValue && clearingAmountVal.Value > 0)
+        {
+            var clearAmt = clearingAmountVal.Value;
+            clearCmd.CommandText = @"
 UPDATE open_items 
-SET residual_amount = 0, 
+SET residual_amount = GREATEST(residual_amount - $4, 0),
+    cleared_flag = (residual_amount - $4) <= 0.00001,
+    cleared_at = CASE WHEN (residual_amount - $4) <= 0.00001 THEN now() ELSE cleared_at END,
     cleared_by_voucher_id = $1, 
-    cleared_at = now(), 
     updated_at = now() 
 WHERE id = $2 AND company_code = $3 AND ABS(residual_amount) > 0.01
 RETURNING id, account_code, residual_amount";
-        clearCmd.Parameters.AddWithValue(voucherId.Value);
-        clearCmd.Parameters.AddWithValue(oiGuid);
-        clearCmd.Parameters.AddWithValue(companyCode);
+            clearCmd.Parameters.AddWithValue(voucherId.Value);
+            clearCmd.Parameters.AddWithValue(oiGuid);
+            clearCmd.Parameters.AddWithValue(companyCode);
+            clearCmd.Parameters.AddWithValue(clearAmt);
+        }
+        else
+        {
+            clearCmd.CommandText = @"
+UPDATE open_items 
+SET residual_amount = 0,
+    cleared_flag = true,
+    cleared_at = now(),
+    cleared_by_voucher_id = $1, 
+    updated_at = now() 
+WHERE id = $2 AND company_code = $3 AND ABS(residual_amount) > 0.01
+RETURNING id, account_code, residual_amount";
+            clearCmd.Parameters.AddWithValue(voucherId.Value);
+            clearCmd.Parameters.AddWithValue(oiGuid);
+            clearCmd.Parameters.AddWithValue(companyCode);
+        }
 
         await using var reader = await clearCmd.ExecuteReaderAsync(ct);
         if (await reader.ReadAsync(ct))
         {
             var clearedId = reader.GetGuid(0);
             var accountCode = reader.GetString(1);
+            var newResidual = reader.GetDecimal(2);
 
-            Logger.LogInformation("[ClearOpenItem] Cleared open item {OiId} (account={Account}) with voucher {VoucherNo}", 
-                clearedId, accountCode, voucherNo);
+            Logger.LogInformation("[ClearOpenItem] Cleared open item {OiId} (account={Account}) with voucher {VoucherNo}, newResidual={Residual}", 
+                clearedId, accountCode, voucherNo, newResidual);
 
-            // 更新 moneytree_transactions 的 cleared_open_item_id
             if (!string.IsNullOrWhiteSpace(context.BankTransactionId))
             {
                 await using var updateCmd = conn.CreateCommand();
@@ -725,17 +784,24 @@ SET cleared_open_item_id = $1, updated_at = now()
 WHERE company_code = $2 AND id = $3";
                 updateCmd.Parameters.AddWithValue(clearedId);
                 updateCmd.Parameters.AddWithValue(companyCode);
-                updateCmd.Parameters.AddWithValue(context.BankTransactionId);
+                if (Guid.TryParse(context.BankTransactionId, out var txGuid))
+                    updateCmd.Parameters.AddWithValue(txGuid);
+                else
+                    updateCmd.Parameters.AddWithValue(context.BankTransactionId);
                 await updateCmd.ExecuteNonQueryAsync(ct);
             }
 
             return SuccessResult(new
             {
                 cleared = true,
+                fullCleared = newResidual <= 0.01m,
                 openItemId = clearedId.ToString(),
                 accountCode,
                 voucherNo,
-                message = Localize(context.Language, "未清項を消込しました", "已成功清账")
+                newResidualAmount = newResidual,
+                message = newResidual <= 0.01m
+                    ? Localize(context.Language, "未清項を全額消込しました", "已全额清账")
+                    : Localize(context.Language, $"未清項を一部消込しました（残高: {newResidual:#,0}）", $"已部分清账（余额: {newResidual:#,0}）")
             });
         }
 

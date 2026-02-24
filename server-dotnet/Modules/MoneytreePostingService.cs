@@ -550,64 +550,11 @@ public sealed class MoneytreePostingService
             return (PostingOutcome.Skipped, null, "amount is not positive");
         }
 
-        // ====== 智能处理：对手方识别 → 未清项清账 → 历史学习 → 兜底科目 ======
-        try
-        {
-            var smartResult = await TrySmartProcessAsync(conn, tx, companyCode, row, pairedFee, user, postingRunId, ct);
-            if (smartResult != null && smartResult.VoucherId.HasValue)
-            {
-                // 智能处理成功
-                await UpdateStatusAsync(conn, tx, row.Id, "posted", 
-                    smartResult.ClearedOpenItem ? "智能清账記帳" : "智能記帳",
-                    smartResult.VoucherId, smartResult.VoucherNo, 
-                    null, "SmartPosting", smartResult.ClearedOpenItemId, postingRunId, ct,
-                    confidence: smartResult.Confidence, postingMethod: "SmartPosting");
-                
-                // 如果有配对的手续费，也更新其状态
-                if (pairedFee != null && smartResult.IncludedFee)
-                {
-                    await UpdateStatusAsync(conn, tx, pairedFee.Id, "posted", 
-                        $"智能記帳（主明細に随伴）：{smartResult.VoucherNo}",
-                        smartResult.VoucherId, smartResult.VoucherNo,
-                        null, "SmartPosting", null, postingRunId, ct,
-                        confidence: smartResult.Confidence, postingMethod: "SmartPosting");
-                }
-                
-                var smartVoucherInfo = new PostedVoucherInfo(
-                    row.Id,
-                    smartResult.VoucherId,
-                    smartResult.VoucherNo,
-                    smartResult.TotalAmount,
-                    row.Description,
-                    "SmartPosting",
-                    null
-                );
-                
-                _logger.LogInformation("[MoneytreePosting] Smart processing succeeded for transaction {Id}: voucher={VoucherNo}, cleared={Cleared}, includedFee={IncludedFee}",
-                    row.Id, smartResult.VoucherNo, smartResult.ClearedOpenItem, smartResult.IncludedFee);
-                
-                return (PostingOutcome.Posted, smartVoucherInfo, null);
-            }
-        }
-        catch (PostgresException pgEx)
-        {
-            // PostgreSQL 异常会导致事务中止，必须回滚后重新开始，不能继续在已中止的事务中执行
-            _logger.LogWarning(pgEx, "[MoneytreePosting] Smart processing failed with PostgreSQL error for transaction {Id}, transaction aborted", row.Id);
-            throw; // 重新抛出，让调用者回滚事务
-        }
-        catch (NpgsqlException npgEx)
-        {
-            // Npgsql 异常也可能导致事务中止
-            _logger.LogWarning(npgEx, "[MoneytreePosting] Smart processing failed with Npgsql error for transaction {Id}, transaction may be aborted", row.Id);
-            throw; // 重新抛出，让调用者回滚事务
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "[MoneytreePosting] Smart processing failed for transaction {Id}, will try skill (AgentKit)", row.Id);
-        }
-        // ====== 智能处理失败，标记为需要 skill 处理 ======
-        // Phase 2（skill 处理）由 ProcessSelectedAsync / ProcessAsync 负责
-        return (PostingOutcome.NeedsSkill, null, "smart processing could not handle this transaction");
+        // ====== 全部交给 Skill (AgentKit/LLM) 处理 ======
+        // Skill 拥有完整的工具链：identify_bank_counterparty → search_bank_open_items
+        // → create_voucher → clear_open_item → search_historical_patterns
+        // SmartPosting 已移除，所有记账和清账逻辑统一在 Skill 中实现
+        return (PostingOutcome.NeedsSkill, null, null);
 
         // ====== 以下是旧的 DSL 规则引擎代码，已被 skill 取代 ======
 #if false
@@ -1524,7 +1471,8 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
             {
                 // 对振込类交易，预先在代码中执行取引先识别和未清明细搜索
                 // 避免依赖 AI 调用 identify_bank_counterparty / search_bank_open_items（AI 经常跳过）
-                var preContext = await PreIdentifyCounterpartyAsync(companyCode, row, ct);
+                var feeAmt = pairedFee?.GetPositiveAmount() ?? 0m;
+                var preContext = await PreIdentifyCounterpartyAsync(companyCode, row, feeAmt, ct);
                 var msg = BuildSingleTransactionMessage(row, pairedFee, i + 1, transactions.Count, preContext);
 
                 var request = new AgentKitService.AgentMessageRequest(
@@ -1606,7 +1554,7 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
     /// 匹配逻辑与 IdentifyBankCounterpartyTool 保持一致（全量读取+相似度打分）。
     /// </summary>
     private async Task<PreIdentifyResult?> PreIdentifyCounterpartyAsync(
-        string companyCode, MoneytreeTransactionRow row, CancellationToken ct)
+        string companyCode, MoneytreeTransactionRow row, decimal feeAmount, CancellationToken ct)
     {
         var desc = row.Description?.Trim() ?? "";
         var isWithdrawal = (row.WithdrawalAmount ?? 0m) < 0m;
@@ -1730,14 +1678,17 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
             }
         }
 
-        // 2. 搜索未清明细
+        // 2. 搜索未清明细（有对手方→按partner搜；无对手方→按金额+日期搜）
+        //    同时尝试净额(amount)和总额(amount+fee)两种金额匹配
         List<OpenItemMatch>? openItems = null;
-        if (!string.IsNullOrWhiteSpace(partnerId) && Guid.TryParse(partnerId, out var pGuid))
+        var txDate = row.TransactionDate ?? DateTime.Today;
+        var amount = row.GetPositiveAmount();
+        var totalAmount = amount + feeAmount;
+        var hasPartner = !string.IsNullOrWhiteSpace(partnerId);
         {
-            var txDate = row.TransactionDate ?? DateTime.Today;
-            var amount = row.GetPositiveAmount();
+            var partnerFilter = hasPartner ? "AND oi.partner_id = $5" : "";
             await using var oiCmd = conn.CreateCommand();
-            oiCmd.CommandText = @"
+            oiCmd.CommandText = $@"
 WITH oi_with_detail AS (
     SELECT oi.id, oi.account_code, oi.residual_amount, oi.doc_date,
            v.voucher_no,
@@ -1750,31 +1701,59 @@ WITH oi_with_detail AS (
     FROM open_items oi
     JOIN vouchers v ON v.id = oi.voucher_id AND v.company_code = oi.company_code
     WHERE oi.company_code = $1
-      AND oi.partner_id = $2
       AND oi.cleared_flag = false
       AND ABS(oi.residual_amount) > 0.01
+      {partnerFilter}
 )
 SELECT id, account_code, residual_amount, doc_date::text, voucher_no, effective_date::text
 FROM oi_with_detail
-WHERE ABS(effective_date - $3::date) <= 60
-ORDER BY ABS(residual_amount - $4) ASC, ABS(effective_date - $3::date) ASC
-LIMIT 5";
-            oiCmd.Parameters.AddWithValue(companyCode);
-            oiCmd.Parameters.AddWithValue(partnerId);  // partner_id is text, not uuid
-            oiCmd.Parameters.AddWithValue(txDate);
-            oiCmd.Parameters.AddWithValue(amount);
+WHERE effective_date <= ($2::date + interval '5 day')
+ORDER BY ABS(residual_amount - $3) ASC, ABS(effective_date - $2::date) ASC
+LIMIT 10";
+            oiCmd.Parameters.AddWithValue(companyCode);  // $1
+            oiCmd.Parameters.AddWithValue(txDate);       // $2
+            oiCmd.Parameters.AddWithValue(amount);       // $3
+            // $4 unused
+            if (hasPartner)
+            {
+                oiCmd.Parameters.AddWithValue(DBNull.Value); // $4 placeholder
+                if (Guid.TryParse(partnerId, out var pGuid))
+                    oiCmd.Parameters.AddWithValue(pGuid);        // $5
+                else
+                    oiCmd.Parameters.AddWithValue(partnerId!);   // $5
+            }
 
             openItems = new List<OpenItemMatch>();
             await using var oiReader = await oiCmd.ExecuteReaderAsync(ct);
             while (await oiReader.ReadAsync(ct))
             {
-                openItems.Add(new OpenItemMatch(
-                    oiReader.GetGuid(0).ToString(),
-                    oiReader.IsDBNull(1) ? "" : oiReader.GetString(1),
-                    oiReader.IsDBNull(2) ? 0m : oiReader.GetDecimal(2),
-                    oiReader.IsDBNull(3) ? null : oiReader.GetString(3),
-                    oiReader.IsDBNull(4) ? null : oiReader.GetString(4),
-                    oiReader.IsDBNull(5) ? null : oiReader.GetString(5)));
+                var residual = oiReader.IsDBNull(2) ? 0m : oiReader.GetDecimal(2);
+                var diffNet = Math.Abs(residual - amount);
+                var diffTotal = feeAmount > 0 ? Math.Abs(residual - totalAmount) : decimal.MaxValue;
+                var bestDiff = Math.Min(diffNet, diffTotal);
+                // 只保留近似匹配（5%或1000日元以内）
+                if (bestDiff <= Math.Max(amount * 0.05m, 1000m))
+                {
+                    openItems.Add(new OpenItemMatch(
+                        oiReader.GetGuid(0).ToString(),
+                        oiReader.IsDBNull(1) ? "" : oiReader.GetString(1),
+                        residual,
+                        oiReader.IsDBNull(3) ? null : oiReader.GetString(3),
+                        oiReader.IsDBNull(4) ? null : oiReader.GetString(4),
+                        oiReader.IsDBNull(5) ? null : oiReader.GetString(5)));
+                }
+            }
+
+            // 无对手方时，只保留精确匹配（避免歧义）
+            if (!hasPartner && openItems.Count > 1)
+            {
+                var exact = openItems.Where(oi =>
+                    Math.Abs(oi.ResidualAmount - amount) < 0.01m ||
+                    (feeAmount > 0 && Math.Abs(oi.ResidualAmount - totalAmount) < 0.01m)).ToList();
+                if (exact.Count > 0 && exact.Count <= 3)
+                    openItems = exact;
+                else
+                    openItems.Clear(); // 太多候选 → 放弃，让 LLM 自己搜
             }
         }
 
@@ -2051,14 +2030,22 @@ LIMIT 200";
                 sb.AppendLine("■ 未清項の検索結果:");
                 foreach (var oi in preContext.OpenItems)
                 {
-                    sb.AppendLine($"  - open_item_id={oi.Id}, account={oi.AccountCode}, residual={oi.ResidualAmount}, doc_date={oi.DocDate}, voucher_no={oi.VoucherNo}");
+                    sb.AppendLine($"  - open_item_id={oi.Id}, account={oi.AccountCode}, residual=¥{oi.ResidualAmount:N0}, doc_date={oi.DocDate}, voucher_no={oi.VoucherNo}");
                 }
                 sb.AppendLine();
                 sb.AppendLine("【指示】");
                 sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
                 sb.AppendLine("  2. 上記の未清項から金額がマッチするものを選び、その勘定科目(account)で仕訳を作成してください（create_voucher）。");
+                if (pairedFee != null)
+                {
+                    var feeAmt = pairedFee.GetPositiveAmount();
+                    sb.AppendLine($"     ※ 振込手数料 ¥{feeAmt:N0} があります。");
+                    sb.AppendLine($"     ※ 未清項の残高が取引金額¥{amount:N0}と一致 → 手数料は当方負担（手数料行を追加）");
+                    sb.AppendLine($"     ※ 未清項の残高が取引金額+手数料¥{amount + feeAmt:N0}と一致 → 手数料は先方負担（手数料行を追加 + 未清項は全額消込）");
+                }
                 sb.AppendLine("  3. 仕訳作成後、clear_open_item で該当する未清項を消込してください。");
-                sb.AppendLine($"  ※ 取引先ID: {preContext.CounterpartyId}");
+                if (!string.IsNullOrWhiteSpace(preContext.CounterpartyId))
+                    sb.AppendLine($"  ※ 取引先ID: {preContext.CounterpartyId}");
             }
             else
             {
@@ -2125,7 +2112,8 @@ LIMIT 200";
                 }
             }
             sb.AppendLine();
-            sb.AppendLine("※ identify_bank_counterparty / search_bank_open_items を再度呼ぶ必要はありません（事前調査済み）。");
+            sb.AppendLine("※ 事前調査済みのため、identify_bank_counterparty / search_bank_open_items を再度呼ぶ必要はありません。");
+            sb.AppendLine("※ ただし、事前調査で見つからなかった場合は search_bank_open_items（counterparty_id なし）で再検索してもOKです。");
             sb.AppendLine("※ lookup_account で人名を検索しないでください。");
         }
         else if (isTransfer)

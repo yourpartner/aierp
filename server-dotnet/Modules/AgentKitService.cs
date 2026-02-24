@@ -6840,6 +6840,125 @@ WHERE company_code = $1 AND id = $2";
                         required = new[] { "url" }
                     }
                 }
+            },
+            // === 銀行明細記帳ツール ===
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "identify_bank_counterparty",
+                    description = "銀行取引の摘要から取引先（従業員/仕入先/得意先）を識別する。振込系の摘要に対して名前を抽出し、マスタと照合する。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            description = new { type = "string", description = "銀行明細の摘要テキスト" },
+                            transaction_type = new { type = "string", description = "withdrawal（出金）または deposit（入金）" }
+                        },
+                        required = new[] { "description", "transaction_type" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "search_bank_open_items",
+                    description = "未清項を検索する。counterparty_id があれば取引先+金額+日付で検索、なければ金額+日付のみで検索。fee_amount を指定すると、手数料込み金額でも照合する。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            counterparty_id = new { type = "string", description = "取引先ID（UUID）または従業員コード。省略可。" },
+                            amount = new { type = "number", description = "取引金額（正の数）" },
+                            fee_amount = new { type = "number", description = "銀行手数料（振込手数料など）。指定すると amount+fee_amount でも照合する。省略可。" },
+                            transaction_type = new { type = "string", description = "withdrawal または deposit" },
+                            transaction_date = new { type = "string", description = "取引日（YYYY-MM-DD）" }
+                        },
+                        required = new[] { "amount", "transaction_type", "transaction_date" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "resolve_bank_account",
+                    description = "銀行名・口座番号・名義人から会計上の銀行勘定科目コードを解決する。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            bank_name = new { type = "string", description = "銀行名" },
+                            account_number = new { type = "string", description = "口座番号" },
+                            account_name = new { type = "string", description = "口座名義" }
+                        }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "search_historical_patterns",
+                    description = "類似する銀行取引の過去の記帳パターン（学習済みパターン + 過去の伝票実績）を検索する。未清項が見つからない場合の科目決定に使う。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            description = new { type = "string", description = "銀行明細の摘要テキスト" },
+                            transaction_type = new { type = "string", description = "withdrawal または deposit" }
+                        },
+                        required = new[] { "description" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "clear_open_item",
+                    description = "未清項を消込する。create_voucher で銀行伝票を作成した後に呼ぶ。clearing_amount を省略すると全額消込。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            open_item_id = new { type = "string", description = "消込対象の未清項ID（UUID）" },
+                            voucher_no = new { type = "string", description = "消込に使用する伝票番号（create_voucher の戻り値）" },
+                            clearing_amount = new { type = "number", description = "消込金額。省略時は全額消込。部分消込の場合に指定。" }
+                        },
+                        required = new[] { "open_item_id", "voucher_no" }
+                    }
+                }
+            },
+            new
+            {
+                type = "function",
+                function = new
+                {
+                    name = "skip_transaction",
+                    description = "銀行取引をスキップし、手動確認が必要なものとしてマークする。AI が自動処理できないと判断した場合に使う。",
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            transaction_id = new { type = "string", description = "スキップする取引ID（UUID）" },
+                            reason = new { type = "string", description = "スキップ理由" }
+                        },
+                        required = new[] { "transaction_id", "reason" }
+                    }
+                }
             }
         };
     }
