@@ -46,6 +46,9 @@
           </el-select>
         <el-button type="primary" text size="small" @click="selectAllEmployees">全選択</el-button>
         <el-button type="warning" text size="small" @click="selectUncalculated">未計算のみ</el-button>
+        <span v-if="!loadingEmployees && employeeOptions.length > 0" class="payroll-filters__count">
+          在職 {{ employeeOptions.length }}名<template v-if="totalEmployeeCount > employeeOptions.length"> / 全{{ totalEmployeeCount }}名</template>
+        </span>
         
         <div class="payroll-filters__switches">
           <el-checkbox v-model="debug">トレース</el-checkbox>
@@ -404,6 +407,7 @@ const employeeOptions = ref<any[]>([])
 const allEmployees = ref<any[]>([])
 const loadingEmployees = ref(false)
 const calculatedEmployeeIds = ref<Set<string>>(new Set())
+const totalEmployeeCount = ref(0)
 const contractorTypeCodes = ref<Set<string>>(new Set())
 const month = ref(new Date().toISOString().slice(0,7))
 const loading = ref(false)
@@ -1080,21 +1084,18 @@ async function loadEmployeesForMonth(){
       if (list.length < pageSize) break
       page++
     }
+    totalEmployeeCount.value = all.length
     const targetMonth = month.value
     const monthStart = `${targetMonth}-01`
     const monthEnd = `${targetMonth}-31`
-    // 筛选当月在职的员工，排除个人事業主
-    // 个人事业主走请求书流程，不走工资计算
     const contractorPatterns = ['CONTRACTOR', '個人事業主', '個人事业主', '个人事业主']
     const activeEmployees = all.filter(emp => {
       const contracts = emp.payload?.contracts || []
       if (!contracts.length) return false
-      // 检查是否有覆盖目标月份的非个人事业主契约
       return contracts.some((c: any) => {
         const from = c.periodFrom || '1900-01-01'
         const to = c.periodTo || '9999-12-31'
         const typeCode = (c.employmentTypeCode || '').toString()
-        // 排除个人事业主（可能存储的是代码或名称）
         if (contractorPatterns.some(p => typeCode === p || typeCode.includes(p))) return false
         return from <= monthEnd && to >= monthStart
       })
@@ -1206,6 +1207,12 @@ onMounted(() => {
 
 .payroll-filters__month {
   width: 140px;
+}
+
+.payroll-filters__count {
+  font-size: 12px;
+  color: #909399;
+  white-space: nowrap;
 }
 
 .employee-option {
