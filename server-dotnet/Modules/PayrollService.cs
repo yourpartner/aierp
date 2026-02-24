@@ -398,14 +398,53 @@ public sealed class PayrollService
                 throw new PayrollExecutionException(StatusCodes.Status500InternalServerError, new { error = "給与結果の保存に失敗しました" }, "save_failed");
             }
 
+            var accountNameCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            async Task<string?> LookupAccountNameAsync(string code)
+            {
+                if (string.IsNullOrWhiteSpace(code)) return null;
+                if (accountNameCache.TryGetValue(code, out var cached)) return cached;
+                await using var nq = conn.CreateCommand();
+                nq.Transaction = tx;
+                nq.CommandText = "SELECT name FROM accounts WHERE company_code=$1 AND account_code=$2 LIMIT 1";
+                nq.Parameters.AddWithValue(companyCode); nq.Parameters.AddWithValue(code);
+                var n = (string?)await nq.ExecuteScalarAsync(ct);
+                accountNameCache[code] = n;
+                return n;
+            }
+
             foreach (var entry in request.Entries)
             {
                 var entryId = Guid.NewGuid();
                 voucherLinks.TryGetValue(entry.EmployeeId, out var voucherLink);
 
-                // Use helper methods to safely get JSON strings
-                var payrollSheetJson = entry.GetPayrollSheetJson();
                 var accountingDraftJson = entry.GetAccountingDraftJson();
+                if (!string.IsNullOrWhiteSpace(accountingDraftJson) && accountingDraftJson != "[]")
+                {
+                    var draftNode = JsonNode.Parse(accountingDraftJson);
+                    if (draftNode is JsonArray draftArr)
+                    {
+                        bool modified = false;
+                        foreach (var line in draftArr)
+                        {
+                            if (line is not JsonObject obj) continue;
+                            var code = obj["accountCode"]?.GetValue<string>();
+                            var name = obj["accountName"]?.GetValue<string>();
+                            if (!string.IsNullOrWhiteSpace(code) && string.IsNullOrWhiteSpace(name))
+                            {
+                                var resolved = await LookupAccountNameAsync(code);
+                                if (!string.IsNullOrWhiteSpace(resolved))
+                                {
+                                    obj["accountName"] = resolved;
+                                    modified = true;
+                                }
+                            }
+                        }
+                        if (modified)
+                            accountingDraftJson = draftNode.ToJsonString();
+                    }
+                }
+
+                var payrollSheetJson = entry.GetPayrollSheetJson();
                 var diffSummaryJson = entry.GetDiffSummaryJson();
                 var metadataJson = entry.GetMetadataJson();
                 var traceJson = entry.GetTraceJson();
