@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Text.Json;
@@ -22,6 +23,7 @@ public sealed class MoneytreePostingService
     private readonly FinanceService _financeService;
     private readonly AgentKitService _agentKit;
     private readonly LearningEventCollector _learningCollector;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _configuration;
     private readonly ILogger<MoneytreePostingService> _logger;
     private readonly ConcurrentDictionary<string, BankAccountCacheEntry> _bankAccountCache = new(StringComparer.OrdinalIgnoreCase);
@@ -62,6 +64,7 @@ public sealed class MoneytreePostingService
         FinanceService financeService,
         AgentKitService agentKit,
         LearningEventCollector learningCollector,
+        IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
         ILogger<MoneytreePostingService> logger)
     {
@@ -70,6 +73,7 @@ public sealed class MoneytreePostingService
         _financeService = financeService;
         _agentKit = agentKit;
         _learningCollector = learningCollector;
+        _httpClientFactory = httpClientFactory;
         _configuration = configuration;
         _logger = logger;
     }
@@ -87,11 +91,26 @@ public sealed class MoneytreePostingService
         "KK", "K K", "K.K", "K.K.", "CO", "CO.", "CO.,LTD", "CO., LTD", "CO LTD", "LTD", "LTD.", "LIMITED", "INC", "INC.", "LLC", "GMBH"
     };
 
+    private static string HiraganaToKatakana(string input)
+    {
+        var sb = new System.Text.StringBuilder(input.Length);
+        foreach (var ch in input)
+        {
+            if (ch >= '\u3041' && ch <= '\u3096')
+                sb.Append((char)(ch + 0x60));
+            else
+                sb.Append(ch);
+        }
+        return sb.ToString();
+    }
+
     private static string NormalizePartnerText(string? input)
     {
         if (string.IsNullOrWhiteSpace(input)) return string.Empty;
         // Normalize width/compat chars and upper-case for stable matching
         var s = input.Normalize(NormalizationForm.FormKC).ToUpperInvariant();
+        // 平仮名→片仮名 統一（銀行摘要は常にカタカナ）
+        s = HiraganaToKatakana(s);
         // Replace typical separators with spaces
         s = s.Replace('\u3000', ' ').Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
         foreach (var token in CorporateTokens)
@@ -1890,6 +1909,7 @@ LIMIT 200";
         if (string.IsNullOrWhiteSpace(input)) return string.Empty;
         var s = input.Normalize(System.Text.NormalizationForm.FormKC).ToUpperInvariant()
             .Replace('\u3000', ' ').Replace('\t', ' ');
+        s = HiraganaToKatakana(s);
         s = NormalizeBankKana(s);
         foreach (var t in _preIdCorpTokens) s = s.Replace(t.ToUpperInvariant(), " ");
         foreach (var w in _preIdStopWords) s = s.Replace(w.ToUpperInvariant(), " ");
@@ -3194,45 +3214,51 @@ LIMIT 1";
         bool isWithdrawal,
         CancellationToken ct)
     {
+        // Phase 1: ルールベース照合（高速・無料）
         var extractedName = ExtractCounterpartyNameFromDescription(row.Description);
-        if (string.IsNullOrWhiteSpace(extractedName))
+        if (!string.IsNullOrWhiteSpace(extractedName))
         {
-            _logger.LogInformation("[SmartPosting] No counterparty name extracted from description: {Desc}", row.Description);
-            return null;
-        }
+            _logger.LogInformation("[SmartPosting] Identifying counterparty: extractedName={Name}, isWithdrawal={IsWithdrawal}", 
+                extractedName, isWithdrawal);
 
-        _logger.LogInformation("[SmartPosting] Identifying counterparty: extractedName={Name}, isWithdrawal={IsWithdrawal}", 
-            extractedName, isWithdrawal);
-
-        if (isWithdrawal)
-        {
-            // 出金：员工 → 供应商 → 未识别
-            var employee = await MatchEmployeeByNameAsync(conn, companyCode, extractedName, row, ct);
-            if (employee.HasValue)
+            if (isWithdrawal)
             {
-                _logger.LogInformation("[SmartPosting] Matched employee: {Code} ({Name})", employee.Value.Id, employee.Value.Name);
-                return new SmartCounterpartyResult("employee", employee.Value.Id, employee.Value.Name, "debit");
+                var employee = await MatchEmployeeByNameAsync(conn, companyCode, extractedName, row, ct);
+                if (employee.HasValue)
+                {
+                    _logger.LogInformation("[SmartPosting] Rule-based matched employee: {Code} ({Name})", employee.Value.Id, employee.Value.Name);
+                    return new SmartCounterpartyResult("employee", employee.Value.Id, employee.Value.Name, "debit");
+                }
+
+                var vendor = await MatchBusinessPartnerByNameAsync(conn, companyCode, "vendor", extractedName, ct);
+                if (vendor.HasValue)
+                {
+                    _logger.LogInformation("[SmartPosting] Rule-based matched vendor: {Code} ({Name})", vendor.Value.Id, vendor.Value.Name);
+                    return new SmartCounterpartyResult("vendor", vendor.Value.Id, vendor.Value.Name, "debit");
+                }
+            }
+            else
+            {
+                var customer = await MatchBusinessPartnerByNameAsync(conn, companyCode, "customer", extractedName, ct);
+                if (customer.HasValue)
+                {
+                    _logger.LogInformation("[SmartPosting] Rule-based matched customer: {Code} ({Name})", customer.Value.Id, customer.Value.Name);
+                    return new SmartCounterpartyResult("customer", customer.Value.Id, customer.Value.Name, "credit");
+                }
             }
 
-            var vendor = await MatchBusinessPartnerByNameAsync(conn, companyCode, "vendor", extractedName, ct);
-            if (vendor.HasValue)
-            {
-                _logger.LogInformation("[SmartPosting] Matched vendor: {Code} ({Name})", vendor.Value.Id, vendor.Value.Name);
-                return new SmartCounterpartyResult("vendor", vendor.Value.Id, vendor.Value.Name, "debit");
-            }
+            _logger.LogInformation("[SmartPosting] Rule-based matching failed for: {Name}, falling back to LLM", extractedName);
         }
         else
         {
-            // 入金：客户 → 未识别
-            var customer = await MatchBusinessPartnerByNameAsync(conn, companyCode, "customer", extractedName, ct);
-            if (customer.HasValue)
-            {
-                _logger.LogInformation("[SmartPosting] Matched customer: {Code} ({Name})", customer.Value.Id, customer.Value.Name);
-                return new SmartCounterpartyResult("customer", customer.Value.Id, customer.Value.Name, "credit");
-            }
+            _logger.LogInformation("[SmartPosting] No counterparty name extracted from description: {Desc}, trying LLM directly", row.Description);
         }
 
-        _logger.LogInformation("[SmartPosting] No counterparty matched for: {Name}", extractedName);
+        // Phase 2: LLM フォールバック（ルールベースで特定できなかった場合）
+        var llmResult = await IdentifyCounterpartyWithLlmAsync(conn, companyCode, row, isWithdrawal, ct);
+        if (llmResult != null)
+            return llmResult;
+
         return null;
     }
 
@@ -3275,7 +3301,7 @@ LIMIT 1";
             var name = root.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : nameKanji;
             var nameKana = root.TryGetProperty("nameKana", out var nkn) && nkn.ValueKind == JsonValueKind.String ? nkn.GetString() : null;
 
-            // 计算匹配分数 - 优先使用片假名匹配
+            // 计算匹配分数 - 优先使用片假名匹配（NormalizePartnerText 已统一为カタカナ）
             double score = 0;
             if (!string.IsNullOrWhiteSpace(nameKana))
             {
@@ -3285,6 +3311,20 @@ LIMIT 1";
                 else if (normalizedSearch.Contains(normalizedKana, StringComparison.OrdinalIgnoreCase) ||
                          normalizedKana.Contains(normalizedSearch, StringComparison.OrdinalIgnoreCase))
                     score = 0.9;
+                // 去掉空格再比较（銀行摘要可能無空格 "ヤマダタロウ" vs 社員 "ヤマダ タロウ"）
+                if (score < 0.9)
+                {
+                    var searchNoSpace = normalizedSearch.Replace(" ", "");
+                    var kanaNoSpace = normalizedKana.Replace(" ", "");
+                    if (searchNoSpace.Length > 0 && kanaNoSpace.Length > 0)
+                    {
+                        if (string.Equals(searchNoSpace, kanaNoSpace, StringComparison.OrdinalIgnoreCase))
+                            score = Math.Max(score, 0.98);
+                        else if (searchNoSpace.Contains(kanaNoSpace, StringComparison.OrdinalIgnoreCase) ||
+                                 kanaNoSpace.Contains(searchNoSpace, StringComparison.OrdinalIgnoreCase))
+                            score = Math.Max(score, 0.88);
+                    }
+                }
             }
             if (score < 0.5 && !string.IsNullOrWhiteSpace(name))
             {
@@ -3378,6 +3418,171 @@ LIMIT 1";
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// LLM による取引先マッチング。
+    /// 全従業員・全取引先の名前リストを LLM に渡し、銀行摘要と照合させる。
+    /// ルールベース照合の後、フォールバックとして使用。
+    /// </summary>
+    private async Task<SmartCounterpartyResult?> IdentifyCounterpartyWithLlmAsync(
+        NpgsqlConnection conn,
+        string companyCode,
+        MoneytreeTransactionRow row,
+        bool isWithdrawal,
+        CancellationToken ct)
+    {
+        var apiKey = _configuration["OpenAI:ApiKey"]
+                  ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            _logger.LogDebug("[SmartPosting] LLM counterparty matching skipped: no API key");
+            return null;
+        }
+
+        var description = row.Description?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(description)) return null;
+
+        var referenceDate = (row.TransactionDate ?? row.ImportedAt.UtcDateTime).Date;
+        var sb = new StringBuilder();
+
+        // 收集员工列表
+        if (isWithdrawal)
+        {
+            await using var empCmd = conn.CreateCommand();
+            empCmd.CommandText = "SELECT employee_code, payload FROM employees WHERE company_code = $1 ORDER BY updated_at DESC LIMIT 100";
+            empCmd.Parameters.AddWithValue(companyCode);
+            sb.AppendLine("[従業員]");
+            await using var empReader = await empCmd.ExecuteReaderAsync(ct);
+            while (await empReader.ReadAsync(ct))
+            {
+                var code = empReader.GetString(0);
+                using var doc = JsonDocument.Parse(empReader.GetString(1));
+                var root = doc.RootElement;
+                if (!EmploymentMatches(root, null, true, referenceDate)) continue;
+                var nameKanji = root.TryGetProperty("nameKanji", out var nk) && nk.ValueKind == JsonValueKind.String ? nk.GetString() : null;
+                var name = root.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : nameKanji;
+                var nameKana = root.TryGetProperty("nameKana", out var nkn) && nkn.ValueKind == JsonValueKind.String ? nkn.GetString() : null;
+                var display = name ?? "";
+                if (!string.IsNullOrWhiteSpace(nameKana)) display += $" ({nameKana})";
+                sb.AppendLine($"  employee:{code} {display}");
+            }
+        }
+
+        // 収集取引先列表
+        {
+            var partnerType = isWithdrawal ? "isVendor" : "isCustomer";
+            var label = isWithdrawal ? "仕入先" : "得意先";
+            await using var bpCmd = conn.CreateCommand();
+            bpCmd.CommandText = $@"SELECT payload->>'code', payload FROM businesspartners 
+                WHERE company_code = $1 AND (payload->>'{partnerType}')::boolean = true
+                ORDER BY updated_at DESC LIMIT 200";
+            bpCmd.Parameters.AddWithValue(companyCode);
+            sb.AppendLine($"[{label}]");
+            await using var bpReader = await bpCmd.ExecuteReaderAsync(ct);
+            while (await bpReader.ReadAsync(ct))
+            {
+                var code = bpReader.IsDBNull(0) ? null : bpReader.GetString(0);
+                if (string.IsNullOrWhiteSpace(code)) continue;
+                using var doc = JsonDocument.Parse(bpReader.GetString(1));
+                var root = doc.RootElement;
+                var name = root.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null;
+                var nameKana = root.TryGetProperty("nameKana", out var nk) && nk.ValueKind == JsonValueKind.String ? nk.GetString() : null;
+                var kind = isWithdrawal ? "vendor" : "customer";
+                var display = name ?? code;
+                if (!string.IsNullOrWhiteSpace(nameKana)) display += $" ({nameKana})";
+                sb.AppendLine($"  {kind}:{code} {display}");
+            }
+        }
+
+        var candidateList = sb.ToString().Trim();
+        if (string.IsNullOrWhiteSpace(candidateList))
+        {
+            _logger.LogInformation("[SmartPosting] LLM matching skipped: no candidates");
+            return null;
+        }
+
+        var systemPrompt = @"あなたは銀行取引の摘要から取引先を特定するアシスタントです。
+銀行摘要テキストと取引先候補リストが与えられます。
+摘要に含まれる名前（カタカナ・ひらがな・漢字・半角カナ）を候補リストと照合し、最も一致する取引先を1件だけ特定してください。
+
+回答はJSON形式のみ:
+- マッチあり: {""kind"":""employee""|""vendor""|""customer"", ""code"":""コード"", ""name"":""名前""}
+- マッチなし: {""kind"":null}
+
+注意:
+- 半角カナ(ﾔﾏﾀﾞ)=全角カナ(ヤマダ)=ひらがな(やまだ) として照合
+- (カ)=株式会社, (ユ)=有限会社 などの略称も考慮
+- 確信が持てない場合は kind:null を返す";
+
+        var userMessage = $"銀行摘要: {description}\n方向: {(isWithdrawal ? "出金（振込）" : "入金")}\n\n候補リスト:\n{candidateList}";
+
+        _logger.LogInformation("[SmartPosting] LLM counterparty matching: desc={Desc}, candidates={Count}chars",
+            description, candidateList.Length);
+
+        try
+        {
+            var client = _httpClientFactory.CreateClient();
+            var messages = new object[]
+            {
+                new { role = "system", content = systemPrompt },
+                new { role = "user", content = userMessage }
+            };
+
+            var requestBody = new
+            {
+                model = "gpt-4o-mini",
+                messages,
+                temperature = 0.0,
+                max_tokens = 200,
+                response_format = new { type = "json_object" }
+            };
+
+            client.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
+            var response = await client.PostAsJsonAsync("https://api.openai.com/v1/chat/completions", requestBody, ct);
+            var responseText = await response.Content.ReadAsStringAsync(ct);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("[SmartPosting] LLM API error: {Status} {Body}", response.StatusCode, responseText);
+                return null;
+            }
+
+            using var respDoc = JsonDocument.Parse(responseText);
+            var content = respDoc.RootElement
+                .GetProperty("choices")[0]
+                .GetProperty("message")
+                .GetProperty("content")
+                .GetString() ?? "";
+
+            using var resultDoc = JsonDocument.Parse(content);
+            var result = resultDoc.RootElement;
+
+            if (!result.TryGetProperty("kind", out var kindEl) || kindEl.ValueKind == JsonValueKind.Null)
+            {
+                _logger.LogInformation("[SmartPosting] LLM: no match found");
+                return null;
+            }
+
+            var kind = kindEl.GetString();
+            var code = result.TryGetProperty("code", out var codeEl) ? codeEl.GetString() : null;
+            var matchedName = result.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null;
+
+            if (string.IsNullOrWhiteSpace(kind) || string.IsNullOrWhiteSpace(code))
+                return null;
+
+            // employee の場合、code は employee_code。open_items の partner_id は UUID なので解決が必要。
+            // IdentifyCounterpartySmartAsync → FindOpenItemsForCounterpartyAsync 内で自動解決される。
+            var assignLine = isWithdrawal ? "debit" : "credit";
+            _logger.LogInformation("[SmartPosting] LLM matched: kind={Kind}, code={Code}, name={Name}",
+                kind, code, matchedName);
+            return new SmartCounterpartyResult(kind, code, matchedName, assignLine);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[SmartPosting] LLM counterparty matching failed");
+            return null;
+        }
     }
 
     /// <summary>
@@ -3550,6 +3755,106 @@ LIMIT 1";
         if (Math.Abs(remaining) < 0.01m && result.Count > 0)
             return result;
 
+        return null;
+    }
+
+    /// <summary>
+    /// 対手方を特定できない場合、金額のみで未清項を検索（精確一致・唯一候補のみ）
+    /// </summary>
+    private async Task<SmartOpenItemMatchResult?> FindOpenItemsByAmountOnlyAsync(
+        NpgsqlConnection conn,
+        NpgsqlTransaction? tx,
+        string companyCode,
+        decimal amount,
+        bool isWithdrawal,
+        DateTime transactionDate,
+        CancellationToken ct)
+    {
+        var targetDirection = isWithdrawal ? "CR" : "DR";
+
+        _logger.LogInformation("[SmartPosting] Amount-only open item search: amount={Amount}, direction={Dir}", amount, targetDirection);
+
+        await using var cmd = conn.CreateCommand();
+        if (tx != null) cmd.Transaction = tx;
+        cmd.CommandText = @"
+            WITH oi_with_drcr AS (
+                SELECT oi.id, oi.account_code, oi.residual_amount, oi.doc_date,
+                       v.voucher_no,
+                       COALESCE((SELECT line->>'drcr' FROM jsonb_array_elements(v.payload->'lines') AS line
+                                 WHERE (line->>'lineNo')::int = oi.voucher_line_no LIMIT 1), 'DR') as drcr
+                FROM open_items oi
+                JOIN vouchers v ON v.id = oi.voucher_id AND v.company_code = oi.company_code
+                WHERE oi.company_code = $1
+                  AND ABS(oi.residual_amount) > 0.01
+                  AND oi.doc_date <= $3
+            )
+            SELECT id, account_code, residual_amount, doc_date, voucher_no, drcr
+            FROM oi_with_drcr
+            WHERE drcr = $2
+              AND ABS(ABS(residual_amount) - $4) < 0.01
+            ORDER BY doc_date DESC
+            LIMIT 10";
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue(targetDirection);
+        cmd.Parameters.AddWithValue(transactionDate);
+        cmd.Parameters.AddWithValue(amount);
+
+        var candidates = new List<SmartOpenItemCandidate>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            candidates.Add(new SmartOpenItemCandidate(
+                reader.GetGuid(0),
+                reader.GetString(1),
+                reader.GetDecimal(2),
+                reader.GetDateTime(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.GetString(5)
+            ));
+        }
+
+        if (candidates.Count == 0)
+        {
+            _logger.LogInformation("[SmartPosting] Amount-only search: no candidates found");
+            return null;
+        }
+
+        // 安全策略：只有唯一精确匹配才使用（避免误清账）
+        if (candidates.Count == 1)
+        {
+            var item = candidates[0];
+            _logger.LogInformation("[SmartPosting] Amount-only unique match: openItemId={Id}, account={Account}, amount={Amount}, voucher={Voucher}",
+                item.Id, item.AccountCode, item.ResidualAmount, item.VoucherNo);
+            return new SmartOpenItemMatchResult(
+                new List<SmartOpenItemCandidate> { item },
+                item.AccountCode,
+                OpenItemMatchType.Exact,
+                0m
+            );
+        }
+
+        // 多个候选：按科目分组，如果所有候选都是同一科目且组合匹配，也可使用
+        var groups = candidates.GroupBy(c => c.AccountCode).ToList();
+        if (groups.Count == 1)
+        {
+            var combo = FindSmartOpenItemCombination(groups[0].ToList(), amount);
+            if (combo != null && combo.Count > 0)
+            {
+                var comboTotal = combo.Sum(c => Math.Abs(c.ResidualAmount));
+                if (Math.Abs(comboTotal - amount) < 0.01m)
+                {
+                    _logger.LogInformation("[SmartPosting] Amount-only combo match: {Count} items, account={Account}", combo.Count, groups[0].Key);
+                    return new SmartOpenItemMatchResult(
+                        combo,
+                        groups[0].Key,
+                        OpenItemMatchType.Combination,
+                        0m
+                    );
+                }
+            }
+        }
+
+        _logger.LogInformation("[SmartPosting] Amount-only search: {Count} candidates across {Groups} accounts, too ambiguous", candidates.Count, groups.Count);
         return null;
     }
 
@@ -3837,27 +4142,59 @@ LIMIT 1";
         string? targetAccountName = null;
         SmartOpenItemMatchResult? openItemMatch = null;
         bool clearedOpenItem = false;
+        bool matchedWithTotalAmount = false;
 
         // 置信度追踪
         decimal confidence = 0m;
         string matchSource = "none";
 
-        // Step 2: 如果识别到对手方，查找未清项
+        // Step 2: 如果识别到对手方，查找未清项（先尝试主金额，再尝试含手续费总金额）
         if (counterparty != null)
         {
             openItemMatch = await FindOpenItemsForCounterpartyAsync(
                 conn, tx, companyCode, counterparty, amount, isWithdrawal, transactionDate, ct);
             
+            if (openItemMatch == null && feeAmount > 0m)
+            {
+                openItemMatch = await FindOpenItemsForCounterpartyAsync(
+                    conn, tx, companyCode, counterparty, totalAmount, isWithdrawal, transactionDate, ct);
+                if (openItemMatch != null)
+                    matchedWithTotalAmount = true;
+            }
+
             if (openItemMatch != null)
             {
-                // 使用未清项的科目
                 targetAccountCode = openItemMatch.AccountCode;
                 targetAccountName = await GetAccountNameAsync(conn, companyCode, targetAccountCode, ct);
                 clearedOpenItem = true;
-                confidence = 0.95m; // 未清项金额匹配 → 最高置信度
+                confidence = 0.95m;
                 matchSource = "open_item";
-                _logger.LogInformation("[SmartPosting] Will clear open item(s): account={Account}, matchType={Type}",
-                    targetAccountCode, openItemMatch.MatchType);
+                _logger.LogInformation("[SmartPosting] Will clear open item(s): account={Account}, matchType={Type}, matchedWithTotal={MatchedTotal}",
+                    targetAccountCode, openItemMatch.MatchType, matchedWithTotalAmount);
+            }
+        }
+
+        // Step 2b: 对手方未识别或未匹配 → 按金额精确匹配未清项（无对手方条件，仅唯一匹配）
+        if (openItemMatch == null)
+        {
+            openItemMatch = await FindOpenItemsByAmountOnlyAsync(
+                conn, tx, companyCode, amount, isWithdrawal, transactionDate, ct);
+            if (openItemMatch == null && feeAmount > 0m)
+            {
+                openItemMatch = await FindOpenItemsByAmountOnlyAsync(
+                    conn, tx, companyCode, totalAmount, isWithdrawal, transactionDate, ct);
+                if (openItemMatch != null)
+                    matchedWithTotalAmount = true;
+            }
+            if (openItemMatch != null)
+            {
+                targetAccountCode = openItemMatch.AccountCode;
+                targetAccountName = await GetAccountNameAsync(conn, companyCode, targetAccountCode, ct);
+                clearedOpenItem = true;
+                confidence = 0.80m;
+                matchSource = "open_item_amount";
+                _logger.LogInformation("[SmartPosting] Matched open item by amount only: account={Account}, matchedWithTotal={MatchedTotal}",
+                    targetAccountCode, matchedWithTotalAmount);
             }
         }
 
@@ -3968,13 +4305,14 @@ LIMIT 1";
         // 确定清账行方向：出金时借方是清账行，入金时贷方是清账行
         var clearingTargetLine = clearedOpenItem ? (isWithdrawal ? "debit" : "credit") : null;
 
-        // 借方行
+        // 借方行（先方負担で総額マッチの場合、手数料込みの総額を使用）
+        var debitAmount = matchedWithTotalAmount ? totalAmount : amount;
         var debitLine = new JsonObject
         {
             ["lineNo"] = lineNo++,
             ["accountCode"] = debitAccount,
             ["drcr"] = "DR",
-            ["amount"] = amount,
+            ["amount"] = debitAmount,
             ["note"] = row.Description ?? ""
         };
         if (!string.IsNullOrWhiteSpace(debitMeta.CustomerId))
@@ -3993,8 +4331,8 @@ LIMIT 1";
         linesArray.Add(debitLine);
 
         // 如果有配对的手续费且是出金，添加手续费明细行
-        // 注意：手续费只应该出现在出金（付款）场景，入金不应有手续费
-        if (feeAmount > 0m && isWithdrawal)
+        // 注意：matchedWithTotalAmount 时手续费由先方負担，不需要手续费明细行
+        if (feeAmount > 0m && isWithdrawal && !matchedWithTotalAmount)
         {
             // 获取手续费科目和消费税科目
             var bankFeeAccountCode = await GetBankFeeAccountCodeAsync(conn, companyCode, ct);
@@ -4033,6 +4371,13 @@ LIMIT 1";
             
             // 更新摘要以包含手续费信息
             summary += $" (手数料 {feeAmount:#,0})";
+        }
+
+        // 先方負担の場合のサマリ補足
+        if (matchedWithTotalAmount && feeAmount > 0m)
+        {
+            summary += $" (手数料先方負担 {feeAmount:#,0})";
+            _logger.LogInformation("[SmartPosting] Fee borne by payee: fee={Fee}, debitAmount={DebitAmt}(=totalAmount)", feeAmount, debitAmount);
         }
 
         // 贷方行
@@ -4100,13 +4445,12 @@ LIMIT 1";
         {
             try
             {
-                // 计算实际清账金额（使用付款金额，而非未清项全额）
-                var totalClearingAmount = amount;
+                // 清账金额：先方負担（matchedWithTotalAmount）时使用总金额，否则使用主金额
+                var clearingBaseAmount = matchedWithTotalAmount ? totalAmount : amount;
                 
                 if (openItemMatch.Items.Count == 1)
                 {
-                    // 单个未清项：使用实际付款金额（可能小于未清项金额，差额为手续费）
-                    var clearingAmount = Math.Min(amount, Math.Abs(openItemMatch.Items[0].ResidualAmount));
+                    var clearingAmount = Math.Min(clearingBaseAmount, Math.Abs(openItemMatch.Items[0].ResidualAmount));
                     var entries = new List<OpenItemReservationEntry> { new OpenItemReservationEntry(openItemMatch.Items[0].Id, clearingAmount) };
                     var reservation = new OpenItemReservation(entries, clearingAmount);
                     clearedOpenItemId = await ApplyOpenItemClearingAsync(conn, tx, reservation, ct);
@@ -4114,7 +4458,7 @@ LIMIT 1";
                 else
                 {
                     // 多个未清项：按 FIFO 顺序分配付款金额
-                    var remainingAmount = amount;
+                    var remainingAmount = clearingBaseAmount;
                     var entries = new List<OpenItemReservationEntry>();
                     foreach (var item in openItemMatch.Items)
                     {
