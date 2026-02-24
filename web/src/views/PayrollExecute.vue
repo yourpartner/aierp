@@ -23,35 +23,38 @@
       
       <!-- 検索条件 -->
       <div class="payroll-filters">
-        <el-date-picker v-model="month" type="month" value-format="YYYY-MM" placeholder="対象月" class="payroll-filters__month" />
-
-          <el-select
-            v-model="employeeIds"
-            multiple
-            filterable
-            reserve-keyword
-          placeholder="社員を選択"
-            collapse-tags
-          collapse-tags-tooltip
-          :loading="loadingEmployees"
-          class="payroll-filters__employee"
-          >
-            <el-option v-for="e in employeeOptions" :key="e.value" :label="e.label" :value="e.value">
-              <span class="employee-option">
-                <span>{{ e.label }}</span>
-                <el-tag v-if="e.calculated" size="small" type="success" effect="plain" class="employee-option__tag">済</el-tag>
-                <el-tag v-else size="small" type="info" effect="plain" class="employee-option__tag">未</el-tag>
-              </span>
-            </el-option>
-          </el-select>
-        <el-button type="primary" text size="small" @click="selectAllEmployees">全選択</el-button>
-        <el-button type="warning" text size="small" @click="selectUncalculated">未計算のみ</el-button>
-        <span v-if="!loadingEmployees && employeeOptions.length > 0" class="payroll-filters__count">
-          在職 {{ employeeOptions.length }}名<template v-if="totalEmployeeCount > employeeOptions.length"> / 全{{ totalEmployeeCount }}名</template>
-        </span>
-        
-        <div class="payroll-filters__switches">
-          <el-checkbox v-model="debug">トレース</el-checkbox>
+        <div class="payroll-filters__top">
+          <el-date-picker v-model="month" type="month" value-format="YYYY-MM" placeholder="対象月" class="payroll-filters__month" />
+          <el-input v-model="employeeFilter" placeholder="社員を検索…" clearable class="payroll-filters__search" :prefix-icon="Search" />
+          <el-button type="primary" size="small" @click="selectAllEmployees">全選択</el-button>
+          <el-button type="warning" size="small" @click="selectUncalculated">未計算のみ</el-button>
+          <el-button size="small" @click="clearSelection">クリア</el-button>
+          <span v-if="!loadingEmployees && employeeOptions.length > 0" class="payroll-filters__count">
+            在職 {{ employeeOptions.length }}名<template v-if="totalEmployeeCount > employeeOptions.length"> / 全{{ totalEmployeeCount }}名</template>
+            ・選択 {{ employeeIds.length }}名
+          </span>
+          <div class="payroll-filters__switches">
+            <el-checkbox v-model="debug">トレース</el-checkbox>
+          </div>
+        </div>
+        <div v-loading="loadingEmployees" class="employee-listbox">
+          <el-checkbox-group v-model="employeeIds">
+            <div
+              v-for="e in filteredEmployeeOptions"
+              :key="e.value"
+              class="employee-listbox__item"
+              :class="{ 'employee-listbox__item--calculated': e.calculated }"
+            >
+              <el-checkbox :value="e.value">
+                <span class="employee-listbox__label">{{ e.label }}</span>
+              </el-checkbox>
+              <el-tag v-if="e.calculated" size="small" type="success" effect="plain">済</el-tag>
+              <el-tag v-else size="small" type="info" effect="plain">未</el-tag>
+            </div>
+          </el-checkbox-group>
+          <div v-if="!loadingEmployees && filteredEmployeeOptions.length === 0" class="employee-listbox__empty">
+            {{ employeeOptions.length === 0 ? '在職社員がありません' : '該当する社員がありません' }}
+          </div>
         </div>
       </div>
       
@@ -399,13 +402,14 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Wallet, CaretRight, FolderChecked, Plus, Delete, Refresh } from '@element-plus/icons-vue'
+import { Wallet, CaretRight, FolderChecked, Plus, Delete, Refresh, Search } from '@element-plus/icons-vue'
 import api from '../api'
 
 const employeeIds = ref<string[]>([])
 const employeeOptions = ref<any[]>([])
 const allEmployees = ref<any[]>([])
 const loadingEmployees = ref(false)
+const employeeFilter = ref('')
 const calculatedEmployeeIds = ref<Set<string>>(new Set())
 const totalEmployeeCount = ref(0)
 const contractorTypeCodes = ref<Set<string>>(new Set())
@@ -1121,12 +1125,25 @@ async function loadEmployeesForMonth(){
   }
 }
 
+const filteredEmployeeOptions = computed(() => {
+  const q = (employeeFilter.value || '').trim().toLowerCase()
+  if (!q) return employeeOptions.value
+  return employeeOptions.value.filter(e => e.label.toLowerCase().includes(q))
+})
+
 function selectAllEmployees() {
-  employeeIds.value = employeeOptions.value.map(e => e.value)
+  const visible = filteredEmployeeOptions.value.map(e => e.value)
+  const existing = new Set(employeeIds.value)
+  visible.forEach(id => existing.add(id))
+  employeeIds.value = employeeOptions.value.filter(e => existing.has(e.value)).map(e => e.value)
 }
 
 function selectUncalculated() {
   employeeIds.value = employeeOptions.value.filter(e => !e.calculated).map(e => e.value)
+}
+
+function clearSelection() {
+  employeeIds.value = []
 }
 
 async function refreshCalculatedStatus() {
@@ -1192,21 +1209,27 @@ onMounted(() => {
 /* フィルター */
 .payroll-filters {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
+  flex-direction: column;
+  gap: 10px;
   margin-bottom: 16px;
   padding: 16px;
   background: #f8f9fc;
   border-radius: 8px;
 }
 
-.payroll-filters__employee {
-  width: 300px;
+.payroll-filters__top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 
 .payroll-filters__month {
   width: 140px;
+}
+
+.payroll-filters__search {
+  width: 180px;
 }
 
 .payroll-filters__count {
@@ -1215,22 +1238,52 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-.employee-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-}
-
-.employee-option__tag {
-  margin-left: 8px;
-  flex-shrink: 0;
-}
-
 .payroll-filters__switches {
   display: flex;
   gap: 16px;
   margin-left: auto;
+}
+
+/* 社員リストボックス */
+.employee-listbox {
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  background: #fff;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.employee-listbox__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  transition: background 0.15s;
+  cursor: pointer;
+}
+
+.employee-listbox__item:hover {
+  background: #f0f5ff;
+}
+
+.employee-listbox__item--calculated {
+  background: #f6ffed;
+}
+
+.employee-listbox__item--calculated:hover {
+  background: #e8f7df;
+}
+
+.employee-listbox__label {
+  font-size: 13px;
+}
+
+.employee-listbox__empty {
+  padding: 24px 0;
+  text-align: center;
+  color: #c0c4cc;
+  font-size: 13px;
 }
 
 /* 結果 */
