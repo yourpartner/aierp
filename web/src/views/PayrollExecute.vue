@@ -723,8 +723,12 @@ function extractErrorMessage(err: any, fallback: string) {
     if (typeof resp === 'string') return resp
     if (resp.message) return resp.message
     if (resp.payload?.message) return resp.payload.message
-    if (resp.payload?.error) return resp.payload.error
-    if (resp.error) return resp.error
+    const payloadErr = resp.payload?.error
+    const payloadDetail = resp.payload?.detail
+    if (payloadErr) return payloadDetail ? `${payloadErr}: ${payloadDetail}` : payloadErr
+    const errMsg = resp.error
+    const detail = resp.detail
+    if (errMsg) return detail ? `${errMsg}: ${detail}` : errMsg
   }
   if (err.message) return err.message
   return fallback
