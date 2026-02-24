@@ -2282,6 +2282,43 @@ LIMIT 1";
                 if (hasCleared) canEdit = false;
             }
 
+            if (accountingDraft is JsonArray draftArr)
+            {
+                var codesToLookup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var line in draftArr)
+                {
+                    if (line is not JsonObject obj) continue;
+                    var code = obj["accountCode"]?.GetValue<string>();
+                    var name = obj["accountName"]?.GetValue<string>();
+                    if (!string.IsNullOrWhiteSpace(code) && string.IsNullOrWhiteSpace(name))
+                        codesToLookup.Add(code);
+                }
+                if (codesToLookup.Count > 0)
+                {
+                    var nameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var code in codesToLookup)
+                    {
+                        await using var naCmd = conn.CreateCommand();
+                        naCmd.CommandText = "SELECT name FROM accounts WHERE company_code=$1 AND account_code=$2 LIMIT 1";
+                        naCmd.Parameters.AddWithValue(companyCode);
+                        naCmd.Parameters.AddWithValue(code);
+                        var n = (string?)await naCmd.ExecuteScalarAsync(ct);
+                        if (!string.IsNullOrWhiteSpace(n)) nameMap[code] = n;
+                    }
+                    foreach (var line in draftArr)
+                    {
+                        if (line is not JsonObject obj) continue;
+                        var code = obj["accountCode"]?.GetValue<string>();
+                        if (!string.IsNullOrWhiteSpace(code) && nameMap.TryGetValue(code, out var resolvedName))
+                        {
+                            var existingName = obj["accountName"]?.GetValue<string>();
+                            if (string.IsNullOrWhiteSpace(existingName))
+                                obj["accountName"] = resolvedName;
+                        }
+                    }
+                }
+            }
+
             return Results.Json(new
             {
                 runType,
