@@ -6,6 +6,7 @@ using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Npgsql;
+using ClosedXML.Excel;
 using Server.Infrastructure;
 
 namespace Server.Modules;
@@ -2395,10 +2396,12 @@ SELECT e.id,
        COALESCE(p.payload->>'code','') AS policy_code,
        COALESCE(p.payload->>'name','') AS policy_name,
        e.voucher_id,
-       e.voucher_no
+       e.voucher_no,
+       d.name AS department_name
 FROM payroll_run_entries e
 JOIN payroll_runs r ON e.run_id = r.id
 LEFT JOIN payroll_policies p ON p.id = r.policy_id AND p.company_code = r.company_code
+LEFT JOIN departments d ON d.company_code = r.company_code AND d.department_code = e.department_code
 WHERE {whereClause}
 ORDER BY r.period_month DESC, e.created_at DESC
 LIMIT @pageSize OFFSET @offset";
@@ -2429,7 +2432,8 @@ LIMIT @pageSize OFFSET @offset";
                     policyCode = reader.IsDBNull(12) ? null : reader.GetString(12),
                     policyName = reader.IsDBNull(13) ? null : reader.GetString(13),
                     voucherId = reader.IsDBNull(14) ? (Guid?)null : reader.GetGuid(14),
-                    voucherNo = reader.IsDBNull(15) ? null : reader.GetString(15)
+                    voucherNo = reader.IsDBNull(15) ? null : reader.GetString(15),
+                    departmentName = reader.IsDBNull(16) ? null : reader.GetString(16)
                     });
                 }
             }
@@ -2443,7 +2447,142 @@ LIMIT @pageSize OFFSET @offset";
             });
         }).RequireAuthorization();
 
-        // Historical payroll preview endpoint has been removed; the new flow relies on AI compilation plus local execution.
+        // GET /payroll/run-entries/export
+        app.MapGet("/payroll/run-entries/export", async (HttpRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+            var companyCode = cc.ToString();
+            var month = req.Query["month"].ToString();
+
+            await using var conn = await ds.OpenConnectionAsync(ct);
+            var filters = new List<string> { "r.company_code = @company" };
+            var parameters = new Dictionary<string, object?> { ["company"] = companyCode };
+            if (!string.IsNullOrWhiteSpace(month))
+            {
+                filters.Add("r.period_month = @month");
+                parameters["month"] = month;
+            }
+            var whereClause = string.Join(" AND ", filters);
+
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = $@"
+SELECT e.employee_code, e.employee_name, e.department_code, d.name AS department_name,
+       e.total_amount, e.payroll_sheet, e.voucher_no, e.created_at, r.period_month
+FROM payroll_run_entries e
+JOIN payroll_runs r ON e.run_id = r.id
+LEFT JOIN departments d ON d.company_code = r.company_code AND d.department_code = e.department_code
+WHERE {whereClause}
+ORDER BY r.period_month DESC, e.employee_code ASC";
+            foreach (var kvp in parameters)
+                cmd.Parameters.AddWithValue(kvp.Key, kvp.Value ?? DBNull.Value);
+
+            var rows = new List<(string? EmpCode, string? EmpName, string? DeptCode, string? DeptName,
+                                 decimal Total, JsonArray? Sheet, string? VoucherNo, DateTimeOffset CreatedAt, string PeriodMonth)>();
+            var allItemCodes = new List<string>();
+            var allItemNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                var empCode = reader.IsDBNull(0) ? null : reader.GetString(0);
+                var empName = reader.IsDBNull(1) ? null : reader.GetString(1);
+                var deptCode = reader.IsDBNull(2) ? null : reader.GetString(2);
+                var deptName = reader.IsDBNull(3) ? null : reader.GetString(3);
+                var total = reader.GetDecimal(4);
+                JsonArray? sheet = null;
+                if (!reader.IsDBNull(5))
+                {
+                    var node = JsonNode.Parse(reader.GetString(5));
+                    sheet = node as JsonArray;
+                }
+                var voucherNo = reader.IsDBNull(6) ? null : reader.GetString(6);
+                var createdAt = reader.GetFieldValue<DateTimeOffset>(7);
+                var periodMonth = reader.GetString(8);
+                rows.Add((empCode, empName, deptCode, deptName, total, sheet, voucherNo, createdAt, periodMonth));
+
+                if (sheet != null)
+                {
+                    foreach (var item in sheet)
+                    {
+                        if (item is not JsonObject obj) continue;
+                        var code = obj["itemCode"]?.GetValue<string>();
+                        if (string.IsNullOrWhiteSpace(code)) continue;
+                        if (!allItemNames.ContainsKey(code))
+                        {
+                            allItemCodes.Add(code);
+                            allItemNames[code] = obj["itemName"]?.GetValue<string>() ?? code;
+                        }
+                    }
+                }
+            }
+            await reader.CloseAsync();
+
+            using var wb = new XLWorkbook();
+            var ws = wb.Worksheets.Add("給与明細");
+            int col = 1;
+            ws.Cell(1, col++).Value = "年月";
+            ws.Cell(1, col++).Value = "社員コード";
+            ws.Cell(1, col++).Value = "社員名";
+            ws.Cell(1, col++).Value = "部門コード";
+            ws.Cell(1, col++).Value = "部門名";
+            foreach (var code in allItemCodes)
+                ws.Cell(1, col++).Value = allItemNames[code];
+            ws.Cell(1, col++).Value = "差引支給額";
+            ws.Cell(1, col++).Value = "伝票番号";
+            ws.Cell(1, col++).Value = "計算日時";
+
+            var headerRange = ws.Range(1, 1, 1, col - 1);
+            headerRange.Style.Font.Bold = true;
+            headerRange.Style.Fill.BackgroundColor = XLColor.LightSteelBlue;
+
+            int row = 2;
+            foreach (var r in rows)
+            {
+                col = 1;
+                ws.Cell(row, col++).Value = r.PeriodMonth;
+                ws.Cell(row, col++).Value = r.EmpCode ?? "";
+                ws.Cell(row, col++).Value = r.EmpName ?? "";
+                ws.Cell(row, col++).Value = r.DeptCode ?? "";
+                ws.Cell(row, col++).Value = r.DeptName ?? "";
+
+                var amountByItem = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+                if (r.Sheet != null)
+                {
+                    foreach (var item in r.Sheet)
+                    {
+                        if (item is not JsonObject obj) continue;
+                        var code = obj["itemCode"]?.GetValue<string>();
+                        if (string.IsNullOrWhiteSpace(code)) continue;
+                        var amt = obj["amount"]?.GetValue<decimal>() ?? 0m;
+                        amountByItem[code] = amt;
+                    }
+                }
+                foreach (var code in allItemCodes)
+                {
+                    var cell = ws.Cell(row, col++);
+                    if (amountByItem.TryGetValue(code, out var amt))
+                    {
+                        cell.Value = amt;
+                        cell.Style.NumberFormat.Format = "#,##0";
+                    }
+                }
+                var totalCell = ws.Cell(row, col++);
+                totalCell.Value = r.Total;
+                totalCell.Style.NumberFormat.Format = "#,##0";
+                ws.Cell(row, col++).Value = r.VoucherNo ?? "";
+                ws.Cell(row, col++).Value = r.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+                row++;
+            }
+
+            ws.Columns().AdjustToContents();
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            ms.Position = 0;
+            var fileName = $"payroll_{month ?? "all"}.xlsx";
+            return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+        }).RequireAuthorization();
 
         // POST /ai/payroll/suggest-accounts
         // Stub helper that returns placeholder account suggestions for payroll items. Currently

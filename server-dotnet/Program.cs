@@ -2217,8 +2217,8 @@ static string? ExtractEmploymentStatusFilter(List<SearchClause>? clauses)
 static async Task<string> PrepareEmployeePayloadAsync(NpgsqlDataSource ds, string companyCode, JsonElement payload)
 {
     var dict = JsonSerializer.Deserialize<Dictionary<string, object?>>(payload.GetRawText()) ?? new();
-    var nextCode = await EmployeeNumberingService.NextAsync(ds, companyCode);
-    dict["code"] = nextCode.ToString();
+    var nextCode = await EmployeeNumberingService.NextCodeAsync(ds, companyCode);
+    dict["code"] = nextCode;
     return JsonSerializer.Serialize(dict);
 }
 

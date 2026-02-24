@@ -224,17 +224,54 @@ namespace Server.Infrastructure
         }
     }
 
-    // Employee codes: simple increment per company (1,2,3,...)
+    // Employee codes: auto-detect prefix pattern (e.g. YP001, E0268) and continue the sequence.
+    // Falls back to purely numeric codes if no prefix pattern is found.
     public static class EmployeeNumberingService
     {
-        public static async Task<long> NextAsync(NpgsqlDataSource ds, string companyCode)
+        public static async Task<string> NextCodeAsync(NpgsqlDataSource ds, string companyCode)
         {
             await using var conn = await ds.OpenConnectionAsync();
             await using var tx = await conn.BeginTransactionAsync();
 
+            string prefix = "";
+            int padWidth = 0;
             long existingMax = 0;
-            await using (var maxCmd = conn.CreateCommand())
+
+            // Detect the dominant prefix pattern (e.g. "YP", "E", "WEL") from existing employees
+            await using (var detectCmd = conn.CreateCommand())
             {
+                detectCmd.Transaction = tx;
+                detectCmd.CommandText = @"
+                    WITH prefixed AS (
+                        SELECT
+                            regexp_replace(payload->>'code', '\d+$', '') AS pfx,
+                            SUBSTRING(payload->>'code' FROM '\d+$')::bigint AS num,
+                            LENGTH(SUBSTRING(payload->>'code' FROM '\d+$')) AS num_len
+                        FROM employees
+                        WHERE company_code = $1
+                          AND jsonb_typeof(payload) = 'object'
+                          AND (payload->>'code') ~ '^[A-Za-z]+\d+$'
+                    )
+                    SELECT pfx, MAX(num), MAX(num_len), COUNT(*)
+                    FROM prefixed
+                    GROUP BY pfx
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 1";
+                detectCmd.Parameters.AddWithValue(companyCode);
+                await using var reader = await detectCmd.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    prefix = reader.IsDBNull(0) ? "" : reader.GetString(0);
+                    existingMax = reader.IsDBNull(1) ? 0 : reader.GetInt64(1);
+                    padWidth = reader.IsDBNull(2) ? 3 : reader.GetInt32(2);
+                }
+            }
+
+            // Fallback: purely numeric codes
+            if (string.IsNullOrEmpty(prefix))
+            {
+                await using var maxCmd = conn.CreateCommand();
+                maxCmd.Transaction = tx;
                 maxCmd.CommandText = @"SELECT COALESCE(MAX((payload->>'code')::bigint),0)
                                        FROM employees
                                        WHERE company_code=$1
@@ -242,17 +279,12 @@ namespace Server.Infrastructure
                                          AND (payload->>'code') ~ '^\d+$'";
                 maxCmd.Parameters.AddWithValue(companyCode);
                 var obj = await maxCmd.ExecuteScalarAsync();
-                existingMax = obj switch
-                {
-                    long l => l,
-                    int i => i,
-                    decimal d => (long)d,
-                    _ => obj is null ? 0L : Convert.ToInt64(obj)
-                };
+                existingMax = ToLong(obj);
             }
 
             await using (var ensure = conn.CreateCommand())
             {
+                ensure.Transaction = tx;
                 ensure.CommandText = @"INSERT INTO employee_sequences(company_code, last_number)
                                        VALUES ($1, $2)
                                        ON CONFLICT (company_code) DO NOTHING";
@@ -263,6 +295,7 @@ namespace Server.Infrastructure
 
             await using (var sync = conn.CreateCommand())
             {
+                sync.Transaction = tx;
                 sync.CommandText = @"UPDATE employee_sequences
                                      SET last_number = GREATEST(last_number, $2), updated_at=now()
                                      WHERE company_code=$1";
@@ -274,24 +307,33 @@ namespace Server.Infrastructure
             long next;
             await using (var inc = conn.CreateCommand())
             {
+                inc.Transaction = tx;
                 inc.CommandText = @"UPDATE employee_sequences
                                     SET last_number = last_number + 1, updated_at=now()
                                     WHERE company_code=$1
                                     RETURNING last_number";
                 inc.Parameters.AddWithValue(companyCode);
                 var obj = await inc.ExecuteScalarAsync();
-                next = obj switch
-                {
-                    long l => l,
-                    int i => i,
-                    decimal d => (long)d,
-                    _ => obj is null ? 0L : Convert.ToInt64(obj)
-                };
+                next = ToLong(obj);
             }
 
             await tx.CommitAsync();
             if (next <= 0) next = 1;
-            return next;
+
+            if (!string.IsNullOrEmpty(prefix))
+            {
+                if (padWidth < 3) padWidth = 3;
+                return prefix + next.ToString().PadLeft(padWidth, '0');
+            }
+            return next.ToString();
         }
+
+        private static long ToLong(object? obj) => obj switch
+        {
+            long l => l,
+            int i => i,
+            decimal d => (long)d,
+            _ => obj is null ? 0L : Convert.ToInt64(obj)
+        };
     }
 }

@@ -25,10 +25,7 @@
         <el-select
           v-model="filters.employeeId"
           filterable
-          remote
           clearable
-          reserve-keyword
-          :remote-method="searchEmployees"
           placeholder="社員を検索"
           class="payroll-filters__employee"
         >
@@ -57,6 +54,10 @@
           検索
         </el-button>
         <el-button @click="handleReset">リセット</el-button>
+        <el-button type="success" :loading="exporting" @click="handleExport">
+          <el-icon><Download /></el-icon>
+          Excel
+        </el-button>
       </div>
       
       <!-- データテーブル -->
@@ -368,7 +369,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Timer, Search, View, Edit, Plus, Delete, Refresh } from '@element-plus/icons-vue'
+import { Timer, Search, View, Edit, Plus, Delete, Refresh, Download } from '@element-plus/icons-vue'
 import api from '../api'
 import VouchersList from './VouchersList.vue'
 
@@ -508,7 +509,6 @@ async function loadEntries() {
           voucherId: item.voucherId || ''
         }))
       : []
-    ensureEmployeeOption(filters.employeeId)
   } catch (err: any) {
     console.error(err)
     ElMessage.error('給与履歴の取得に失敗しました')
@@ -517,36 +517,17 @@ async function loadEntries() {
   }
 }
 
-function ensureEmployeeOption(id?: string) {
-  if (!id) return
-  if (employeeOptions.value.some((opt: any) => opt.value === id)) return
-  const target = entries.value.find(item => item.employeeId === id)
-  if (!target) return
-  employeeOptions.value.push({
-    value: target.employeeId,
-    label: `${target.employeeName || ''} (${target.employeeCode || ''})`
-  })
-}
 
-async function searchEmployees(query: string) {
-  const q = (query || '').trim()
-  const where: any[] = []
-  if (q) {
-    where.push({ json: 'nameKanji', op: 'contains', value: q })
-    where.push({ json: 'nameKana', op: 'contains', value: q })
-    where.push({ field: 'employee_code', op: 'contains', value: q })
-  }
-  const resp = await api.post('/objects/employee/search', {
-    page: 1,
-    pageSize: 20,
-    where,
-    orderBy: [{ field: 'created_at', dir: 'DESC' }]
-  })
-  const list = (resp.data?.data || []) as any[]
-  employeeOptions.value = list.map(emp => ({
-    value: emp.id,
-    label: `${emp.payload?.nameKanji || emp.payload?.name || emp.name || ''} (${emp.employee_code || emp.payload?.code || ''})`
-  }))
+async function loadEmployees() {
+  try {
+    const resp = await api.post('/objects/employee/search', {
+      page: 1, pageSize: 0, orderBy: [{ field: 'employee_code', dir: 'ASC' }]
+    })
+    employeeOptions.value = ((resp.data?.data || []) as any[]).map(emp => ({
+      value: emp.id,
+      label: `${emp.payload?.nameKanji || emp.payload?.name || emp.name || ''} (${emp.employee_code || emp.payload?.code || ''})`
+    }))
+  } catch { employeeOptions.value = [] }
 }
 
 async function openEntryDetail(row: any) {
@@ -814,7 +795,32 @@ async function saveEdit() {
   }
 }
 
+const exporting = ref(false)
+async function handleExport() {
+  exporting.value = true
+  try {
+    const params: Record<string, any> = {}
+    if (filters.month) params.month = filters.month
+    const resp = await api.get('/payroll/run-entries/export', { params, responseType: 'blob' })
+    const blob = new Blob([resp.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `payroll_${filters.month || 'all'}.xlsx`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+  } catch (err: any) {
+    console.error(err)
+    ElMessage.error('Excelエクスポートに失敗しました')
+  } finally {
+    exporting.value = false
+  }
+}
+
 onMounted(() => {
+  loadEmployees()
   loadEntries()
 })
 </script>

@@ -579,7 +579,7 @@
           <div class="emp-card__header">
             <el-icon><Folder /></el-icon>
             <span>添付書類</span>
-            <el-button size="small" text type="primary" @click="triggerUpload" class="emp-card__add" :disabled="!empId">
+            <el-button v-if="!isReadonly" size="small" text type="primary" @click="triggerUpload" class="emp-card__add" :disabled="!empId">
               <el-icon><Upload /></el-icon>
               アップロード
             </el-button>
@@ -596,7 +596,7 @@
               >
                 <el-icon><Document /></el-icon>
                 <span class="emp-attach-item__name" @click="openAttachment(item)">{{ item.fileName }}</span>
-                <el-button size="small" text type="danger" @click="removeAttachment(idx)">
+                <el-button v-if="!isReadonly" size="small" text type="danger" @click="removeAttachment(idx)">
                   <el-icon><Delete /></el-icon>
                 </el-button>
               </div>
@@ -607,6 +607,24 @@
         </div>
       </div>
     </el-card>
+
+    <!-- 画像プレビューダイアログ -->
+    <el-dialog v-model="imagePreviewVisible" :title="imagePreviewName || '画像プレビュー'" width="auto" append-to-body destroy-on-close class="emp-image-preview-dialog">
+      <img v-if="imagePreviewUrl" :src="imagePreviewUrl" :alt="imagePreviewName" style="max-width:100%;max-height:80vh;display:block;margin:0 auto" />
+    </el-dialog>
+
+    <!-- ファイルプレビューダイアログ -->
+    <el-dialog v-model="filePreviewVisible" :title="filePreviewName || 'ファイル プレビュー'" width="min(1200px, 96vw)" top="2vh" append-to-body destroy-on-close class="emp-file-preview-dialog">
+      <div v-if="filePreviewType === 'iframe' || filePreviewType === 'office'" style="width:100%;height:80vh">
+        <iframe :src="filePreviewUrl" style="width:100%;height:100%;border:none" />
+      </div>
+      <div v-else-if="filePreviewType === 'download'" style="text-align:center;padding:40px 0">
+        <el-icon :size="64" color="#909399"><Document /></el-icon>
+        <p style="margin:16px 0 8px;font-size:16px">{{ filePreviewName }}</p>
+        <p style="color:#909399;margin-bottom:20px">このファイル形式はプレビューできません</p>
+        <el-button type="primary" @click="downloadPreviewFile"><el-icon><Download /></el-icon>ダウンロード</el-button>
+      </div>
+    </el-dialog>
 
     <!-- 银行选择弹窗 -->
     <el-dialog v-model="showBankPicker" title="銀行を選択" width="720px" append-to-body destroy-on-close>
@@ -714,7 +732,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { 
   User, Phone, Document, OfficeBuilding, FirstAidKit, 
   CreditCard, Warning, Folder, Plus, Delete, Upload, Check,
-  Setting, Edit, InfoFilled, Money, UserFilled
+  Setting, Edit, InfoFilled, Money, UserFilled, Download
 } from '@element-plus/icons-vue'
 import api from '../api'
 import BankBranchPicker from '../components/BankBranchPicker.vue'
@@ -1335,10 +1353,49 @@ async function onFileChosen(e: Event) {
   }
 }
 
+const imagePreviewVisible = ref(false)
+const imagePreviewUrl = ref('')
+const imagePreviewName = ref('')
+const filePreviewVisible = ref(false)
+const filePreviewUrl = ref('')
+const filePreviewName = ref('')
+const filePreviewType = ref<'iframe' | 'office' | 'download'>('iframe')
+
+const imageExts = /\.(jpg|jpeg|png|gif|webp|bmp)$/i
+const pdfExt = /\.pdf$/i
+const officeExts = /\.(doc|docx|xls|xlsx|ppt|pptx)$/i
+const imageContentTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']
+
 function openAttachment(item: any) {
-  if (item?.url) {
-    window.open(item.url, '_blank')
+  const url = item?.url || item?.previewUrl
+  if (!url) return
+  const name = item.fileName || item.name || ''
+  const ct = (item.contentType || '').toLowerCase()
+
+  if (imageContentTypes.includes(ct) || imageExts.test(name)) {
+    imagePreviewUrl.value = url
+    imagePreviewName.value = name || 'プレビュー'
+    imagePreviewVisible.value = true
+  } else if (ct === 'application/pdf' || pdfExt.test(name)) {
+    filePreviewUrl.value = url
+    filePreviewName.value = name || 'PDF'
+    filePreviewType.value = 'iframe'
+    filePreviewVisible.value = true
+  } else if (officeExts.test(name)) {
+    filePreviewUrl.value = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`
+    filePreviewName.value = name || 'ファイル'
+    filePreviewType.value = 'office'
+    filePreviewVisible.value = true
+  } else {
+    filePreviewUrl.value = url
+    filePreviewName.value = name || 'ファイル'
+    filePreviewType.value = 'download'
+    filePreviewVisible.value = true
   }
+}
+
+function downloadPreviewFile() {
+  if (filePreviewUrl.value) window.open(filePreviewUrl.value, '_blank')
 }
 
 function normalizeDependents() {
@@ -1831,6 +1888,10 @@ onMounted(reload)
 /* 只读模式样式 */
 .emp-content--readonly {
   pointer-events: none;
+}
+.emp-content--readonly .emp-attach-item__name {
+  pointer-events: auto;
+  cursor: pointer;
 }
 .emp-content--readonly :deep(.el-input__wrapper),
 .emp-content--readonly :deep(.el-textarea__inner),
