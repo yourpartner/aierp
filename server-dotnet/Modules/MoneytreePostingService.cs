@@ -1686,7 +1686,7 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         var totalAmount = amount + feeAmount;
         var hasPartner = !string.IsNullOrWhiteSpace(partnerId);
         {
-            var partnerFilter = hasPartner ? "AND oi.partner_id = $5" : "";
+            var partnerFilter = hasPartner ? "AND oi.partner_id = $4" : "";
             await using var oiCmd = conn.CreateCommand();
             oiCmd.CommandText = $@"
 WITH oi_with_detail AS (
@@ -1713,11 +1713,9 @@ LIMIT 10";
             oiCmd.Parameters.AddWithValue(companyCode);  // $1
             oiCmd.Parameters.AddWithValue(txDate);       // $2
             oiCmd.Parameters.AddWithValue(amount);       // $3
-            // $4 unused
             if (hasPartner)
             {
-                oiCmd.Parameters.AddWithValue(DBNull.Value); // $4 placeholder
-                oiCmd.Parameters.AddWithValue(partnerId!);       // $5 always text (open_items.partner_id is TEXT)
+                oiCmd.Parameters.AddWithValue(partnerId!); // $4 text (open_items.partner_id is TEXT)
             }
 
             openItems = new List<OpenItemMatch>();

@@ -345,7 +345,7 @@ public sealed class SearchBankOpenItemsTool : AgentToolBase
 
         // 构建查询：有对手方 → 按 partner_id 过滤；无对手方 → 仅按金额+日期
         await using var cmd = conn.CreateCommand();
-        var partnerFilter = hasCounterparty ? "AND oi.partner_id = $6" : "";
+        var partnerFilter = hasCounterparty ? "AND oi.partner_id = $5" : "";
         cmd.CommandText = $@"
 WITH oi_with_detail AS (
     SELECT oi.id, oi.account_code, oi.residual_amount, oi.doc_date, 
@@ -374,11 +374,9 @@ LIMIT 20";
         cmd.Parameters.AddWithValue(targetDirection);    // $2
         cmd.Parameters.AddWithValue(txDate);             // $3
         cmd.Parameters.AddWithValue(amount);             // $4
-        // $5 unused (reserved for totalAmount in result formatting)
         if (hasCounterparty)
         {
-            cmd.Parameters.AddWithValue(DBNull.Value);   // $5 placeholder
-            cmd.Parameters.AddWithValue(partnerIdForQuery!); // $6 always text (open_items.partner_id is TEXT)
+            cmd.Parameters.AddWithValue(partnerIdForQuery!); // $5 text (open_items.partner_id is TEXT)
         }
 
         var items = new List<object>();
