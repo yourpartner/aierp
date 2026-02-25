@@ -2483,6 +2483,7 @@ WHERE id = $5 AND posting_status NOT IN ('posted', 'linked')";
                 // 2a. 清掉原始未清明细（例如工资凭证的 315 行产生的未清项）
                 string? originalVoucherNo = null;
                 string? clearedAcctCode = null;
+                Guid? clearedOiId = null;
                 {
                     await using var clearCmd = conn.CreateCommand();
                     clearCmd.CommandText = @"
@@ -2498,25 +2499,30 @@ RETURNING id, account_code, (SELECT voucher_no FROM vouchers WHERE id = open_ite
                     clearCmd.Parameters.AddWithValue(oiGuid);
                     clearCmd.Parameters.AddWithValue(companyCode);
 
-                    await using var clearReader = await clearCmd.ExecuteReaderAsync(ct);
-                    if (await clearReader.ReadAsync(ct))
+                    await using (var clearReader = await clearCmd.ExecuteReaderAsync(ct))
                     {
-                        var clearedId = clearReader.GetGuid(0);
-                        clearedAcctCode = clearReader.GetString(1);
-                        originalVoucherNo = clearReader.IsDBNull(2) ? null : clearReader.GetString(2);
-                        _logger.LogInformation("[MoneytreePosting] PostProcess: auto-cleared open_item {OiId} (account={Acct}) with voucher {VoucherNo}",
-                            clearedId, clearedAcctCode, voucherNo);
+                        if (await clearReader.ReadAsync(ct))
+                        {
+                            clearedOiId = clearReader.GetGuid(0);
+                            clearedAcctCode = clearReader.GetString(1);
+                            originalVoucherNo = clearReader.IsDBNull(2) ? null : clearReader.GetString(2);
+                            _logger.LogInformation("[MoneytreePosting] PostProcess: auto-cleared open_item {OiId} (account={Acct}) with voucher {VoucherNo}",
+                                clearedOiId, clearedAcctCode, voucherNo);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("[MoneytreePosting] PostProcess: open_item {OiId} not found or already cleared", openItemId);
+                        }
+                    }
 
+                    if (clearedOiId.HasValue)
+                    {
                         await using var mtCmd = conn.CreateCommand();
                         mtCmd.CommandText = "UPDATE moneytree_transactions SET cleared_open_item_id = $1, updated_at = now() WHERE company_code = $2 AND id = $3";
-                        mtCmd.Parameters.AddWithValue(clearedId);
+                        mtCmd.Parameters.AddWithValue(clearedOiId.Value);
                         mtCmd.Parameters.AddWithValue(companyCode);
                         mtCmd.Parameters.AddWithValue(row.Id);
                         await mtCmd.ExecuteNonQueryAsync(ct);
-                    }
-                    else
-                    {
-                        _logger.LogWarning("[MoneytreePosting] PostProcess: open_item {OiId} not found or already cleared", openItemId);
                     }
                 }
 
@@ -2539,12 +2545,14 @@ RETURNING id";
                     selfClearCmd.Parameters.AddWithValue(companyCode);
                     selfClearCmd.Parameters.AddWithValue(clearedAcctCode);
 
-                    await using var selfReader = await selfClearCmd.ExecuteReaderAsync(ct);
-                    if (await selfReader.ReadAsync(ct))
+                    await using (var selfReader = await selfClearCmd.ExecuteReaderAsync(ct))
                     {
-                        var selfClearedId = selfReader.GetGuid(0);
-                        _logger.LogInformation("[MoneytreePosting] PostProcess: auto-cleared payment voucher's own open_item {OiId} (account={Acct})",
-                            selfClearedId, clearedAcctCode);
+                        if (await selfReader.ReadAsync(ct))
+                        {
+                            var selfClearedId = selfReader.GetGuid(0);
+                            _logger.LogInformation("[MoneytreePosting] PostProcess: auto-cleared payment voucher's own open_item {OiId} (account={Acct})",
+                                selfClearedId, clearedAcctCode);
+                        }
                     }
                 }
             }
