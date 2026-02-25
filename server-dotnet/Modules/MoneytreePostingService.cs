@@ -1712,7 +1712,7 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
             hasPartner, partnerId ?? "(none)", amount, totalAmount, txDate.ToString("yyyy-MM-dd"));
         {
             var partnerFilter = hasPartner ? "AND oi.partner_id = $4" : "";
-            var dateWindow = hasPartner ? "interval '60 day'" : "interval '5 day'";
+            var dateWindowDays = hasPartner ? 60 : 5;
             await using var oiCmd = conn.CreateCommand();
             oiCmd.CommandText = $@"
 WITH oi_with_detail AS (
@@ -1733,7 +1733,7 @@ WITH oi_with_detail AS (
 )
 SELECT id, account_code, residual_amount, doc_date::text, voucher_no, effective_date::text
 FROM oi_with_detail
-WHERE ABS(effective_date - $2::date) <= {dateWindow}
+WHERE ABS(effective_date - $2::date) <= {dateWindowDays}
 ORDER BY ABS(residual_amount - $3) ASC, ABS(effective_date - $2::date) ASC
 LIMIT 10";
             oiCmd.Parameters.AddWithValue(companyCode);  // $1
