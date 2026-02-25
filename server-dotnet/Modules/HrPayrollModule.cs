@@ -109,6 +109,17 @@ public static class HrPayrollModule
         ["源泉所得税預かり金"] = "3184"
     };
 
+    // 社会保険（健康保険+厚生年金）の除外キーワード
+    private static readonly string[] SocialInsuranceExcludeKeywords = new[]
+    {
+        "社会保険加入しません", "社会保険に加入しません", "社会保険なし", "社会保険対象外",
+        "社会保険免除", "社会保険不要", "社会保険不加入", "社会保険に不加入", "社会保険除外",
+        "社保加入しません", "社保に加入しません", "社保なし", "社保対象外", "社保免除", "社保不要", "社保不加入",
+        "健康保険加入しません", "健康保険に加入しません", "健康保険なし", "健康保険対象外", "健康保険免除",
+        "厚生年金加入しません", "厚生年金に加入しません", "厚生年金なし", "厚生年金対象外", "厚生年金免除",
+        "不加入社会保险", "社会保险不加入", "不需要社保", "不要社保", "社保不加入"
+    };
+
     // 雇用保険の除外キーワード（これらが含まれる場合、雇用保険は計算しない）
     private static readonly string[] EmploymentInsuranceExcludeKeywords = new[]
     {
@@ -4061,13 +4072,16 @@ ORDER BY r.period_month DESC, e.employee_code ASC";
                 companyTextInPolicy.Contains("月給", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("月给", StringComparison.OrdinalIgnoreCase) ||
                 companyTextInPolicy.Contains("固定", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("基本工资", StringComparison.OrdinalIgnoreCase)
             );
-            bool wantsHealth = (!string.IsNullOrWhiteSpace(empText) && (empText.Contains("社会保険", StringComparison.OrdinalIgnoreCase) || empText.Contains("社保", StringComparison.OrdinalIgnoreCase) || empText.Contains("健康保険", StringComparison.OrdinalIgnoreCase)))
+            bool excludeSocialIns = ContainsAny(empText, SocialInsuranceExcludeKeywords);
+            bool wantsHealthRaw = (!string.IsNullOrWhiteSpace(empText) && (empText.Contains("社会保険", StringComparison.OrdinalIgnoreCase) || empText.Contains("社保", StringComparison.OrdinalIgnoreCase) || empText.Contains("健康保険", StringComparison.OrdinalIgnoreCase)))
                                || (!string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("社会保険", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("社保", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("健康保険", StringComparison.OrdinalIgnoreCase)));
-            bool wantsPension = (!string.IsNullOrWhiteSpace(empText) && (empText.Contains("厚生年金", StringComparison.OrdinalIgnoreCase) || empText.Contains("年金", StringComparison.OrdinalIgnoreCase)))
+            bool wantsHealth = wantsHealthRaw && !excludeSocialIns;
+            bool wantsPensionRaw = (!string.IsNullOrWhiteSpace(empText) && (empText.Contains("厚生年金", StringComparison.OrdinalIgnoreCase) || empText.Contains("年金", StringComparison.OrdinalIgnoreCase)))
                                || (!string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("厚生年金", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("年金", StringComparison.OrdinalIgnoreCase)));
+            bool wantsPension = wantsPensionRaw && !excludeSocialIns;
+            if (debug) trace?.Add(new { step = "socialInsurance.check", empText, wantsHealthRaw, wantsPensionRaw, excludeSocialIns, wantsHealth, wantsPension });
             bool wantsEmploymentEmp = !string.IsNullOrWhiteSpace(empText) && (empText.Contains("雇用保険", StringComparison.OrdinalIgnoreCase) || empText.Contains("雇佣保险", StringComparison.OrdinalIgnoreCase));
             bool wantsEmploymentCompany = !string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("雇用保険", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("雇佣保险", StringComparison.OrdinalIgnoreCase));
-            // 負向キーワードで除外（例：「雇用保険対象外」「雇用保険なし」など）- 従業員の給与情報をチェック
             bool excludeEmployment = ContainsAny(empText, EmploymentInsuranceExcludeKeywords);
             bool wantsEmployment = (wantsEmploymentEmp || wantsEmploymentCompany) && !excludeEmployment;
             if (debug) trace?.Add(new { step = "employment.check", empText, wantsEmploymentEmp, wantsEmploymentCompany, excludeEmployment, wantsEmployment });
@@ -4968,16 +4982,20 @@ ORDER BY r.period_month DESC, e.employee_code ASC";
         // 辅助函数：检查员工是否匹配规则的 activation 条件
         bool CheckActivation(JsonElement rule)
         {
-            // EMP_INS 特殊处理：检查员工给与情报中是否有负向关键字（例如「雇用保険なし」）
             if (rule.TryGetProperty("item", out var itemEl) && itemEl.ValueKind == JsonValueKind.String)
             {
                 var item = itemEl.GetString();
                 if (string.Equals(item, "EMP_INS", StringComparison.OrdinalIgnoreCase))
                 {
                     if (!string.IsNullOrWhiteSpace(empSalaryDescription) && ContainsAny(empSalaryDescription, EmploymentInsuranceExcludeKeywords))
-                    {
-                        return false; // 员工给与情报包含排除关键词，不计算雇用保险
-                    }
+                        return false;
+                }
+                if (string.Equals(item, "HEALTH_INS", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(item, "CARE_INS", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(item, "PENSION", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.IsNullOrWhiteSpace(empSalaryDescription) && ContainsAny(empSalaryDescription, SocialInsuranceExcludeKeywords))
+                        return false;
                 }
             }
 
