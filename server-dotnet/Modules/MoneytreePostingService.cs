@@ -1856,7 +1856,8 @@ LIMIT 200";
             try
             {
                 using var doc = JsonDocument.Parse(bankReader.GetString(1));
-                if (!doc.RootElement.TryGetProperty("bank", out var bankInfo)) continue;
+                if (!doc.RootElement.TryGetProperty("bankInfo", out var bankInfo) &&
+                    !doc.RootElement.TryGetProperty("bank", out bankInfo)) continue;
                 var bn = bankInfo.TryGetProperty("bankName", out var bnEl) && bnEl.ValueKind == JsonValueKind.String ? bnEl.GetString() : null;
                 var an = bankInfo.TryGetProperty("accountNo", out var anEl) && anEl.ValueKind == JsonValueKind.String ? anEl.GetString() : null;
 

@@ -475,7 +475,8 @@ public sealed class ResolveBankAccountTool : AgentToolBase
             {
                 using var doc = JsonDocument.Parse(reader.GetString(1));
                 var root = doc.RootElement;
-                if (!root.TryGetProperty("bank", out var bankInfo)) continue;
+                if (!root.TryGetProperty("bankInfo", out var bankInfo) &&
+                    !root.TryGetProperty("bank", out bankInfo)) continue;
                 var bn = bankInfo.TryGetProperty("bankName", out var bnEl) && bnEl.ValueKind == JsonValueKind.String ? bnEl.GetString() : null;
                 var an = bankInfo.TryGetProperty("accountNo", out var anEl) && anEl.ValueKind == JsonValueKind.String ? anEl.GetString() : null;
                 var hd = bankInfo.TryGetProperty("holder", out var hdEl) && hdEl.ValueKind == JsonValueKind.String ? hdEl.GetString() : null;
