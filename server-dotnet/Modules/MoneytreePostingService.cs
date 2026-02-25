@@ -2480,10 +2480,40 @@ WHERE id = $5 AND posting_status NOT IN ('posted', 'linked')";
             // 2. 自动清账
             if (!string.IsNullOrWhiteSpace(openItemId) && Guid.TryParse(openItemId, out var oiGuid) && !string.IsNullOrWhiteSpace(voucherNo))
             {
-                // 2a. 清掉原始未清明细（例如工资凭证的 315 行产生的未清项）
+                // 找出支付凭证中匹配科目的行号
+                int paymentLineNo = 0;
+                {
+                    await using var plCmd = conn.CreateCommand();
+                    plCmd.CommandText = "SELECT payload FROM vouchers WHERE id = $1 AND company_code = $2";
+                    plCmd.Parameters.AddWithValue(voucherId);
+                    plCmd.Parameters.AddWithValue(companyCode);
+                    var plPayload = await plCmd.ExecuteScalarAsync(ct) as string;
+                    if (!string.IsNullOrWhiteSpace(plPayload))
+                    {
+                        using var plDoc = System.Text.Json.JsonDocument.Parse(plPayload);
+                        if (plDoc.RootElement.TryGetProperty("lines", out var plLines) && plLines.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            foreach (var plLine in plLines.EnumerateArray())
+                            {
+                                var plAcct = plLine.TryGetProperty("accountCode", out var plAc) ? plAc.GetString() : null;
+                                var plLn = plLine.TryGetProperty("lineNo", out var plLnV) ? plLnV.GetInt32() : 0;
+                                if (plAcct != null && plLn > 0)
+                                {
+                                    paymentLineNo = plLn;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (paymentLineNo == 0) paymentLineNo = 1;
+                }
+
+                // 2a. 清掉原始未清明细 + 写入 clearingHistory
                 string? originalVoucherNo = null;
                 string? clearedAcctCode = null;
                 Guid? clearedOiId = null;
+                int originalLineNo = 0;
+                Guid? originalVoucherId = null;
                 {
                     await using var clearCmd = conn.CreateCommand();
                     clearCmd.CommandText = @"
@@ -2491,13 +2521,38 @@ UPDATE open_items
 SET residual_amount = 0,
     cleared_flag = true,
     cleared_at = now(),
-    cleared_by = $1, 
+    cleared_by = $1,
+    refs = jsonb_set(
+             jsonb_set(
+               jsonb_set(
+                 COALESCE(refs, '{}'::jsonb),
+                 '{clearingVoucherNo}', to_jsonb($4::text), true
+               ),
+               '{clearingLineNo}', to_jsonb($5::int), true
+             ),
+             '{clearingHistory}',
+             jsonb_build_array(
+               jsonb_build_object(
+                 'at', to_jsonb(now()::timestamptz),
+                 'amount', to_jsonb(original_amount),
+                 'clearingVoucherId', to_jsonb($6::text),
+                 'clearingVoucherNo', to_jsonb($4::text),
+                 'clearingVoucherLineNo', to_jsonb($5::int),
+                 'type', 'bank-auto-posting'
+               )
+             ),
+             true
+           ),
     updated_at = now() 
 WHERE id = $2 AND company_code = $3 AND cleared_flag = false
-RETURNING id, account_code, (SELECT voucher_no FROM vouchers WHERE id = open_items.voucher_id LIMIT 1)";
-                    clearCmd.Parameters.AddWithValue(voucherNo);
-                    clearCmd.Parameters.AddWithValue(oiGuid);
-                    clearCmd.Parameters.AddWithValue(companyCode);
+RETURNING id, account_code, voucher_line_no, voucher_id,
+          (SELECT voucher_no FROM vouchers WHERE id = open_items.voucher_id LIMIT 1)";
+                    clearCmd.Parameters.AddWithValue(voucherNo);              // $1 cleared_by
+                    clearCmd.Parameters.AddWithValue(oiGuid);                 // $2 open_item id
+                    clearCmd.Parameters.AddWithValue(companyCode);            // $3
+                    clearCmd.Parameters.AddWithValue(voucherNo);              // $4 clearingVoucherNo
+                    clearCmd.Parameters.AddWithValue(paymentLineNo);          // $5 clearingLineNo
+                    clearCmd.Parameters.AddWithValue(voucherId.ToString());   // $6 clearingVoucherId
 
                     await using (var clearReader = await clearCmd.ExecuteReaderAsync(ct))
                     {
@@ -2505,8 +2560,10 @@ RETURNING id, account_code, (SELECT voucher_no FROM vouchers WHERE id = open_ite
                         {
                             clearedOiId = clearReader.GetGuid(0);
                             clearedAcctCode = clearReader.GetString(1);
-                            originalVoucherNo = clearReader.IsDBNull(2) ? null : clearReader.GetString(2);
-                            _logger.LogInformation("[MoneytreePosting] PostProcess: auto-cleared open_item {OiId} (account={Acct}) with voucher {VoucherNo}",
+                            originalLineNo = clearReader.GetInt32(2);
+                            originalVoucherId = clearReader.IsDBNull(3) ? null : clearReader.GetGuid(3);
+                            originalVoucherNo = clearReader.IsDBNull(4) ? null : clearReader.GetString(4);
+                            _logger.LogInformation("[MoneytreePosting] PostProcess: auto-cleared open_item {OiId} (account={Acct}) with voucher {VoucherNo}, wrote clearingHistory",
                                 clearedOiId, clearedAcctCode, voucherNo);
                         }
                         else
@@ -2526,31 +2583,60 @@ RETURNING id, account_code, (SELECT voucher_no FROM vouchers WHERE id = open_ite
                     }
                 }
 
-                // 2b. 清掉支付凭证自身产生的未清项（因为 openItem 科目会自动创建）
+                // 2b. 清掉支付凭证自身的未清项 + 写入 clearedItems
                 if (!string.IsNullOrWhiteSpace(clearedAcctCode))
                 {
                     var clearByRef = originalVoucherNo ?? voucherNo;
+                    var clearedItemsJson = System.Text.Json.JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            voucherNo = originalVoucherNo ?? "",
+                            voucherId = originalVoucherId?.ToString() ?? "",
+                            lineNo = originalLineNo,
+                            amount = (decimal)0, // placeholder, filled by SQL
+                            clearedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                        }
+                    });
+
                     await using var selfClearCmd = conn.CreateCommand();
                     selfClearCmd.CommandText = @"
 UPDATE open_items 
 SET residual_amount = 0,
     cleared_flag = true,
     cleared_at = now(),
-    cleared_by = $1, 
+    cleared_by = $1,
+    refs = jsonb_set(
+             COALESCE(refs, '{}'::jsonb),
+             '{clearedItems}',
+             jsonb_build_array(
+               jsonb_build_object(
+                 'voucherNo', to_jsonb($5::text),
+                 'voucherId', to_jsonb($6::text),
+                 'lineNo', to_jsonb($7::int),
+                 'amount', to_jsonb(original_amount),
+                 'clearedAt', to_jsonb(now()::timestamptz)
+               )
+             ),
+             true
+           ),
     updated_at = now() 
 WHERE voucher_id = $2 AND company_code = $3 AND account_code = $4 AND cleared_flag = false
 RETURNING id";
-                    selfClearCmd.Parameters.AddWithValue(clearByRef);
-                    selfClearCmd.Parameters.AddWithValue(voucherId);
-                    selfClearCmd.Parameters.AddWithValue(companyCode);
-                    selfClearCmd.Parameters.AddWithValue(clearedAcctCode);
+                    selfClearCmd.Parameters.AddWithValue(clearByRef);                        // $1 cleared_by
+                    selfClearCmd.Parameters.AddWithValue(voucherId);                          // $2 payment voucher id
+                    selfClearCmd.Parameters.AddWithValue(companyCode);                        // $3
+                    selfClearCmd.Parameters.AddWithValue(clearedAcctCode);                    // $4 account_code
+                    selfClearCmd.Parameters.AddWithValue(originalVoucherNo ?? "");            // $5 clearedItems.voucherNo
+                    selfClearCmd.Parameters.AddWithValue(originalVoucherId?.ToString() ?? ""); // $6 clearedItems.voucherId
+                    selfClearCmd.Parameters.AddWithValue(originalLineNo);                     // $7 clearedItems.lineNo
 
                     await using (var selfReader = await selfClearCmd.ExecuteReaderAsync(ct))
                     {
                         if (await selfReader.ReadAsync(ct))
                         {
                             var selfClearedId = selfReader.GetGuid(0);
-                            _logger.LogInformation("[MoneytreePosting] PostProcess: auto-cleared payment voucher's own open_item {OiId} (account={Acct})",
+                            _logger.LogInformation("[MoneytreePosting] PostProcess: auto-cleared payment voucher's own open_item {OiId} (account={Acct}), wrote clearedItems",
                                 selfClearedId, clearedAcctCode);
                         }
                     }
