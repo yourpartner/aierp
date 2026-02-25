@@ -2486,11 +2486,11 @@ UPDATE open_items
 SET residual_amount = 0,
     cleared_flag = true,
     cleared_at = now(),
-    cleared_by_voucher_id = $1, 
+    cleared_by = $1, 
     updated_at = now() 
 WHERE id = $2 AND company_code = $3 AND cleared_flag = false
 RETURNING id, account_code";
-                clearCmd.Parameters.AddWithValue(voucherId);
+                clearCmd.Parameters.AddWithValue(voucherNo);
                 clearCmd.Parameters.AddWithValue(oiGuid);
                 clearCmd.Parameters.AddWithValue(companyCode);
 

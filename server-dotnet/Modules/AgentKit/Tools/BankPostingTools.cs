@@ -736,11 +736,11 @@ UPDATE open_items
 SET residual_amount = GREATEST(residual_amount - $4, 0),
     cleared_flag = (residual_amount - $4) <= 0.00001,
     cleared_at = CASE WHEN (residual_amount - $4) <= 0.00001 THEN now() ELSE cleared_at END,
-    cleared_by_voucher_id = $1, 
+    cleared_by = $1, 
     updated_at = now() 
 WHERE id = $2 AND company_code = $3 AND ABS(residual_amount) > 0.01
 RETURNING id, account_code, residual_amount";
-            clearCmd.Parameters.AddWithValue(voucherId.Value);
+            clearCmd.Parameters.AddWithValue(voucherNo);
             clearCmd.Parameters.AddWithValue(oiGuid);
             clearCmd.Parameters.AddWithValue(companyCode);
             clearCmd.Parameters.AddWithValue(clearAmt);
@@ -752,11 +752,11 @@ UPDATE open_items
 SET residual_amount = 0,
     cleared_flag = true,
     cleared_at = now(),
-    cleared_by_voucher_id = $1, 
+    cleared_by = $1, 
     updated_at = now() 
 WHERE id = $2 AND company_code = $3 AND ABS(residual_amount) > 0.01
 RETURNING id, account_code, residual_amount";
-            clearCmd.Parameters.AddWithValue(voucherId.Value);
+            clearCmd.Parameters.AddWithValue(voucherNo);
             clearCmd.Parameters.AddWithValue(oiGuid);
             clearCmd.Parameters.AddWithValue(companyCode);
         }
