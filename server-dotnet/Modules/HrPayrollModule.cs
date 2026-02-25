@@ -801,6 +801,89 @@ public static class HrPayrollModule
     /// </summary>
     public static void MapHrPayrollModule(this WebApplication app)
     {
+        // POST /payroll/parse-salary-description
+        // LLM で給与説明テキストから構造化配置を抽出する。
+        // Body: { description: string }
+        // Returns: { payrollConfig: { baseSalary, commuteAllowance, socialInsurance, ... } }
+        app.MapPost("/payroll/parse-salary-description", async (HttpRequest req, IConfiguration cfg, IHttpClientFactory httpFactory, CancellationToken ct) =>
+        {
+            var apiKey = cfg["OpenAI:ApiKey"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+            if (string.IsNullOrWhiteSpace(apiKey))
+                return Results.StatusCode(500);
+
+            using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
+            var description = doc.RootElement.TryGetProperty("description", out var d) && d.ValueKind == JsonValueKind.String
+                ? d.GetString()?.Trim() : null;
+            if (string.IsNullOrWhiteSpace(description))
+                return Results.BadRequest(new { error = "description is required" });
+
+            var systemPrompt = @"あなたは日本の給与計算の専門家です。
+従業員の給与説明テキスト（自然言語）を受け取り、構造化された給与設定JSONを返してください。
+
+出力は以下のJSON形式のみ（余計なテキスト不要）:
+{
+  ""baseSalary"": <number|null>,
+  ""commuteAllowance"": <number|null>,
+  ""insuranceBase"": <number|null>,
+  ""socialInsurance"": <boolean>,
+  ""employmentInsurance"": <boolean>,
+  ""incomeTax"": <boolean>,
+  ""residentTax"": <boolean>,
+  ""overtime"": <boolean>,
+  ""holidayWork"": <boolean>,
+  ""lateNight"": <boolean>,
+  ""absenceDeduction"": <boolean>
+}
+
+各フィールドの意味:
+- baseSalary: 基本給・月給・固定給（円）。「万」は10000倍に変換。明示がなければnull
+- commuteAllowance: 通勤手当・交通費（円）。明示がなければnull
+- insuranceBase: 標準報酬月額・社保基数（円）。特に指定がなければnull（baseSalaryが使われる）
+- socialInsurance: 社会保険（健康保険＋厚生年金）に加入するか。「加入しません」「なし」「対象外」等はfalse
+- employmentInsurance: 雇用保険に加入するか
+- incomeTax: 源泉徴収税（所得税）を控除するか
+- residentTax: 住民税を特別徴収するか
+- overtime: 残業手当・時間外手当を計算するか
+- holidayWork: 休日出勤手当を計算するか
+- lateNight: 深夜手当を計算するか
+- absenceDeduction: 欠勤控除を適用するか
+
+重要なルール:
+- 明示的に言及されていない項目はfalseにする（デフォルト無効）
+- 「〜しません」「〜なし」「〜対象外」「〜不要」等の否定表現があればfalse
+- 「社会保険」は健康保険と厚生年金の両方を含む
+- 金額の「万」は×10000に変換（例：30万→300000）
+- 「社会保険加入」とだけ書いてあればtrue、「社会保険加入しません」ならfalse";
+
+            var http = httpFactory.CreateClient("openai");
+            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            var requestBody = new
+            {
+                model = "gpt-4o-mini",
+                temperature = 0.0,
+                messages = new object[]
+                {
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = description }
+                },
+                response_format = new { type = "json_object" }
+            };
+            var json = System.Text.Json.JsonSerializer.Serialize(requestBody);
+            using var response = await http.PostAsync("chat/completions",
+                new StringContent(json, System.Text.Encoding.UTF8, "application/json"), ct);
+            var responseText = await response.Content.ReadAsStringAsync(ct);
+            if (!response.IsSuccessStatusCode)
+                return Results.StatusCode(502);
+
+            using var respDoc = JsonDocument.Parse(responseText);
+            var content = respDoc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+            if (string.IsNullOrWhiteSpace(content))
+                return Results.StatusCode(502);
+
+            using var configDoc = JsonDocument.Parse(content);
+            return Results.Ok(new { payrollConfig = configDoc.RootElement });
+        });
+
         // POST /ai/payroll/compile
         // Converts the provided natural-language payroll policy (company + employee context) into
         // a deterministic DSL payload consumed by the payroll executor. The request body looks like
@@ -3619,14 +3702,14 @@ ORDER BY r.period_month DESC, e.employee_code ASC";
             }, errorMessage);
         }
         // 从 salaries 数组中获取当前有效的工资描述
-        string? GetActiveSalaryDescription(JsonElement employee, string targetMonth)
+        (string? Description, JsonElement? PayrollConfig) GetActiveSalaryEntry(JsonElement employee, string targetMonth)
         {
-            // 首先尝试从 salaries 数组读取
             if (employee.TryGetProperty("salaries", out var salariesArr) && salariesArr.ValueKind == JsonValueKind.Array)
             {
                 var monthStart = targetMonth + "-01";
                 string? activeSalary = null;
                 string? latestStartDate = null;
+                JsonElement? activeConfig = null;
                 
                 foreach (var sal in salariesArr.EnumerateArray())
                 {
@@ -3640,34 +3723,34 @@ ORDER BY r.period_month DESC, e.employee_code ASC";
                     if (string.IsNullOrWhiteSpace(startDate) || string.IsNullOrWhiteSpace(description))
                         continue;
                     
-                    // 开始日期必须小于等于目标月份的第一天
                     if (string.Compare(startDate, monthStart, StringComparison.Ordinal) <= 0)
                     {
-                        // 找最近的一条（开始日期最大的）
                         if (latestStartDate == null || string.Compare(startDate, latestStartDate, StringComparison.Ordinal) > 0)
                         {
                             latestStartDate = startDate;
                             activeSalary = description;
+                            activeConfig = sal.TryGetProperty("payrollConfig", out var pc) && pc.ValueKind == JsonValueKind.Object
+                                ? pc : null;
                         }
                     }
                 }
                 
                 if (!string.IsNullOrWhiteSpace(activeSalary))
-                    return activeSalary;
+                    return (activeSalary, activeConfig);
             }
             
-            // 兜底：尝试读取旧的 nlPayrollDescription 字段
             if (employee.TryGetProperty("nlPayrollDescription", out var nl) && nl.ValueKind == JsonValueKind.String)
-                return nl.GetString();
+                return (nl.GetString(), null);
             
-            return null;
+            return (null, null);
         }
         
-        var empNlDescription = GetActiveSalaryDescription(emp, month);
+        var (empNlDescription, empPayrollConfig) = GetActiveSalaryEntry(emp, month);
         
+        var hasStructuredConfig = empPayrollConfig.HasValue;
         if (debug)
         {
-            trace?.Add(new { step="input.employee", employeeId = employeeId.ToString(), month, nl = empNlDescription });
+            trace?.Add(new { step="input.employee", employeeId = employeeId.ToString(), month, nl = empNlDescription, hasStructuredConfig });
         }
 
         decimal nlBase = 0m; decimal nlCommute = 0m; decimal nlInsuranceBase = 0m;
@@ -4072,29 +4155,67 @@ ORDER BY r.period_month DESC, e.employee_code ASC";
                 companyTextInPolicy.Contains("月給", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("月给", StringComparison.OrdinalIgnoreCase) ||
                 companyTextInPolicy.Contains("固定", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("基本工资", StringComparison.OrdinalIgnoreCase)
             );
-            bool excludeSocialIns = ContainsAny(empText, SocialInsuranceExcludeKeywords);
-            bool wantsHealthRaw = (!string.IsNullOrWhiteSpace(empText) && (empText.Contains("社会保険", StringComparison.OrdinalIgnoreCase) || empText.Contains("社保", StringComparison.OrdinalIgnoreCase) || empText.Contains("健康保険", StringComparison.OrdinalIgnoreCase)))
-                               || (!string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("社会保険", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("社保", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("健康保険", StringComparison.OrdinalIgnoreCase)));
-            bool wantsHealth = wantsHealthRaw && !excludeSocialIns;
-            bool wantsPensionRaw = (!string.IsNullOrWhiteSpace(empText) && (empText.Contains("厚生年金", StringComparison.OrdinalIgnoreCase) || empText.Contains("年金", StringComparison.OrdinalIgnoreCase)))
-                               || (!string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("厚生年金", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("年金", StringComparison.OrdinalIgnoreCase)));
-            bool wantsPension = wantsPensionRaw && !excludeSocialIns;
-            if (debug) trace?.Add(new { step = "socialInsurance.check", empText, wantsHealthRaw, wantsPensionRaw, excludeSocialIns, wantsHealth, wantsPension });
-            bool wantsEmploymentEmp = !string.IsNullOrWhiteSpace(empText) && (empText.Contains("雇用保険", StringComparison.OrdinalIgnoreCase) || empText.Contains("雇佣保险", StringComparison.OrdinalIgnoreCase));
-            bool wantsEmploymentCompany = !string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("雇用保険", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("雇佣保险", StringComparison.OrdinalIgnoreCase));
-            bool excludeEmployment = ContainsAny(empText, EmploymentInsuranceExcludeKeywords);
-            bool wantsEmployment = (wantsEmploymentEmp || wantsEmploymentCompany) && !excludeEmployment;
-            if (debug) trace?.Add(new { step = "employment.check", empText, wantsEmploymentEmp, wantsEmploymentCompany, excludeEmployment, wantsEmployment });
-            bool wantsWithholding = (!string.IsNullOrWhiteSpace(empText) && (empText.Contains("源泉", StringComparison.OrdinalIgnoreCase) || empText.Contains("月額表", StringComparison.OrdinalIgnoreCase) || empText.Contains("甲欄", StringComparison.OrdinalIgnoreCase)))
-                               || (!string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("源泉", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("月額表", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("甲欄", StringComparison.OrdinalIgnoreCase)));
-            bool wantsResidentTax = ContainsAny(empText, "住民税", "住民稅", "市民税", "県民税", "地方税", "特別徴収")
-                               || ContainsAny(companyTextInPolicy, "住民税", "住民稅", "市民税", "県民税", "地方税", "特別徴収");
-            bool wantsOvertime = ContainsAny(empText, "残業", "時間外", "加班") || ContainsAny(companyTextInPolicy, "残業", "時間外", "加班");
-            bool wantsOvertime60 = ContainsAny(empText, "60時間", "６０時間", "60h", "60小时") || ContainsAny(companyTextInPolicy, "60時間", "６０時間", "60h", "60小时");
-            bool wantsHolidayWork = ContainsAny(empText, "休日", "祝日", "节假日", "節假日", "法定休日") || ContainsAny(companyTextInPolicy, "休日", "祝日", "节假日", "節假日", "法定休日");
-            bool wantsLateNight = ContainsAny(empText, "深夜", "22時", "22点", "22點", "late night", "夜間") || ContainsAny(companyTextInPolicy, "深夜", "22時", "22点", "22點", "late night", "夜間");
-            bool wantsAbsence = ContainsAny(empText, "欠勤", "欠勤控除", "欠勤・遅刻", "勤怠控除", "工时不足", "工時不足", "遅刻", "早退")
-                                || ContainsAny(companyTextInPolicy, "欠勤", "欠勤控除", "欠勤・遅刻", "勤怠控除", "工时不足", "工時不足", "遅刻", "早退");
+            // === 構造化設定（payrollConfig）があればそれを優先、なければ従来のキーワード判定 ===
+            bool wantsHealth, wantsPension, wantsEmployment, wantsWithholding, wantsResidentTax;
+            bool wantsOvertime, wantsOvertime60, wantsHolidayWork, wantsLateNight, wantsAbsence;
+
+            bool CfgBool(string prop) => hasStructuredConfig
+                && empPayrollConfig!.Value.TryGetProperty(prop, out var v)
+                && v.ValueKind == JsonValueKind.True;
+            decimal CfgNum(string prop) => hasStructuredConfig
+                && empPayrollConfig!.Value.TryGetProperty(prop, out var v)
+                && (v.ValueKind == JsonValueKind.Number) ? v.GetDecimal() : 0m;
+
+            if (hasStructuredConfig)
+            {
+                // 構造化設定から直接読み取り
+                if (CfgNum("baseSalary") > 0) nlBase = CfgNum("baseSalary");
+                if (CfgNum("commuteAllowance") > 0) nlCommute = CfgNum("commuteAllowance");
+                if (CfgNum("insuranceBase") > 0) nlInsuranceBase = CfgNum("insuranceBase");
+
+                wantsHealth = CfgBool("socialInsurance");
+                wantsPension = CfgBool("socialInsurance");
+                wantsEmployment = CfgBool("employmentInsurance");
+                wantsWithholding = CfgBool("incomeTax");
+                wantsResidentTax = CfgBool("residentTax");
+                wantsOvertime = CfgBool("overtime");
+                wantsOvertime60 = wantsOvertime; // overtime60 follows overtime setting
+                wantsHolidayWork = CfgBool("holidayWork");
+                wantsLateNight = CfgBool("lateNight");
+                wantsAbsence = CfgBool("absenceDeduction");
+
+                if (debug) trace?.Add(new { step = "structuredConfig.applied",
+                    nlBase, nlCommute, nlInsuranceBase,
+                    wantsHealth, wantsPension, wantsEmployment, wantsWithholding,
+                    wantsResidentTax, wantsOvertime, wantsHolidayWork, wantsLateNight, wantsAbsence });
+            }
+            else
+            {
+                // フォールバック：従来のキーワードベース判定
+                bool excludeSocialIns = ContainsAny(empText, SocialInsuranceExcludeKeywords);
+                bool wantsHealthRaw = (!string.IsNullOrWhiteSpace(empText) && (empText.Contains("社会保険", StringComparison.OrdinalIgnoreCase) || empText.Contains("社保", StringComparison.OrdinalIgnoreCase) || empText.Contains("健康保険", StringComparison.OrdinalIgnoreCase)))
+                                   || (!string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("社会保険", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("社保", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("健康保険", StringComparison.OrdinalIgnoreCase)));
+                wantsHealth = wantsHealthRaw && !excludeSocialIns;
+                bool wantsPensionRaw = (!string.IsNullOrWhiteSpace(empText) && (empText.Contains("厚生年金", StringComparison.OrdinalIgnoreCase) || empText.Contains("年金", StringComparison.OrdinalIgnoreCase)))
+                                   || (!string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("厚生年金", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("年金", StringComparison.OrdinalIgnoreCase)));
+                wantsPension = wantsPensionRaw && !excludeSocialIns;
+                if (debug) trace?.Add(new { step = "socialInsurance.check", empText, wantsHealthRaw, wantsPensionRaw, excludeSocialIns, wantsHealth, wantsPension });
+                bool wantsEmploymentEmp = !string.IsNullOrWhiteSpace(empText) && (empText.Contains("雇用保険", StringComparison.OrdinalIgnoreCase) || empText.Contains("雇佣保险", StringComparison.OrdinalIgnoreCase));
+                bool wantsEmploymentCompany = !string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("雇用保険", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("雇佣保险", StringComparison.OrdinalIgnoreCase));
+                bool excludeEmployment = ContainsAny(empText, EmploymentInsuranceExcludeKeywords);
+                wantsEmployment = (wantsEmploymentEmp || wantsEmploymentCompany) && !excludeEmployment;
+                if (debug) trace?.Add(new { step = "employment.check", empText, wantsEmploymentEmp, wantsEmploymentCompany, excludeEmployment, wantsEmployment });
+                wantsWithholding = (!string.IsNullOrWhiteSpace(empText) && (empText.Contains("源泉", StringComparison.OrdinalIgnoreCase) || empText.Contains("月額表", StringComparison.OrdinalIgnoreCase) || empText.Contains("甲欄", StringComparison.OrdinalIgnoreCase)))
+                                   || (!string.IsNullOrWhiteSpace(companyTextInPolicy) && (companyTextInPolicy.Contains("源泉", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("月額表", StringComparison.OrdinalIgnoreCase) || companyTextInPolicy.Contains("甲欄", StringComparison.OrdinalIgnoreCase)));
+                wantsResidentTax = ContainsAny(empText, "住民税", "住民稅", "市民税", "県民税", "地方税", "特別徴収")
+                                   || ContainsAny(companyTextInPolicy, "住民税", "住民稅", "市民税", "県民税", "地方税", "特別徴収");
+                wantsOvertime = ContainsAny(empText, "残業", "時間外", "加班") || ContainsAny(companyTextInPolicy, "残業", "時間外", "加班");
+                wantsOvertime60 = ContainsAny(empText, "60時間", "６０時間", "60h", "60小时") || ContainsAny(companyTextInPolicy, "60時間", "６０時間", "60h", "60小时");
+                wantsHolidayWork = ContainsAny(empText, "休日", "祝日", "节假日", "節假日", "法定休日") || ContainsAny(companyTextInPolicy, "休日", "祝日", "节假日", "節假日", "法定休日");
+                wantsLateNight = ContainsAny(empText, "深夜", "22時", "22点", "22點", "late night", "夜間") || ContainsAny(companyTextInPolicy, "深夜", "22時", "22点", "22點", "late night", "夜間");
+                wantsAbsence = ContainsAny(empText, "欠勤", "欠勤控除", "欠勤・遅刻", "勤怠控除", "工时不足", "工時不足", "遅刻", "早退")
+                                    || ContainsAny(companyTextInPolicy, "欠勤", "欠勤控除", "欠勤・遅刻", "勤怠控除", "工时不足", "工時不足", "遅刻", "早退");
+            }
 
             var compiled = new List<object>();
             var journalRules = new List<object>();

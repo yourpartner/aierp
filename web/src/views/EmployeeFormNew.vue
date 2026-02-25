@@ -239,11 +239,38 @@
                     :rows="2" 
                     size="small" 
                     placeholder="例：月給30万円、交通費月1万円支給" 
+                    @blur="parseSalaryDescription(idx)"
                   />
                 </div>
                 <el-button size="small" text type="danger" @click="removeSalary(idx)" style="margin-top:18px; align-self:flex-start">
                   <el-icon><Delete /></el-icon>
                 </el-button>
+                <!-- 構造化設定（LLM 解析結果） -->
+                <div v-if="item.payrollConfig" class="salary-config" style="width:100%; margin-top:4px; padding:8px 12px; background:#f8fafe; border-radius:6px; border:1px solid #e8edf3;">
+                  <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+                    <span style="font-size:12px; color:#606266; font-weight:500;">給与設定</span>
+                    <el-tag v-if="item._parsing" size="small" type="info">解析中...</el-tag>
+                    <el-button v-else size="small" text type="primary" style="font-size:11px; padding:0 4px;" @click="parseSalaryDescription(idx)">再解析</el-button>
+                  </div>
+                  <div style="display:flex; flex-wrap:wrap; gap:8px 16px; font-size:12px;">
+                    <div style="display:flex; align-items:center; gap:4px;">
+                      <span style="color:#909399;">基本給:</span>
+                      <el-input-number v-model="item.payrollConfig.baseSalary" size="small" :min="0" :step="10000" :controls="false" style="width:100px;" />
+                    </div>
+                    <div style="display:flex; align-items:center; gap:4px;">
+                      <span style="color:#909399;">通勤手当:</span>
+                      <el-input-number v-model="item.payrollConfig.commuteAllowance" size="small" :min="0" :step="1000" :controls="false" style="width:80px;" />
+                    </div>
+                    <el-checkbox v-model="item.payrollConfig.socialInsurance" size="small">社会保険</el-checkbox>
+                    <el-checkbox v-model="item.payrollConfig.employmentInsurance" size="small">雇用保険</el-checkbox>
+                    <el-checkbox v-model="item.payrollConfig.incomeTax" size="small">源泉徴収</el-checkbox>
+                    <el-checkbox v-model="item.payrollConfig.residentTax" size="small">住民税</el-checkbox>
+                    <el-checkbox v-model="item.payrollConfig.overtime" size="small">残業手当</el-checkbox>
+                    <el-checkbox v-model="item.payrollConfig.holidayWork" size="small">休日手当</el-checkbox>
+                    <el-checkbox v-model="item.payrollConfig.lateNight" size="small">深夜手当</el-checkbox>
+                    <el-checkbox v-model="item.payrollConfig.absenceDeduction" size="small">欠勤控除</el-checkbox>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1213,11 +1240,48 @@ function removeContract(idx: number) {
 function addSalary() {
   model.salaries.push({
     startDate: new Date().toISOString().slice(0, 10),
-    description: ''
+    description: '',
+    payrollConfig: null
   })
 }
 function removeSalary(idx: number) {
   model.salaries.splice(idx, 1)
+}
+
+async function parseSalaryDescription(idx: number) {
+  const item = model.salaries[idx]
+  if (!item?.description?.trim()) return
+  if (item._parsing) return
+
+  // 检查描述是否与上次解析时一致
+  if (item._lastParsedDesc === item.description && item.payrollConfig) return
+
+  item._parsing = true
+  try {
+    const { data } = await api.post('/payroll/parse-salary-description', {
+      description: item.description
+    })
+    if (data?.payrollConfig) {
+      item.payrollConfig = {
+        baseSalary: data.payrollConfig.baseSalary ?? null,
+        commuteAllowance: data.payrollConfig.commuteAllowance ?? null,
+        insuranceBase: data.payrollConfig.insuranceBase ?? null,
+        socialInsurance: !!data.payrollConfig.socialInsurance,
+        employmentInsurance: !!data.payrollConfig.employmentInsurance,
+        incomeTax: !!data.payrollConfig.incomeTax,
+        residentTax: !!data.payrollConfig.residentTax,
+        overtime: !!data.payrollConfig.overtime,
+        holidayWork: !!data.payrollConfig.holidayWork,
+        lateNight: !!data.payrollConfig.lateNight,
+        absenceDeduction: !!data.payrollConfig.absenceDeduction
+      }
+      item._lastParsedDesc = item.description
+    }
+  } catch (e) {
+    console.warn('Failed to parse salary description:', e)
+  } finally {
+    item._parsing = false
+  }
 }
 
 function isSalaryActive(item: any) {
@@ -1501,10 +1565,10 @@ function buildPayload() {
       periodFrom: toYmd(c.periodFrom),
       periodTo: toYmd(c.periodTo)
     })),
-    salaries: model.salaries.map(s => ({
-      ...s,
-      startDate: toYmd(s.startDate)
-    })),
+    salaries: model.salaries.map(s => {
+      const { _parsing, _lastParsedDesc, ...rest } = s
+      return { ...rest, startDate: toYmd(s.startDate) }
+    }),
     departments: model.departments.map(d => ({
       ...d,
       fromDate: toYmd(d.fromDate),
