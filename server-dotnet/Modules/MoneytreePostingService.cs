@@ -1717,10 +1717,7 @@ LIMIT 10";
             if (hasPartner)
             {
                 oiCmd.Parameters.AddWithValue(DBNull.Value); // $4 placeholder
-                if (Guid.TryParse(partnerId, out var pGuid))
-                    oiCmd.Parameters.AddWithValue(pGuid);        // $5
-                else
-                    oiCmd.Parameters.AddWithValue(partnerId!);   // $5
+                oiCmd.Parameters.AddWithValue(partnerId!);       // $5 always text (open_items.partner_id is TEXT)
             }
 
             openItems = new List<OpenItemMatch>();

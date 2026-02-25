@@ -1340,6 +1340,13 @@ async function save() {
         if (next[key] === '' || typeof next[key] === 'undefined') next[key] = null
       })
 
+      const rules = getRules(current.accountCode)
+      if (rules?.fieldRules) {
+        ;['customerId','vendorId','departmentId','employeeId','paymentDate'].forEach((key) => {
+          if (rules.fieldRules[key] === 'hidden') next[key] = null
+        })
+      }
+
       if (taxNeeded) {
         const rateDecimal = sanitizeRate(current.taxRate) / 100
         const normalizedTaxAmount = roundCurrency(taxAmount)

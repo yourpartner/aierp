@@ -378,10 +378,7 @@ LIMIT 20";
         if (hasCounterparty)
         {
             cmd.Parameters.AddWithValue(DBNull.Value);   // $5 placeholder
-            if (Guid.TryParse(partnerIdForQuery, out var partnerGuid))
-                cmd.Parameters.AddWithValue(partnerGuid);    // $6
-            else
-                cmd.Parameters.AddWithValue(partnerIdForQuery!); // $6
+            cmd.Parameters.AddWithValue(partnerIdForQuery!); // $6 always text (open_items.partner_id is TEXT)
         }
 
         var items = new List<object>();
