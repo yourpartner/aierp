@@ -1537,7 +1537,8 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         string? ExtractedName,
         List<OpenItemMatch>? OpenItems,
         List<LearnedPatternMatch>? LearnedPatterns,
-        List<HistoricalVoucherMatch>? HistoricalVouchers);
+        List<HistoricalVoucherMatch>? HistoricalVouchers,
+        string? BankAccountCode = null);
 
     private sealed record OpenItemMatch(
         string Id, string AccountCode, decimal ResidualAmount, string? DocDate, string? VoucherNo, string? EffectiveDate);
@@ -1559,7 +1560,16 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         var desc = row.Description?.Trim() ?? "";
         var isWithdrawal = (row.WithdrawalAmount ?? 0m) < 0m;
         var isTransfer = desc.StartsWith("振込 ") || desc.StartsWith("振込　");
-        if (!isTransfer) return null;
+
+        if (!isTransfer)
+        {
+            // 非振込でも銀行科目は事前解決する
+            await using var conn2 = await _dataSource.OpenConnectionAsync(ct);
+            string? bankAcctOnly = await ResolveBankAccountCodeAsync(conn2, companyCode, row, ct);
+            if (bankAcctOnly != null)
+                return new PreIdentifyResult(false, null, null, null, null, null, null, null, null, bankAcctOnly);
+            return null;
+        }
 
         // 提取取引先名（与 BankPostingTools.ExtractCounterpartyName 相同逻辑）
         var extractedName = desc;
@@ -1820,11 +1830,52 @@ LIMIT 200";
             }
         }
 
-        _logger.LogInformation("[MoneytreePosting] PreIdentify: desc={Desc}, extracted={Extracted}, kind={Kind}, partnerId={PartnerId}, name={Name}, openItems={OI}, learnedPatterns={LP}, histVouchers={HV}",
-            desc, extractedName, kind ?? "(none)", partnerId ?? "(none)", partnerName ?? "(none)",
-            openItems?.Count ?? 0, learnedPatterns?.Count ?? 0, historicalVouchers?.Count ?? 0);
+        // 5. 银行口座の勘定科目コードを事前解決（resolve_bank_account 相当）
+        string? bankAccountCode = await ResolveBankAccountCodeAsync(conn, companyCode, row, ct);
 
-        return new PreIdentifyResult(true, kind, partnerId, partnerCode, partnerName, extractedName, openItems, learnedPatterns, historicalVouchers);
+        _logger.LogInformation("[MoneytreePosting] PreIdentify: desc={Desc}, extracted={Extracted}, kind={Kind}, partnerId={PartnerId}, name={Name}, openItems={OI}, learnedPatterns={LP}, histVouchers={HV}, bankAccount={BankAcct}",
+            desc, extractedName, kind ?? "(none)", partnerId ?? "(none)", partnerName ?? "(none)",
+            openItems?.Count ?? 0, learnedPatterns?.Count ?? 0, historicalVouchers?.Count ?? 0, bankAccountCode ?? "(none)");
+
+        return new PreIdentifyResult(true, kind, partnerId, partnerCode, partnerName, extractedName, openItems, learnedPatterns, historicalVouchers, bankAccountCode);
+    }
+
+    private static async Task<string?> ResolveBankAccountCodeAsync(
+        NpgsqlConnection conn, string companyCode, MoneytreeTransactionRow row, CancellationToken ct)
+    {
+        var bankName = row.BankName?.Trim();
+        var accountNumber = row.AccountNumber?.Trim();
+        await using var bankCmd = conn.CreateCommand();
+        bankCmd.CommandText = "SELECT account_code, payload FROM accounts WHERE company_code=$1 AND COALESCE((payload->>'isBank')::boolean, false) = true";
+        bankCmd.Parameters.AddWithValue(companyCode);
+        string? result = null;
+        await using var bankReader = await bankCmd.ExecuteReaderAsync(ct);
+        while (await bankReader.ReadAsync(ct))
+        {
+            var acctCode = bankReader.GetString(0);
+            try
+            {
+                using var doc = JsonDocument.Parse(bankReader.GetString(1));
+                if (!doc.RootElement.TryGetProperty("bank", out var bankInfo)) continue;
+                var bn = bankInfo.TryGetProperty("bankName", out var bnEl) && bnEl.ValueKind == JsonValueKind.String ? bnEl.GetString() : null;
+                var an = bankInfo.TryGetProperty("accountNo", out var anEl) && anEl.ValueKind == JsonValueKind.String ? anEl.GetString() : null;
+
+                if (!string.IsNullOrWhiteSpace(accountNumber) && !string.IsNullOrWhiteSpace(an))
+                {
+                    var normInput = System.Text.RegularExpressions.Regex.Replace(accountNumber, @"[\s\-]", "");
+                    var normDb = System.Text.RegularExpressions.Regex.Replace(an, @"[\s\-]", "");
+                    if (string.Equals(normInput, normDb, StringComparison.OrdinalIgnoreCase))
+                        return acctCode;
+                }
+                if (result == null && !string.IsNullOrWhiteSpace(bankName) && !string.IsNullOrWhiteSpace(bn))
+                {
+                    if (bn.Contains(bankName, StringComparison.OrdinalIgnoreCase) || bankName.Contains(bn, StringComparison.OrdinalIgnoreCase))
+                        result = acctCode;
+                }
+            }
+            catch { }
+        }
+        return result;
     }
 
     private static bool PreIdIsSimilar(string a, string b)
@@ -1998,131 +2049,177 @@ LIMIT 200";
         }
 
         sb.AppendLine();
+
+        // 银行科目
+        var bankAcct = preContext?.BankAccountCode;
+
         if (isTransfer && preContext != null)
         {
-            // 预查询结果已嵌入，AI 无需调用 identify_bank_counterparty / search_bank_open_items
-            sb.AppendLine("【事前調査結果】この取引は「振込」です。以下の事前調査結果を使って記帳してください。");
+            // 银行科目情报
+            if (!string.IsNullOrWhiteSpace(bankAcct))
+                sb.AppendLine($"■ 銀行口座の勘定科目: {bankAcct} （事前解決済み）");
+            else
+                sb.AppendLine("■ 銀行口座: 未解決（resolve_bank_account を呼んでください）");
             sb.AppendLine();
 
+            // 取引先情报
             if (!string.IsNullOrWhiteSpace(preContext.CounterpartyKind))
             {
-                sb.AppendLine($"■ 取引先の特定結果:");
-                sb.AppendLine($"  - 種類: {preContext.CounterpartyKind}");
-                sb.AppendLine($"  - ID: {preContext.CounterpartyId}");
-                if (!string.IsNullOrWhiteSpace(preContext.CounterpartyCode))
-                    sb.AppendLine($"  - コード: {preContext.CounterpartyCode}");
-                sb.AppendLine($"  - 名前: {preContext.CounterpartyName}");
-                sb.AppendLine($"  - 抽出名: {preContext.ExtractedName}");
+                sb.AppendLine($"■ 取引先: {preContext.CounterpartyName} ({preContext.CounterpartyKind}, ID={preContext.CounterpartyId})");
             }
             else
             {
-                sb.AppendLine($"■ 取引先の特定結果: 「{preContext.ExtractedName}」に該当する取引先が見つかりませんでした。");
+                sb.AppendLine($"■ 取引先: 「{preContext.ExtractedName}」に該当なし");
             }
             sb.AppendLine();
 
-            if (preContext.OpenItems != null && preContext.OpenItems.Count > 0)
+            // === Case A: 未清項あり + 银行科目あり → 完全なパラメータを提供 ===
+            if (preContext.OpenItems != null && preContext.OpenItems.Count > 0 && !string.IsNullOrWhiteSpace(bankAcct))
+            {
+                var feeAmt = pairedFee?.GetPositiveAmount() ?? 0m;
+                var bestOi = preContext.OpenItems[0];
+                var isExactNet = Math.Abs(bestOi.ResidualAmount - amount) < 1m;
+                var isExactTotal = feeAmt > 0 && Math.Abs(bestOi.ResidualAmount - (amount + feeAmt)) < 1m;
+                var oiAccount = bestOi.AccountCode;
+
+                sb.AppendLine($"■ マッチする未清項: open_item_id={bestOi.Id}, account={oiAccount}, residual=¥{bestOi.ResidualAmount:N0}, voucher_no={bestOi.VoucherNo}");
+                sb.AppendLine();
+                sb.AppendLine("【指示】以下のパラメータで create_voucher を呼び、その後 clear_open_item を呼んでください。");
+                sb.AppendLine("※ 下記のパラメータをそのまま使ってください。変更しないでください。");
+                sb.AppendLine();
+
+                // 仕訳構造を直接指定
+                sb.AppendLine("create_voucher パラメータ:");
+                sb.AppendLine($"  documentSessionId: \"\"");
+                sb.AppendLine($"  header:");
+                sb.AppendLine($"    postingDate: \"{(row.TransactionDate?.ToString("yyyy-MM-dd") ?? DateTime.Today.ToString("yyyy-MM-dd"))}\"");
+                sb.AppendLine($"    summary: \"{desc}\"");
+                sb.AppendLine($"  lines:");
+
+                if (isWithdrawal)
+                {
+                    // 出金: DR=未清項科目, CR=銀行口座
+                    sb.AppendLine($"    - accountCode: \"{oiAccount}\", amount: {amount}, side: \"DR\"");
+                    if (feeAmt > 0)
+                        sb.AppendLine($"    - accountCode: \"858\", amount: {feeAmt}, side: \"DR\", note: \"振込手数料\"");
+                    sb.AppendLine($"    - accountCode: \"{bankAcct}\", amount: {amount + feeAmt}, side: \"CR\"");
+                }
+                else
+                {
+                    // 入金: DR=銀行口座, CR=未清項科目
+                    sb.AppendLine($"    - accountCode: \"{bankAcct}\", amount: {amount}, side: \"DR\"");
+                    sb.AppendLine($"    - accountCode: \"{oiAccount}\", amount: {amount}, side: \"CR\"");
+                }
+
+                sb.AppendLine();
+                sb.AppendLine("create_voucher 成功後:");
+                sb.AppendLine($"  clear_open_item: open_item_id=\"{bestOi.Id}\", voucher_no=（create_voucher の戻り値）");
+            }
+            // === Case B: 未清項あり + 银行科目なし → 指示を出す ===
+            else if (preContext.OpenItems != null && preContext.OpenItems.Count > 0)
             {
                 sb.AppendLine("■ 未清項の検索結果:");
                 foreach (var oi in preContext.OpenItems)
-                {
                     sb.AppendLine($"  - open_item_id={oi.Id}, account={oi.AccountCode}, residual=¥{oi.ResidualAmount:N0}, doc_date={oi.DocDate}, voucher_no={oi.VoucherNo}");
-                }
                 sb.AppendLine();
                 sb.AppendLine("【指示】");
                 sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
-                sb.AppendLine("  2. 上記の未清項から金額がマッチするものを選び、その勘定科目(account)で仕訳を作成してください（create_voucher）。");
-                if (pairedFee != null)
-                {
-                    var feeAmt = pairedFee.GetPositiveAmount();
-                    sb.AppendLine($"     ※ 振込手数料 ¥{feeAmt:N0} があります。");
-                    sb.AppendLine($"     ※ 未清項の残高が取引金額¥{amount:N0}と一致 → 手数料は当方負担（手数料行を追加）");
-                    sb.AppendLine($"     ※ 未清項の残高が取引金額+手数料¥{amount + feeAmt:N0}と一致 → 手数料は先方負担（手数料行を追加 + 未清項は全額消込）");
-                }
-                sb.AppendLine("  3. 仕訳作成後、clear_open_item で該当する未清項を消込してください。");
-                if (!string.IsNullOrWhiteSpace(preContext.CounterpartyId))
-                    sb.AppendLine($"  ※ 取引先ID: {preContext.CounterpartyId}");
+                sb.AppendLine("  2. 上記の未清項科目(account)で仕訳を作成してください。");
+                if (isWithdrawal)
+                    sb.AppendLine($"     出金のため: 借方=未清項科目, 貸方=銀行口座");
+                else
+                    sb.AppendLine($"     入金のため: 借方=銀行口座, 貸方=未清項科目");
+                sb.AppendLine("  3. create_voucher 成功後、clear_open_item で消込してください。");
             }
+            // === Case C: 未清項なし → 歴史/学習パターンまたはデフォルト ===
             else
             {
                 if (!string.IsNullOrWhiteSpace(preContext.CounterpartyKind))
-                    sb.AppendLine("■ 未清項の検索結果: 該当する未清項が見つかりませんでした。");
-                sb.AppendLine();
+                    sb.AppendLine("■ 未清項の検索結果: 該当なし");
 
-                // 历史凭证优先于学习模式（历史凭证是实际记账结果，更准确）
-                // 检查是否有完全匹配摘要的历史凭证
                 var exactHistMatch = preContext.HistoricalVouchers?.FirstOrDefault(
                     hv => string.Equals(hv.Description?.Trim(), desc, StringComparison.OrdinalIgnoreCase));
 
                 if (exactHistMatch != null)
                 {
-                    // 有完全匹配的历史凭证 → 直接指定科目，不展示其他可能混淆的信息
-                    sb.AppendLine("■ 過去の同一取引の記帳実績（同じ摘要）:");
-                    sb.AppendLine($"  伝票番号: {exactHistMatch.VoucherNo}");
-                    sb.AppendLine($"  使用科目: {exactHistMatch.AccountsSummary}");
+                    sb.AppendLine($"■ 過去の同一摘要の記帳実績: 科目={exactHistMatch.AccountsSummary} (伝票={exactHistMatch.VoucherNo})");
                     sb.AppendLine();
-                    sb.AppendLine("【指示】");
-                    sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
-                    sb.AppendLine($"  2. 過去実績と同じ科目構成で仕訳を作成してください（上記の科目をそのまま使用）。");
-                    sb.AppendLine("  ※ この取引は過去に同じ摘要で記帳実績があります。必ず過去と同じ科目を使ってください。");
-                    sb.AppendLine("  ※ デフォルト科目（仮払金183等）は使わないでください。");
-                }
-                else
-                {
-                    // 嵌入历史凭证（优先）
-                    if (preContext.HistoricalVouchers != null && preContext.HistoricalVouchers.Count > 0)
+                    if (!string.IsNullOrWhiteSpace(bankAcct))
                     {
-                        sb.AppendLine("■ 過去の類似取引の記帳実績:");
-                        foreach (var hv in preContext.HistoricalVouchers)
-                        {
-                            sb.AppendLine($"  - 摘要: {hv.Description}, 伝票番号: {hv.VoucherNo}, 使用科目: {hv.AccountsSummary}");
-                        }
-                        sb.AppendLine();
-                    }
-
-                    // 嵌入学习模式（次优先，且只在没有历史凭证时展示）
-                    if ((preContext.HistoricalVouchers?.Count ?? 0) == 0
-                        && preContext.LearnedPatterns != null && preContext.LearnedPatterns.Count > 0)
-                    {
-                        sb.AppendLine("■ 学習済み記帳パターン（過去の手動修正から学習）:");
-                        foreach (var lp in preContext.LearnedPatterns)
-                        {
-                            sb.AppendLine($"  - 摘要パターン: {lp.Description}, 借方: {lp.DebitAccount}, 貸方: {lp.CreditAccount}, 確度: {lp.Confidence}");
-                        }
-                        sb.AppendLine();
-                    }
-
-                    var hasPatterns = (preContext.LearnedPatterns?.Count ?? 0) > 0 || (preContext.HistoricalVouchers?.Count ?? 0) > 0;
-                    sb.AppendLine("【指示】");
-                    sb.AppendLine("  1. resolve_bank_account で銀行口座の勘定科目を特定してください。");
-                    if (hasPatterns)
-                    {
-                        sb.AppendLine("  2. 上記の過去実績/学習パターンを参考にして、同じ勘定科目で仕訳を作成してください（create_voucher）。");
-                        sb.AppendLine("  ※ デフォルト科目（仮払金183等）は使わないでください。過去実績がある場合はそれに従ってください。");
+                        sb.AppendLine("【指示】過去実績と同じ科目で create_voucher を呼んでください。");
+                        sb.AppendLine($"  銀行口座: {bankAcct}");
                     }
                     else
                     {
-                        sb.AppendLine("  2. search_historical_patterns で過去パターンを検索してください。");
-                        sb.AppendLine("  3. パターンがあればその科目で記帳、なければデフォルト科目（出金:仮払金183/入金:仮受金319）で記帳してください。");
+                        sb.AppendLine("【指示】");
+                        sb.AppendLine("  1. resolve_bank_account で銀行口座を特定");
+                        sb.AppendLine("  2. 過去実績と同じ科目で仕訳を作成");
                     }
+                }
+                else if (preContext.HistoricalVouchers != null && preContext.HistoricalVouchers.Count > 0)
+                {
+                    sb.AppendLine("■ 類似取引の記帳実績:");
+                    foreach (var hv in preContext.HistoricalVouchers)
+                        sb.AppendLine($"  - 摘要: {hv.Description}, 科目: {hv.AccountsSummary}");
+                    sb.AppendLine();
+                    if (!string.IsNullOrWhiteSpace(bankAcct))
+                        sb.AppendLine($"【指示】上記の過去実績を参考にして create_voucher を呼んでください。銀行口座: {bankAcct}");
+                    else
+                    {
+                        sb.AppendLine("【指示】");
+                        sb.AppendLine("  1. resolve_bank_account で銀行口座を特定");
+                        sb.AppendLine("  2. 上記の過去実績を参考にして仕訳を作成");
+                    }
+                }
+                else if (preContext.LearnedPatterns != null && preContext.LearnedPatterns.Count > 0)
+                {
+                    sb.AppendLine("■ 学習済みパターン:");
+                    foreach (var lp in preContext.LearnedPatterns)
+                        sb.AppendLine($"  - 借方: {lp.DebitAccount}, 貸方: {lp.CreditAccount}, 確度: {lp.Confidence}");
+                    sb.AppendLine();
+                    if (!string.IsNullOrWhiteSpace(bankAcct))
+                        sb.AppendLine($"【指示】上記の学習パターンに従って create_voucher を呼んでください。銀行口座: {bankAcct}");
+                    else
+                    {
+                        sb.AppendLine("【指示】");
+                        sb.AppendLine("  1. resolve_bank_account で銀行口座を特定");
+                        sb.AppendLine("  2. 上記の学習パターンに従って仕訳を作成");
+                    }
+                }
+                else
+                {
+                    // 完全にパターンなし → search_historical_patterns を呼ぶかデフォルト
+                    var defaultDebit = isWithdrawal ? "183" : bankAcct ?? "(銀行口座)";
+                    var defaultCredit = isWithdrawal ? (bankAcct ?? "(銀行口座)") : "319";
+                    sb.AppendLine();
+                    sb.AppendLine("【指示】");
+                    if (string.IsNullOrWhiteSpace(bankAcct))
+                        sb.AppendLine("  1. resolve_bank_account で銀行口座を特定");
+                    sb.AppendLine("  2. search_historical_patterns で過去パターンを検索");
+                    sb.AppendLine($"  3. パターンがなければデフォルト科目で記帳: 借方={defaultDebit}, 貸方={defaultCredit}");
                 }
             }
             sb.AppendLine();
-            sb.AppendLine("※ 事前調査済みのため、identify_bank_counterparty / search_bank_open_items を再度呼ぶ必要はありません。");
-            sb.AppendLine("※ ただし、事前調査で見つからなかった場合は search_bank_open_items（counterparty_id なし）で再検索してもOKです。");
+            sb.AppendLine("※ identify_bank_counterparty / search_bank_open_items は事前調査済みのため呼ぶ必要はありません。");
             sb.AppendLine("※ lookup_account で人名を検索しないでください。");
+        }
+        else if (!isTransfer && preContext != null && !string.IsNullOrWhiteSpace(bankAcct))
+        {
+            // 非振込（利息、手数料等）だが銀行科目は事前解決済み
+            sb.AppendLine($"■ 銀行口座の勘定科目: {bankAcct} （事前解決済み）");
+            sb.AppendLine();
+            sb.AppendLine("処理手順に従い、適切なツールを呼び出して記帳してください。");
+            sb.AppendLine($"※ 銀行口座の勘定科目は {bankAcct} です。resolve_bank_account を呼ぶ必要はありません。");
         }
         else if (isTransfer)
         {
-            // fallback: 没有预查询结果时仍然用原指令
             sb.AppendLine("【重要】この取引は「振込」です。以下の手順を必ず実行してください：");
             sb.AppendLine("  Step 1: resolve_bank_account で銀行口座の勘定科目を特定");
-            sb.AppendLine("  Step 2: identify_bank_counterparty で摘要から取引先（従業員/仕入先/得意先）を特定");
-            sb.AppendLine("  Step 3: search_bank_open_items で取引先の未清項（買掛金/未払費用/未払金等）を検索");
-            sb.AppendLine("  Step 4a: マッチする未清項がある → その科目で仕訳作成 + clear_open_item で消込");
+            sb.AppendLine("  Step 2: identify_bank_counterparty で摘要から取引先を特定");
+            sb.AppendLine("  Step 3: search_bank_open_items で未清項を検索");
+            sb.AppendLine("  Step 4a: マッチあり → その科目で仕訳作成 + clear_open_item で消込");
             sb.AppendLine("  Step 4b: マッチなし → search_historical_patterns で過去パターン検索");
             sb.AppendLine("  Step 4c: パターンもなし → デフォルト科目（出金:仮払金183/入金:仮受金319）で記帳");
-            sb.AppendLine("※ lookup_account で人名を検索しないでください。人名は identify_bank_counterparty で特定します。");
-            sb.AppendLine("※ identify_bank_counterparty と search_bank_open_items の呼び出しをスキップしないでください。");
         }
         else
         {
