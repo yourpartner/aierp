@@ -6631,7 +6631,9 @@ WHERE company_code = $1 AND id = $2";
                                         accountCode = new { type = "string", description = "勘定科目コード（lookup_accountで取得）" },
                                         amount = new { type = "number", description = "金額（税込ではなく各行の実額）" },
                                         side = new { type = "string", description = "DR または CR" },
-                                        note = new { type = "string" }
+                                        note = new { type = "string" },
+                                        employeeId = new { type = "string", description = "従業員UUID（指示された場合のみ設定）" },
+                                        departmentId = new { type = "string", description = "部門UUID（指示された場合のみ設定）" }
                                     },
                                     required = new[] { "accountCode", "amount", "side" }
                                 },

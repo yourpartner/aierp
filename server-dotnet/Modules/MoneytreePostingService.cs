@@ -1501,6 +1501,8 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
                 {
                     _logger.LogInformation("[MoneytreePosting] Batch skill: tx {Id} → posted as {VoucherNo}",
                         row.Id, skillResult.VoucherInfo?.VoucherNo);
+
+                    await PostProcessVoucherAsync(companyCode, row, preContext, skillResult, ct);
                 }
                 else
                 {
@@ -1538,7 +1540,9 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         List<OpenItemMatch>? OpenItems,
         List<LearnedPatternMatch>? LearnedPatterns,
         List<HistoricalVoucherMatch>? HistoricalVouchers,
-        string? BankAccountCode = null);
+        string? BankAccountCode = null,
+        string? CounterpartyDepartmentId = null,
+        string? MatchedOpenItemId = null);
 
     private sealed record OpenItemMatch(
         string Id, string AccountCode, decimal ResidualAmount, string? DocDate, string? VoucherNo, string? EffectiveDate);
@@ -1592,13 +1596,15 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
 
         string? kind = null, partnerId = null, partnerCode = null, partnerName = null;
 
+        string? departmentId = null;
+
         if (isWithdrawal)
         {
             // 1a. 匹配员工（全量读取 payload 后相似度打分，与 MatchEmployeeAsync 相同）
             await using var empCmd = conn.CreateCommand();
             empCmd.CommandText = "SELECT id, employee_code, payload FROM employees WHERE company_code = $1 ORDER BY updated_at DESC LIMIT 100";
             empCmd.Parameters.AddWithValue(companyCode);
-            var empCandidates = new List<(Guid Id, string Code, string? Name, double Score)>();
+            var empCandidates = new List<(Guid Id, string Code, string? Name, string? DeptCode, double Score)>();
             int empCount = 0;
             await using (var empReader = await empCmd.ExecuteReaderAsync(ct))
             {
@@ -1612,13 +1618,14 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
                     var eName = root.TryGetProperty("name", out var n) ? n.GetString() : null;
                     var eKana = root.TryGetProperty("nameKana", out var nk) ? nk.GetString() : null;
                     var eKanji = root.TryGetProperty("nameKanji", out var nj) ? nj.GetString() : null;
+                    var eDeptCode = root.TryGetProperty("departmentCode", out var dce) && dce.ValueKind == JsonValueKind.String ? dce.GetString() : null;
                     double score = 0;
                     if (!string.IsNullOrWhiteSpace(eKana)) score = Math.Max(score, PreIdSimilarity(extractedName, eKana));
                     if (!string.IsNullOrWhiteSpace(eName)) score = Math.Max(score, PreIdSimilarity(extractedName, eName));
                     if (!string.IsNullOrWhiteSpace(eKanji)) score = Math.Max(score, PreIdSimilarity(extractedName, eKanji));
                     if (score >= 0.3)
                         _logger.LogInformation("[PreIdentify] Employee {Code}: name={Name}, kana={Kana}, kanji={Kanji}, score={Score:F3}", code, eName, eKana, eKanji, score);
-                    if (score >= 0.6) empCandidates.Add((id, code, eName ?? eKanji, score));
+                    if (score >= 0.6) empCandidates.Add((id, code, eName ?? eKanji, eDeptCode, score));
                 }
             }
             _logger.LogInformation("[PreIdentify] Scanned {Count} employees, {Candidates} candidates (score>=0.6)", empCount, empCandidates.Count);
@@ -1630,6 +1637,20 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
                 partnerCode = bestEmp.Code;
                 partnerName = bestEmp.Name;
                 _logger.LogInformation("[PreIdentify] Matched employee: {Code} {Name} score={Score:F3}", bestEmp.Code, bestEmp.Name, bestEmp.Score);
+
+                if (!string.IsNullOrWhiteSpace(bestEmp.DeptCode))
+                {
+                    await using var deptCmd = conn.CreateCommand();
+                    deptCmd.CommandText = "SELECT id FROM departments WHERE company_code=$1 AND department_code=$2 LIMIT 1";
+                    deptCmd.Parameters.AddWithValue(companyCode);
+                    deptCmd.Parameters.AddWithValue(bestEmp.DeptCode);
+                    var deptResult = await deptCmd.ExecuteScalarAsync(ct);
+                    if (deptResult is Guid deptGuid)
+                    {
+                        departmentId = deptGuid.ToString();
+                        _logger.LogInformation("[PreIdentify] Resolved department: code={DeptCode}, id={DeptId}", bestEmp.DeptCode, departmentId);
+                    }
+                }
             }
             else
             {
@@ -1857,11 +1878,15 @@ LIMIT 200";
         // 5. 银行口座の勘定科目コードを事前解決（resolve_bank_account 相当）
         string? bankAccountCode = await ResolveBankAccountCodeAsync(conn, companyCode, row, ct);
 
-        _logger.LogInformation("[MoneytreePosting] PreIdentify: desc={Desc}, extracted={Extracted}, kind={Kind}, partnerId={PartnerId}, name={Name}, openItems={OI}, learnedPatterns={LP}, histVouchers={HV}, bankAccount={BankAcct}",
-            desc, extractedName, kind ?? "(none)", partnerId ?? "(none)", partnerName ?? "(none)",
-            openItems?.Count ?? 0, learnedPatterns?.Count ?? 0, historicalVouchers?.Count ?? 0, bankAccountCode ?? "(none)");
+        var matchedOpenItemId = openItems?.Count > 0 ? openItems[0].Id : null;
 
-        return new PreIdentifyResult(true, kind, partnerId, partnerCode, partnerName, extractedName, openItems, learnedPatterns, historicalVouchers, bankAccountCode);
+        _logger.LogInformation("[MoneytreePosting] PreIdentify: desc={Desc}, extracted={Extracted}, kind={Kind}, partnerId={PartnerId}, name={Name}, openItems={OI}, learnedPatterns={LP}, histVouchers={HV}, bankAccount={BankAcct}, deptId={DeptId}, matchedOI={MatchedOI}",
+            desc, extractedName, kind ?? "(none)", partnerId ?? "(none)", partnerName ?? "(none)",
+            openItems?.Count ?? 0, learnedPatterns?.Count ?? 0, historicalVouchers?.Count ?? 0, bankAccountCode ?? "(none)",
+            departmentId ?? "(none)", matchedOpenItemId ?? "(none)");
+
+        return new PreIdentifyResult(true, kind, partnerId, partnerCode, partnerName, extractedName, openItems, learnedPatterns, historicalVouchers, bankAccountCode,
+            CounterpartyDepartmentId: departmentId, MatchedOpenItemId: matchedOpenItemId);
     }
 
     private static async Task<string?> ResolveBankAccountCodeAsync(
@@ -2121,24 +2146,26 @@ LIMIT 200";
                 sb.AppendLine($"    summary: \"{desc}\"");
                 sb.AppendLine($"  lines:");
 
+                var empIdPart = !string.IsNullOrWhiteSpace(preContext.CounterpartyId) && preContext.CounterpartyKind == "employee"
+                    ? $", employeeId: \"{preContext.CounterpartyId}\"" : "";
+                var deptIdPart = !string.IsNullOrWhiteSpace(preContext.CounterpartyDepartmentId)
+                    ? $", departmentId: \"{preContext.CounterpartyDepartmentId}\"" : "";
+
                 if (isWithdrawal)
                 {
-                    // 出金: DR=未清項科目, CR=銀行口座
-                    sb.AppendLine($"    - accountCode: \"{oiAccount}\", amount: {amount}, side: \"DR\"");
+                    sb.AppendLine($"    - accountCode: \"{oiAccount}\", amount: {amount}, side: \"DR\"{empIdPart}{deptIdPart}");
                     if (feeAmt > 0)
                         sb.AppendLine($"    - accountCode: \"858\", amount: {feeAmt}, side: \"DR\", note: \"振込手数料\"");
                     sb.AppendLine($"    - accountCode: \"{bankAcct}\", amount: {amount + feeAmt}, side: \"CR\"");
                 }
                 else
                 {
-                    // 入金: DR=銀行口座, CR=未清項科目
                     sb.AppendLine($"    - accountCode: \"{bankAcct}\", amount: {amount}, side: \"DR\"");
-                    sb.AppendLine($"    - accountCode: \"{oiAccount}\", amount: {amount}, side: \"CR\"");
+                    sb.AppendLine($"    - accountCode: \"{oiAccount}\", amount: {amount}, side: \"CR\"{empIdPart}{deptIdPart}");
                 }
 
                 sb.AppendLine();
-                sb.AppendLine("create_voucher 成功後:");
-                sb.AppendLine($"  clear_open_item: open_item_id=\"{bestOi.Id}\", voucher_no=（create_voucher の戻り値）");
+                sb.AppendLine("create_voucher 成功後、clear_open_item の呼び出しは不要です（システムが自動で消込みます）。");
             }
             // === Case B: 未清項あり + 银行科目なし → 指示を出す ===
             else if (preContext.OpenItems != null && preContext.OpenItems.Count > 0)
@@ -2362,6 +2389,137 @@ WHERE id = $5 AND posting_status NOT IN ('posted', 'linked')";
         }
 
         return new SkillProcessResult(false, null, "skill did not process this transaction");
+    }
+
+    /// <summary>
+    /// Skill 记账成功后的后处理：
+    /// 1. 补充凭证行的 employeeId/departmentId（LLM 可能遗漏）
+    /// 2. 自动清账匹配到的未清明细（不再依赖 LLM 调用 clear_open_item）
+    /// </summary>
+    private async Task PostProcessVoucherAsync(
+        string companyCode,
+        MoneytreeTransactionRow row,
+        PreIdentifyResult? preContext,
+        SkillProcessResult skillResult,
+        CancellationToken ct)
+    {
+        if (preContext == null || skillResult.VoucherInfo == null || !skillResult.VoucherInfo.VoucherId.HasValue) return;
+
+        var voucherId = skillResult.VoucherInfo.VoucherId.Value;
+        var voucherNo = skillResult.VoucherInfo.VoucherNo;
+        var employeeId = preContext.CounterpartyKind == "employee" ? preContext.CounterpartyId : null;
+        var departmentId = preContext.CounterpartyDepartmentId;
+        var openItemId = preContext.MatchedOpenItemId;
+
+        try
+        {
+            await using var conn = await _dataSource.OpenConnectionAsync(ct);
+
+            // 1. 补充凭证行的 employeeId/departmentId
+            if (!string.IsNullOrWhiteSpace(employeeId))
+            {
+                await using var readCmd = conn.CreateCommand();
+                readCmd.CommandText = "SELECT payload FROM vouchers WHERE id = $1 AND company_code = $2";
+                readCmd.Parameters.AddWithValue(voucherId);
+                readCmd.Parameters.AddWithValue(companyCode);
+                var payloadStr = await readCmd.ExecuteScalarAsync(ct) as string;
+
+                if (!string.IsNullOrWhiteSpace(payloadStr))
+                {
+                    var payloadNode = System.Text.Json.Nodes.JsonNode.Parse(payloadStr) as System.Text.Json.Nodes.JsonObject;
+                    if (payloadNode != null && payloadNode.TryGetPropertyValue("lines", out var linesNode) && linesNode is System.Text.Json.Nodes.JsonArray linesArr)
+                    {
+                        bool modified = false;
+                        var openItemCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        {
+                            await using var oiAcctCmd = conn.CreateCommand();
+                            oiAcctCmd.CommandText = "SELECT payload->>'code' FROM accounts WHERE company_code = $1 AND (payload->>'openItem')::boolean = true";
+                            oiAcctCmd.Parameters.AddWithValue(companyCode);
+                            await using var oiAcctReader = await oiAcctCmd.ExecuteReaderAsync(ct);
+                            while (await oiAcctReader.ReadAsync(ct))
+                            {
+                                if (!oiAcctReader.IsDBNull(0))
+                                    openItemCodes.Add(oiAcctReader.GetString(0));
+                            }
+                        }
+
+                        foreach (var item in linesArr)
+                        {
+                            if (item is not System.Text.Json.Nodes.JsonObject line) continue;
+                            var acctCode = line.TryGetPropertyValue("accountCode", out var acNode) && acNode is System.Text.Json.Nodes.JsonValue acVal
+                                ? acVal.ToString() : null;
+                            if (string.IsNullOrWhiteSpace(acctCode) || !openItemCodes.Contains(acctCode)) continue;
+
+                            if (!line.ContainsKey("employeeId") && !string.IsNullOrWhiteSpace(employeeId))
+                            {
+                                line["employeeId"] = employeeId;
+                                modified = true;
+                            }
+                            if (!line.ContainsKey("departmentId") && !string.IsNullOrWhiteSpace(departmentId))
+                            {
+                                line["departmentId"] = departmentId;
+                                modified = true;
+                            }
+                        }
+
+                        if (modified)
+                        {
+                            await using var updateCmd = conn.CreateCommand();
+                            updateCmd.CommandText = "UPDATE vouchers SET payload = $1::jsonb, updated_at = now() WHERE id = $2 AND company_code = $3";
+                            updateCmd.Parameters.AddWithValue(payloadNode.ToJsonString());
+                            updateCmd.Parameters.AddWithValue(voucherId);
+                            updateCmd.Parameters.AddWithValue(companyCode);
+                            await updateCmd.ExecuteNonQueryAsync(ct);
+                            _logger.LogInformation("[MoneytreePosting] PostProcess: injected employeeId={EmpId}, departmentId={DeptId} into voucher {VoucherNo}",
+                                employeeId, departmentId ?? "(none)", voucherNo);
+                        }
+                    }
+                }
+            }
+
+            // 2. 自动清账
+            if (!string.IsNullOrWhiteSpace(openItemId) && Guid.TryParse(openItemId, out var oiGuid) && !string.IsNullOrWhiteSpace(voucherNo))
+            {
+                await using var clearCmd = conn.CreateCommand();
+                clearCmd.CommandText = @"
+UPDATE open_items 
+SET residual_amount = 0,
+    cleared_flag = true,
+    cleared_at = now(),
+    cleared_by_voucher_id = $1, 
+    updated_at = now() 
+WHERE id = $2 AND company_code = $3 AND cleared_flag = false
+RETURNING id, account_code";
+                clearCmd.Parameters.AddWithValue(voucherId);
+                clearCmd.Parameters.AddWithValue(oiGuid);
+                clearCmd.Parameters.AddWithValue(companyCode);
+
+                await using var clearReader = await clearCmd.ExecuteReaderAsync(ct);
+                if (await clearReader.ReadAsync(ct))
+                {
+                    var clearedId = clearReader.GetGuid(0);
+                    var clearedAcct = clearReader.GetString(1);
+                    _logger.LogInformation("[MoneytreePosting] PostProcess: auto-cleared open_item {OiId} (account={Acct}) with voucher {VoucherNo}",
+                        clearedId, clearedAcct, voucherNo);
+
+                    // 同步到 moneytree_transactions
+                    await using var mtCmd = conn.CreateCommand();
+                    mtCmd.CommandText = "UPDATE moneytree_transactions SET cleared_open_item_id = $1, updated_at = now() WHERE company_code = $2 AND id = $3";
+                    mtCmd.Parameters.AddWithValue(clearedId);
+                    mtCmd.Parameters.AddWithValue(companyCode);
+                    mtCmd.Parameters.AddWithValue(row.Id);
+                    await mtCmd.ExecuteNonQueryAsync(ct);
+                }
+                else
+                {
+                    _logger.LogWarning("[MoneytreePosting] PostProcess: open_item {OiId} not found or already cleared", openItemId);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[MoneytreePosting] PostProcess failed for voucher {VoucherNo}, non-critical", voucherNo);
+        }
     }
 
     private async Task<MoneytreeTransactionRow?> LoadTransactionAsync(NpgsqlConnection conn, string companyCode, Guid id, CancellationToken ct)
