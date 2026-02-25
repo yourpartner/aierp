@@ -1586,6 +1586,8 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         extractedName = System.Text.RegularExpressions.Regex.Replace(extractedName, @"\s+\d+$", "").Trim();
         if (string.IsNullOrWhiteSpace(extractedName)) return new PreIdentifyResult(true, null, null, null, null, null, null, null, null);
 
+        _logger.LogInformation("[PreIdentify] extractedName={ExtractedName}, isWithdrawal={IsWithdrawal}", extractedName, isWithdrawal);
+
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
 
         string? kind = null, partnerId = null, partnerCode = null, partnerName = null;
@@ -1597,22 +1599,29 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
             empCmd.CommandText = "SELECT id, employee_code, payload FROM employees WHERE company_code = $1 ORDER BY updated_at DESC LIMIT 100";
             empCmd.Parameters.AddWithValue(companyCode);
             var empCandidates = new List<(Guid Id, string Code, string? Name, double Score)>();
+            int empCount = 0;
             await using (var empReader = await empCmd.ExecuteReaderAsync(ct))
             {
                 while (await empReader.ReadAsync(ct))
                 {
+                    empCount++;
                     var id = empReader.GetGuid(0);
                     var code = empReader.GetString(1);
                     using var doc = JsonDocument.Parse(empReader.GetString(2));
                     var root = doc.RootElement;
                     var eName = root.TryGetProperty("name", out var n) ? n.GetString() : null;
                     var eKana = root.TryGetProperty("nameKana", out var nk) ? nk.GetString() : null;
+                    var eKanji = root.TryGetProperty("nameKanji", out var nj) ? nj.GetString() : null;
                     double score = 0;
                     if (!string.IsNullOrWhiteSpace(eKana)) score = Math.Max(score, PreIdSimilarity(extractedName, eKana));
                     if (!string.IsNullOrWhiteSpace(eName)) score = Math.Max(score, PreIdSimilarity(extractedName, eName));
-                    if (score >= 0.6) empCandidates.Add((id, code, eName, score));
+                    if (!string.IsNullOrWhiteSpace(eKanji)) score = Math.Max(score, PreIdSimilarity(extractedName, eKanji));
+                    if (score >= 0.3)
+                        _logger.LogInformation("[PreIdentify] Employee {Code}: name={Name}, kana={Kana}, kanji={Kanji}, score={Score:F3}", code, eName, eKana, eKanji, score);
+                    if (score >= 0.6) empCandidates.Add((id, code, eName ?? eKanji, score));
                 }
             }
+            _logger.LogInformation("[PreIdentify] Scanned {Count} employees, {Candidates} candidates (score>=0.6)", empCount, empCandidates.Count);
             var bestEmp = empCandidates.OrderByDescending(c => c.Score).FirstOrDefault();
             if (bestEmp.Score >= 0.7)
             {
@@ -1620,6 +1629,11 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
                 partnerId = bestEmp.Id.ToString();
                 partnerCode = bestEmp.Code;
                 partnerName = bestEmp.Name;
+                _logger.LogInformation("[PreIdentify] Matched employee: {Code} {Name} score={Score:F3}", bestEmp.Code, bestEmp.Name, bestEmp.Score);
+            }
+            else
+            {
+                _logger.LogWarning("[PreIdentify] No employee matched (best score={Score:F3})", bestEmp.Score);
             }
 
             // 1b. 匹配供应商（全量读取 businesspartners payload）
@@ -1688,13 +1702,14 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
             }
         }
 
-        // 2. 搜索未清明细（有对手方→按partner搜；无对手方→按金额+日期搜）
-        //    同时尝试净额(amount)和总额(amount+fee)两种金额匹配
+        // 2. 搜索未清明细（有对手方→按partner搜；无対手方→按金額+日期搜）
         List<OpenItemMatch>? openItems = null;
         var txDate = row.TransactionDate ?? DateTime.Today;
         var amount = row.GetPositiveAmount();
         var totalAmount = amount + feeAmount;
         var hasPartner = !string.IsNullOrWhiteSpace(partnerId);
+        _logger.LogInformation("[PreIdentify] OpenItem search: hasPartner={HasPartner}, partnerId={PartnerId}, amount={Amount}, totalAmount={TotalAmount}, txDate={TxDate}",
+            hasPartner, partnerId ?? "(none)", amount, totalAmount, txDate.ToString("yyyy-MM-dd"));
         {
             var partnerFilter = hasPartner ? "AND oi.partner_id = $4" : "";
             await using var oiCmd = conn.CreateCommand();
@@ -1749,6 +1764,11 @@ LIMIT 10";
                 }
             }
 
+            _logger.LogInformation("[PreIdentify] OpenItem raw results: {Count} items", openItems.Count);
+            foreach (var oi in openItems)
+                _logger.LogInformation("[PreIdentify]   OI id={Id}, account={Acct}, residual={Residual}, docDate={DocDate}, voucherNo={VoucherNo}",
+                    oi.Id, oi.AccountCode, oi.ResidualAmount, oi.DocDate, oi.VoucherNo);
+
             // 无对手方时，只保留精确匹配（避免歧义）
             if (!hasPartner && openItems.Count > 1)
             {
@@ -1758,7 +1778,10 @@ LIMIT 10";
                 if (exact.Count > 0 && exact.Count <= 3)
                     openItems = exact;
                 else
-                    openItems.Clear(); // 太多候选 → 放弃，让 LLM 自己搜
+                {
+                    _logger.LogWarning("[PreIdentify] Too many open items without partner ({Count} exact), clearing", exact.Count);
+                    openItems.Clear();
+                }
             }
         }
 
