@@ -5418,6 +5418,32 @@ app.MapDelete("/objects/{entity}/{id}", async (HttpRequest req, string entity, G
     if (entity == "voucher")
     {
         await using var connOi = await ds.OpenConnectionAsync();
+
+        // 1. 重置被此凭证清账的其他凭证的 open_items（还原为未清账状态）
+        await using var cmdResetCleared = connOi.CreateCommand();
+        cmdResetCleared.CommandText = @"
+            UPDATE open_items
+            SET residual_amount = original_amount,
+                cleared_flag = false,
+                cleared_at = NULL,
+                cleared_by = NULL,
+                refs = refs - 'clearingVoucherNo' - 'clearingLineNo' - 'clearingHistory',
+                updated_at = now()
+            WHERE company_code = $1
+              AND cleared_flag = true
+              AND (
+                cleared_by = (SELECT voucher_no FROM vouchers WHERE id = $2 AND company_code = $1)
+                OR refs->>'clearingVoucherId' = $2::text
+              )";
+        cmdResetCleared.Parameters.AddWithValue(cc.ToString());
+        cmdResetCleared.Parameters.AddWithValue(id);
+        var resetClearedCount = await cmdResetCleared.ExecuteNonQueryAsync();
+        if (resetClearedCount > 0)
+        {
+            Console.WriteLine($"[voucher-delete] Reset {resetClearedCount} open_item(s) cleared by deleted voucher {id} back to uncleared");
+        }
+
+        // 2. 删除此凭证自身的 open_items
         await using var cmdOi = connOi.CreateCommand();
         cmdOi.CommandText = "DELETE FROM open_items WHERE company_code=$1 AND voucher_id=$2";
         cmdOi.Parameters.AddWithValue(cc.ToString());
