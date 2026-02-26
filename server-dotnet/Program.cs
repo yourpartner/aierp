@@ -5338,7 +5338,7 @@ app.MapDelete("/objects/{entity}/{id}", async (HttpRequest req, string entity, G
         if (existingPayloadJson is null) return Results.NotFound(new { error = "not found" });
         try
         {
-            await finance.EnsureVoucherDeleteAllowed(cc.ToString()!, existingPayloadJson);
+            await finance.EnsureVoucherDeleteAllowed(cc.ToString()!, existingPayloadJson, id);
         }
         catch (Exception ex)
         {

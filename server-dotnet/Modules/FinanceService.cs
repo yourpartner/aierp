@@ -1286,7 +1286,7 @@ public class FinanceService
     /// Ensures the voucher can be deleted (i.e., posting period is still open and voucher is not reversed/reversal).
     /// 期间存在于数据库 = 打开，期间不存在 = 关闭。
     /// </summary>
-    public async Task EnsureVoucherDeleteAllowed(string companyCode, string existingPayloadJson)
+    public async Task EnsureVoucherDeleteAllowed(string companyCode, string existingPayloadJson, Guid? voucherId = null)
     {
         if (string.IsNullOrWhiteSpace(existingPayloadJson)) return;
         using var doc = JsonDocument.Parse(existingPayloadJson);
@@ -1304,6 +1304,24 @@ public class FinanceService
         if (root.TryGetProperty("isReversal", out var isRevEl) && isRevEl.ValueKind == JsonValueKind.True)
         {
             throw new Exception("反対仕訳は削除できません。");
+        }
+        
+        // Check if any open_items of this voucher have been cleared by another voucher
+        if (voucherId.HasValue)
+        {
+            await using var conn = await _ds.OpenConnectionAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                SELECT cleared_by FROM open_items 
+                WHERE company_code = $1 AND voucher_id = $2 AND cleared_flag = true
+                LIMIT 1";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue(voucherId.Value);
+            var clearedBy = (string?)await cmd.ExecuteScalarAsync();
+            if (clearedBy is not null)
+            {
+                throw new Exception($"この伝票は他の伝票（{clearedBy}）により消込済みです。先に消込を解除してから削除してください。");
+            }
         }
         
         var postingDate = ParsePostingDate(root);
