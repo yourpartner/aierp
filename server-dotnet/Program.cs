@@ -3302,12 +3302,21 @@ RETURNING to_jsonb(scheduler_tasks)";
             if (string.Equals(entity, "timesheet", StringComparison.OrdinalIgnoreCase))
             {
                 var userCtx = Auth.GetUserCtx(req);
-                // Keep payload shape stable; append creatorUserId and createdMonth as derived fields.
                 var dateStr = payload.TryGetProperty("date", out var d) && d.ValueKind==JsonValueKind.String ? d.GetString() : null;
                 var month = string.Empty;
                 if (DateTime.TryParse(dateStr, out var dt)) month = dt.ToString("yyyy-MM");
                 var enriched = JsonSerializer.Deserialize<Dictionary<string, object?>>(payload.GetRawText()) ?? new();
-                enriched["creatorUserId"] = userCtx.UserId ?? string.Empty;
+                var payloadCreatorId = payload.TryGetProperty("creatorUserId", out var cuid) && cuid.ValueKind == JsonValueKind.String
+                    ? cuid.GetString() : null;
+                if (!string.IsNullOrWhiteSpace(payloadCreatorId) && payloadCreatorId != userCtx.UserId
+                    && userCtx.Caps.Contains("timesheet:proxy"))
+                {
+                    enriched["creatorUserId"] = payloadCreatorId;
+                }
+                else
+                {
+                    enriched["creatorUserId"] = userCtx.UserId ?? string.Empty;
+                }
                 if (!string.IsNullOrEmpty(month)) enriched["createdMonth"] = month;
                 var jsonStr = JsonSerializer.Serialize(enriched);
                 var insertedTs = await Crud.InsertRawJson(ds, table, cc.ToString()!, jsonStr);

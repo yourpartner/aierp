@@ -11,17 +11,40 @@
         </el-tag>
           </div>
           <div class="timesheet-form-header__right">
-            <el-button type="primary" @click="saveAll" :loading="saving" :disabled="monthLocked">
+            <el-button type="primary" @click="saveAll" :loading="saving" :disabled="monthLocked || proxyNoTarget">
               <el-icon><Check /></el-icon>
               <span>当月の変更を保存</span>
             </el-button>
-            <el-button type="success" @click="submitForApproval" :loading="submitting" :disabled="monthLocked || !canSubmitSelectedMonth">
+            <el-button type="success" @click="submitForApproval" :loading="submitting" :disabled="monthLocked || !canSubmitSelectedMonth || proxyNoTarget">
               <el-icon><Upload /></el-icon>
               <span>月次提出</span>
             </el-button>
           </div>
       </div>
       </template>
+
+      <!-- 代理入力（管理者用） -->
+      <div v-if="canManageTimesheets" class="timesheet-form-proxy">
+        <el-switch v-model="proxyMode" @change="onProxyModeChange" active-text="代理入力" inactive-text="" />
+        <template v-if="proxyMode">
+          <el-select
+            v-model="proxyEmployeeId"
+            filterable
+            remote
+            :remote-method="searchEmployees"
+            :loading="employeeLoading"
+            placeholder="社員を検索..."
+            style="width: 260px"
+            @change="onProxyEmployeeChange"
+            clearable
+          >
+            <el-option v-for="o in employeeOptions" :key="o.value" :value="o.value" :label="o.label" />
+          </el-select>
+          <el-tag v-if="proxyEmployeeName" type="warning" effect="plain" size="small">
+            <el-icon style="margin-right: 2px"><User /></el-icon>{{ proxyEmployeeName }} の工数を代理入力中
+          </el-tag>
+        </template>
+      </div>
 
       <!-- 操作エリア -->
       <div class="timesheet-form-actions">
@@ -107,10 +130,10 @@
   </div>
 </template>
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import api from '../api'
 import { ElMessage } from 'element-plus'
-import { EditPen, Check, Upload } from '@element-plus/icons-vue'
+import { EditPen, Check, Upload, User } from '@element-plus/icons-vue'
 
 type DayRow = { 
   id?: string, 
@@ -137,6 +160,72 @@ const holidaySet = ref<Set<string>>(new Set())
 const submissionStatus = ref<string>('')
 const monthLocked = ref(false)
 const canSubmitSelectedMonth = ref(true)
+
+const canManageTimesheets = computed(() => {
+  const caps = (sessionStorage.getItem('userCaps') || '').split(',').filter(Boolean)
+  return caps.includes('timesheet:proxy')
+})
+
+const proxyNoTarget = computed(() => proxyMode.value && !proxyEmployeeId.value)
+const proxyMode = ref(false)
+const proxyEmployeeId = ref<string>('')
+const proxyEmployeeName = ref<string>('')
+const employeeOptions = ref<{value:string, label:string, userId:string}[]>([])
+const employeeLoading = ref(false)
+
+function targetUserId(): string {
+  if (proxyMode.value && proxyEmployeeId.value) {
+    const opt = employeeOptions.value.find(e => e.value === proxyEmployeeId.value)
+    return opt?.userId || ''
+  }
+  return currentUserId()
+}
+
+async function searchEmployees(q: string) {
+  employeeLoading.value = true
+  try {
+    const where: any[] = []
+    if (q) {
+      where.push({ anyOf: [
+        { json: 'name', op: 'contains', value: q },
+        { json: 'nameKana', op: 'contains', value: q },
+        { field: 'employee_code', op: 'contains', value: q }
+      ]})
+    }
+    const r = await api.post('/objects/employee/search', {
+      page: 1, pageSize: 50, where,
+      orderBy: [{ field: 'employee_code', dir: 'ASC' }]
+    })
+    const list = Array.isArray(r.data?.data) ? r.data.data : []
+    employeeOptions.value = list
+      .filter((x: any) => x.payload?.userId)
+      .map((x: any) => ({
+        value: x.id,
+        label: `${x.payload?.name || ''} (${x.employee_code || ''})`,
+        userId: x.payload?.userId || ''
+      }))
+  } catch {
+    employeeOptions.value = []
+  } finally {
+    employeeLoading.value = false
+  }
+}
+
+function onProxyEmployeeChange(val: string) {
+  const opt = employeeOptions.value.find(e => e.value === val)
+  proxyEmployeeName.value = opt?.label || ''
+  buildDays()
+}
+
+function onProxyModeChange(val: boolean) {
+  if (!val) {
+    proxyEmployeeId.value = ''
+    proxyEmployeeName.value = ''
+    buildDays()
+  } else {
+    searchEmployees('')
+  }
+}
 
 function pad2(n:number){ return String(n).padStart(2,'0') }
 function daysInMonth(ym:string){ const [y,m] = ym.split('-').map(Number); return new Date(y!, m!, 0).getDate() }
@@ -202,6 +291,15 @@ async function loadHolidays(ym:string) {
 async function buildDays(){
   loading.value = true
   const ym = month.value
+
+  if (proxyMode.value && !proxyEmployeeId.value) {
+    rows.value = []
+    submissionStatus.value = ''
+    monthLocked.value = false
+    loading.value = false
+    return
+  }
+
   // 方案A: 当月は提出できない（前月まで）
   const currentYm = new Date().toISOString().slice(0,7)
   canSubmitSelectedMonth.value = ym < currentYm
@@ -236,7 +334,10 @@ async function buildDays(){
     arr.push(base)
   }
   try{
-    const r = await api.post('/objects/timesheet/search', { page:1, pageSize:200, where:[{ field:'month', op:'in', value: [ym] }], orderBy:[{ field:'timesheet_date', dir:'ASC' }] })
+    const tuid = targetUserId()
+    const tsWhere: any[] = [{ field:'month', op:'in', value: [ym] }]
+    if (tuid) tsWhere.push({ json: 'creatorUserId', op: 'in', value: [tuid] })
+    const r = await api.post('/objects/timesheet/search', { page:1, pageSize:200, where: tsWhere, orderBy:[{ field:'timesheet_date', dir:'ASC' }] })
     const list = Array.isArray(r.data?.data)? r.data.data : []
     const byDate = new Map<string, any>()
     list.forEach((x:any)=> byDate.set(x.timesheet_date || x.payload?.date, x))
@@ -276,7 +377,7 @@ async function loadMonthlySubmissionStatus(ym: string) {
   submissionStatus.value = ''
   monthLocked.value = false
   if (!ym) return
-  const uid = currentUserId()
+  const uid = targetUserId()
   if (!uid) return
   try{
     const resp = await api.post('/objects/timesheet_submission/search', {
@@ -310,7 +411,7 @@ async function saveDirtyRows(showToast: boolean) {
     if (isMonthLocked()){
       throw new Error('この月は提出済みのため修正できません')
     }
-    const uid = currentUserId()
+    const uid = targetUserId()
     for (const r of rows.value){
       if (!r._dirty) continue
       const payload:any = { 
@@ -354,7 +455,11 @@ async function submitForApproval(){
     if (rows.value.some(r => r._dirty)) {
       await saveDirtyRows(false)
     }
-    await api.post('/operations/timesheet/submit-month', { month: ym })
+    const submitBody: any = { month: ym }
+    if (proxyMode.value && proxyEmployeeId.value) {
+      submitBody.forUserId = targetUserId()
+    }
+    await api.post('/operations/timesheet/submit-month', submitBody)
     await buildDays()
     await loadMonthlySubmissionStatus(ym)
     ElMessage.success('月次提出しました')
@@ -448,6 +553,18 @@ loadSettings().then(buildDays)
 .timesheet-form-header__right {
   display: flex;
   gap: 8px;
+}
+
+.timesheet-form-proxy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 12px 16px;
+  background: #fdf6ec;
+  border: 1px solid #faecd8;
+  border-radius: 8px;
 }
 
 /* 操作エリア */

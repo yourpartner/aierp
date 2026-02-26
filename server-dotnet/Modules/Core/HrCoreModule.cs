@@ -285,6 +285,21 @@ public class HrCoreModule : ModuleBase
             var user = Auth.GetUserCtx(req);
             if (string.IsNullOrWhiteSpace(user.UserId)) return Results.BadRequest(new { error = "Missing user id" });
 
+            // Support proxy submission: admin can submit on behalf of another user
+            var effectiveUserId = user.UserId;
+            if (root.TryGetProperty("forUserId", out var forEl) && forEl.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(forEl.GetString()))
+            {
+                if (user.Caps.Contains("timesheet:proxy"))
+                {
+                    effectiveUserId = forEl.GetString()!;
+                }
+                else
+                {
+                    return Results.BadRequest(new { error = "代理提出の権限がありません" });
+                }
+            }
+
             // Create or update timesheet_submissions as submitted.
             await using var conn = await ds.OpenConnectionAsync(req.HttpContext.RequestAborted);
             await using var tx = await conn.BeginTransactionAsync(req.HttpContext.RequestAborted);
@@ -304,7 +319,7 @@ public class HrCoreModule : ModuleBase
                     RETURNING id";
                 upsert.Parameters.AddWithValue(cc.ToString());
                 upsert.Parameters.AddWithValue(root.GetRawText());
-                upsert.Parameters.AddWithValue(user.UserId);
+                upsert.Parameters.AddWithValue(effectiveUserId);
                 upsert.Parameters.AddWithValue(month);
                 submissionId = (Guid)(await upsert.ExecuteScalarAsync(req.HttpContext.RequestAborted) ?? Guid.Empty);
                 if (submissionId == Guid.Empty)
