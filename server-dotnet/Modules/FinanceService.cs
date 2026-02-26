@@ -1306,21 +1306,25 @@ public class FinanceService
             throw new Exception("反対仕訳は削除できません。");
         }
         
-        // Check if any open_items of this voucher have been cleared by another voucher
+        // Check if any open_items of this voucher have been cleared by another voucher.
+        // Only block if refs contains 'clearingVoucherNo' (= this voucher was cleared BY another).
+        // Do NOT block if refs contains 'clearedItems' (= this voucher cleared others, i.e. it's the clearing voucher).
         if (voucherId.HasValue)
         {
             await using var conn = await _ds.OpenConnectionAsync();
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = @"
-                SELECT cleared_by FROM open_items 
-                WHERE company_code = $1 AND voucher_id = $2 AND cleared_flag = true
+                SELECT refs->>'clearingVoucherNo' FROM open_items 
+                WHERE company_code = $1 AND voucher_id = $2 
+                  AND cleared_flag = true
+                  AND refs ? 'clearingVoucherNo'
                 LIMIT 1";
             cmd.Parameters.AddWithValue(companyCode);
             cmd.Parameters.AddWithValue(voucherId.Value);
-            var clearedBy = (string?)await cmd.ExecuteScalarAsync();
-            if (clearedBy is not null)
+            var clearingVoucherNo = (string?)await cmd.ExecuteScalarAsync();
+            if (clearingVoucherNo is not null)
             {
-                throw new Exception($"この伝票は他の伝票（{clearedBy}）により消込済みです。先に消込を解除してから削除してください。");
+                throw new Exception($"この伝票は他の伝票（{clearingVoucherNo}）により消込済みです。先に消込を解除してから削除してください。");
             }
         }
         
