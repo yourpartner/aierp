@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -564,11 +565,25 @@ public sealed class SearchHistoricalPatternsTool : AgentToolBase
 
         await using var conn = await _ds.OpenConnectionAsync(ct);
 
+        // 暫定科目を名前で動的解決（仮払金・仮受金等）→ 学習パターン除外用
+        var suspenseCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        {
+            await using var scCmd = conn.CreateCommand();
+            scCmd.CommandText = @"SELECT account_code FROM accounts WHERE company_code = $1
+                AND (payload->>'name' LIKE '%仮払金%' OR payload->>'name' LIKE '%仮受金%')";
+            scCmd.Parameters.AddWithValue(companyCode);
+            await using var scReader = await scCmd.ExecuteReaderAsync(ct);
+            while (await scReader.ReadAsync(ct))
+                suspenseCodes.Add(scReader.GetString(0));
+        }
+
         // 1. ai_learned_patterns から学習済みパターンを検索
-        // 実テーブル構造: id, company_code, pattern_type, conditions(jsonb), recommendation(jsonb), confidence, sample_count, last_updated_at
         var patterns = new List<object>();
         await using var patternCmd = conn.CreateCommand();
-        patternCmd.CommandText = @"
+        if (suspenseCodes.Count > 0)
+        {
+            var placeholders = string.Join(",", suspenseCodes.Select((_, i) => $"${i + 2}"));
+            patternCmd.CommandText = $@"
 SELECT id::text,
        conditions->>'description' AS cond_desc,
        conditions->>'isWithdrawal' AS cond_withdrawal,
@@ -579,10 +594,29 @@ SELECT id::text,
        confidence
 FROM ai_learned_patterns 
 WHERE company_code = $1 AND pattern_type = 'bank_description_account'
-  AND recommendation->>'debitAccount' NOT IN ('183','319')
+  AND recommendation->>'debitAccount' NOT IN ({placeholders})
 ORDER BY confidence DESC
 LIMIT 50";
-        patternCmd.Parameters.AddWithValue(companyCode);
+            patternCmd.Parameters.AddWithValue(companyCode);
+            foreach (var sc in suspenseCodes) patternCmd.Parameters.AddWithValue(sc);
+        }
+        else
+        {
+            patternCmd.CommandText = @"
+SELECT id::text,
+       conditions->>'description' AS cond_desc,
+       conditions->>'isWithdrawal' AS cond_withdrawal,
+       recommendation->>'debitAccount' AS debit,
+       recommendation->>'creditAccount' AS credit,
+       recommendation->>'debitAccountName' AS debit_name,
+       recommendation->>'creditAccountName' AS credit_name,
+       confidence
+FROM ai_learned_patterns 
+WHERE company_code = $1 AND pattern_type = 'bank_description_account'
+ORDER BY confidence DESC
+LIMIT 50";
+            patternCmd.Parameters.AddWithValue(companyCode);
+        }
 
         var isWithdrawal = string.Equals(transactionType, "withdrawal", StringComparison.OrdinalIgnoreCase);
         await using var patternReader = await patternCmd.ExecuteReaderAsync(ct);
@@ -604,22 +638,38 @@ LIMIT 50";
             }
         }
 
-        // 2. 過去の銀行明細から同様の取引の記帳実績を検索（仮払金183/仮受金319を除外）
+        // 2. 過去の銀行明細から同様の取引の記帳実績を検索（暫定科目を除外）
         var historicalVouchers = new List<object>();
         await using var histCmd = conn.CreateCommand();
-        histCmd.CommandText = @"
+        if (suspenseCodes.Count > 0)
+        {
+            var hPlaceholders = string.Join(",", suspenseCodes.Select((_, i) => $"${i + 2}"));
+            histCmd.CommandText = $@"
 SELECT mt.description, v.voucher_no, v.payload->'lines' as lines
 FROM moneytree_transactions mt
 JOIN vouchers v ON v.id = mt.voucher_id AND v.company_code = mt.company_code
 WHERE mt.company_code = $1 AND mt.posting_status = 'posted' AND mt.voucher_id IS NOT NULL
   AND NOT EXISTS (
     SELECT 1 FROM jsonb_array_elements(v.payload->'lines') AS line
-    WHERE line->>'accountCode' IN ('183','319')
+    WHERE line->>'accountCode' IN ({hPlaceholders})
       AND COALESCE(line->>'isTaxLine','false') = 'false'
   )
 ORDER BY mt.updated_at DESC
 LIMIT 200";
-        histCmd.Parameters.AddWithValue(companyCode);
+            histCmd.Parameters.AddWithValue(companyCode);
+            foreach (var sc in suspenseCodes) histCmd.Parameters.AddWithValue(sc);
+        }
+        else
+        {
+            histCmd.CommandText = @"
+SELECT mt.description, v.voucher_no, v.payload->'lines' as lines
+FROM moneytree_transactions mt
+JOIN vouchers v ON v.id = mt.voucher_id AND v.company_code = mt.company_code
+WHERE mt.company_code = $1 AND mt.posting_status = 'posted' AND mt.voucher_id IS NOT NULL
+ORDER BY mt.updated_at DESC
+LIMIT 200";
+            histCmd.Parameters.AddWithValue(companyCode);
+        }
 
         await using var histReader = await histCmd.ExecuteReaderAsync(ct);
         while (await histReader.ReadAsync(ct))

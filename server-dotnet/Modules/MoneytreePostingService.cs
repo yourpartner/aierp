@@ -591,15 +591,15 @@ public sealed class MoneytreePostingService
             var isWithdrawalForLearning = (row.WithdrawalAmount ?? 0m) < 0m;
             var isDepositForLearning = (row.DepositAmount ?? 0m) > 0m;
             
-            // 尝试从历史凭证学习科目
+            // 尝试从历史凭证学习科目（动态取得暂挂科目列表）
+            var learnableAccounts = await ResolveSuspenseAccountCodesAsync(conn, companyCode, ct);
             if (isWithdrawalForLearning)
             {
-                // 出金：学习借方科目（银行科目在贷方）
                 var bankAccountCode = creditAccount;
-                var learned = await LearnAccountFromHistoryAsync(conn, companyCode, row, debitAccount, bankAccountCode, "DR", ct);
+                var learned = await LearnAccountFromHistoryAsync(conn, companyCode, row, debitAccount, bankAccountCode, "DR", ct, learnableAccounts);
                 if (learned.HasValue && !string.IsNullOrWhiteSpace(learned.Value.AccountCode))
                 {
-                    _logger.LogInformation("[MoneytreePosting] 出金历史学习: 借方 {Original} -> {Learned} ({Name})",
+                    _logger.LogInformation("[MoneytreePosting] 出金历史学習: 借方 {Original} -> {Learned} ({Name})",
                         debitAccount, learned.Value.AccountCode, learned.Value.AccountName);
                     debitAccount = learned.Value.AccountCode;
                     debitAccountName = learned.Value.AccountName;
@@ -608,15 +608,11 @@ public sealed class MoneytreePostingService
             }
             else if (isDepositForLearning)
             {
-                // 入金：从历史凭证学习应收科目
-                // 逻辑：销售发票是 借方:売掛金(152) / 贷方:売上(612)
-                // 入金时应冲销売掛金，所以入金凭证应该是 借方:银行 / 贷方:売掛金(152)
-                // 因此搜索历史凭证中该交易对手的借方应收科目
                 var bankAccountCode = debitAccount;
-                var learned = await LearnAccountFromHistoryAsync(conn, companyCode, row, creditAccount, bankAccountCode, "DR", ct);
+                var learned = await LearnAccountFromHistoryAsync(conn, companyCode, row, creditAccount, bankAccountCode, "DR", ct, learnableAccounts);
                 if (learned.HasValue && !string.IsNullOrWhiteSpace(learned.Value.AccountCode))
                 {
-                    _logger.LogInformation("[MoneytreePosting] 入金历史学习: 贷方 {Original} -> {Learned} ({Name})",
+                    _logger.LogInformation("[MoneytreePosting] 入金历史学習: 貸方 {Original} -> {Learned} ({Name})",
                         creditAccount, learned.Value.AccountCode, learned.Value.AccountName);
                     creditAccount = learned.Value.AccountCode;
                     creditAccountName = learned.Value.AccountName;
@@ -991,12 +987,25 @@ public sealed class MoneytreePostingService
             {
                 var inputTaxAccountCode = await GetInputTaxAccountCodeAsync(conn, companyCode, ct);
                 var bankFeeAccountCode = action.BankFeeAccountCode ?? await GetBankFeeAccountCodeAsync(conn, companyCode, ct);
+                bool feeHasTax = false;
+                try
+                {
+                    await using var taxChk2 = conn.CreateCommand();
+                    taxChk2.CommandText = "SELECT payload->>'taxType' FROM accounts WHERE company_code=$1 AND account_code=$2 LIMIT 1";
+                    taxChk2.Parameters.AddWithValue(companyCode);
+                    taxChk2.Parameters.AddWithValue(bankFeeAccountCode);
+                    var ttResult = await taxChk2.ExecuteScalarAsync(ct);
+                    if (ttResult is string ttStr && ttStr.StartsWith("INPUT", StringComparison.OrdinalIgnoreCase))
+                        feeHasTax = true;
+                }
+                catch { }
                 feeInfo = new BankFeeInfo(
                     pairedFee.Id,
                     feeAmount,
                     bankFeeAccountCode,
                     inputTaxAccountCode,
-                    creditAccount // 银行科目
+                    creditAccount, // 银行科目
+                    feeHasTax
                 );
             }
         }
@@ -1018,7 +1027,27 @@ public sealed class MoneytreePostingService
             var clearingTargetLine = reservation is not null ? (settlement?.TargetLine ?? "credit") : null;
             _logger.LogInformation("[MoneytreePosting] Creating voucher with debitAccount={Debit}, creditAccount={Credit}, learnedFromHistory={Learned}, clearingTargetLine={ClearingLine}",
                 debitAccount, creditAccount, learnedFromHistory, clearingTargetLine);
-            using var payloadDoc = BuildVoucherPayload(action, row, amount, debitAccount, creditAccount, debitMeta, creditMeta, feeInfo, clearingTargetLine, clearedItemInfos);
+            bool sfHasTax = false;
+            string? sfInputTaxAcct = null;
+            if (IsBankFeeTransaction(row.Description) && feeInfo is null)
+            {
+                try
+                {
+                    await using var taxChk = conn.CreateCommand();
+                    taxChk.Transaction = tx;
+                    taxChk.CommandText = "SELECT payload->>'taxType' FROM accounts WHERE company_code=$1 AND account_code=$2 LIMIT 1";
+                    taxChk.Parameters.AddWithValue(companyCode);
+                    taxChk.Parameters.AddWithValue(debitAccount);
+                    var taxRes = await taxChk.ExecuteScalarAsync(ct);
+                    if (taxRes is string tt && tt.StartsWith("INPUT", StringComparison.OrdinalIgnoreCase))
+                    {
+                        sfHasTax = true;
+                        sfInputTaxAcct = await GetInputTaxAccountCodeAsync(conn, companyCode, ct);
+                    }
+                }
+                catch { }
+            }
+            using var payloadDoc = BuildVoucherPayload(action, row, amount, debitAccount, creditAccount, debitMeta, creditMeta, feeInfo, clearingTargetLine, clearedItemInfos, sfHasTax, sfInputTaxAcct);
             // Moneytree 是后台自动场景，传入 targetUserId 以便创建警报任务
             // 传入外部事务，确保凭证创建与后续操作在同一事务中
             var (json, _) = await _financeService.CreateVoucher(
@@ -1542,7 +1571,13 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         List<HistoricalVoucherMatch>? HistoricalVouchers,
         string? BankAccountCode = null,
         string? CounterpartyDepartmentId = null,
-        string? MatchedOpenItemId = null);
+        string? MatchedOpenItemId = null,
+        string? BankFeeAccountCode = null,
+        string? InputTaxAccountCode = null,
+        bool BankFeeHasTax = false,
+        string? DefaultWithdrawalAccount = null,
+        string? DefaultDepositAccount = null,
+        HashSet<string>? SuspenseAccountCodes = null);
 
     private sealed record OpenItemMatch(
         string Id, string AccountCode, decimal ResidualAmount, string? DocDate, string? VoucherNo, string? EffectiveDate);
@@ -1593,6 +1628,19 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
         _logger.LogInformation("[PreIdentify] extractedName={ExtractedName}, isWithdrawal={IsWithdrawal}", extractedName, isWithdrawal);
 
         await using var conn = await _dataSource.OpenConnectionAsync(ct);
+
+        // 科目名称から仮払金/仮受金のコードを動的解決
+        string? defaultWithdrawalAcct = null, defaultDepositAcct = null;
+        HashSet<string>? suspenseAccountCodes = null;
+        try
+        {
+            (defaultWithdrawalAcct, defaultDepositAcct) = await GetDefaultSuspenseAccountsAsync(conn, companyCode, ct);
+            suspenseAccountCodes = await ResolveSuspenseAccountCodesAsync(conn, companyCode, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[PreIdentify] デフォルト科目の解決に失敗");
+        }
 
         string? kind = null, partnerId = null, partnerCode = null, partnerName = null;
 
@@ -1811,7 +1859,10 @@ LIMIT 10";
         List<LearnedPatternMatch>? learnedPatterns = null;
         {
             await using var lpCmd = conn.CreateCommand();
-            lpCmd.CommandText = @"
+            if (suspenseAccountCodes is { Count: > 0 })
+            {
+                var placeholders = string.Join(",", suspenseAccountCodes.Select((_, i) => $"${i + 2}"));
+                lpCmd.CommandText = $@"
 SELECT id::text,
        conditions->>'description' AS cond_desc,
        recommendation->>'debitAccount' AS debit,
@@ -1820,10 +1871,27 @@ SELECT id::text,
        recommendation->>'debitAccountName' AS debit_name
 FROM ai_learned_patterns
 WHERE company_code = $1 AND pattern_type = 'bank_description_account'
-  AND recommendation->>'debitAccount' NOT IN ('183','319')
+  AND recommendation->>'debitAccount' NOT IN ({placeholders})
 ORDER BY confidence DESC
 LIMIT 50";
-            lpCmd.Parameters.AddWithValue(companyCode);
+                lpCmd.Parameters.AddWithValue(companyCode);
+                foreach (var sc in suspenseAccountCodes) lpCmd.Parameters.AddWithValue(sc);
+            }
+            else
+            {
+                lpCmd.CommandText = @"
+SELECT id::text,
+       conditions->>'description' AS cond_desc,
+       recommendation->>'debitAccount' AS debit,
+       recommendation->>'creditAccount' AS credit,
+       confidence::text AS conf,
+       recommendation->>'debitAccountName' AS debit_name
+FROM ai_learned_patterns
+WHERE company_code = $1 AND pattern_type = 'bank_description_account'
+ORDER BY confidence DESC
+LIMIT 50";
+                lpCmd.Parameters.AddWithValue(companyCode);
+            }
             await using var lpReader = await lpCmd.ExecuteReaderAsync(ct);
             while (await lpReader.ReadAsync(ct))
             {
@@ -1842,23 +1910,39 @@ LIMIT 50";
             }
         }
 
-        // 4. 查询历史记账实绩（排除默认科目仮払金183/仮受金319的凭证）
+        // 4. 查询历史记账实绩（排除默认暂挂科目的凭证）
         List<HistoricalVoucherMatch>? historicalVouchers = null;
         {
             await using var hvCmd = conn.CreateCommand();
-            hvCmd.CommandText = @"
+            if (suspenseAccountCodes is { Count: > 0 })
+            {
+                var placeholders = string.Join(",", suspenseAccountCodes.Select((_, i) => $"${i + 2}"));
+                hvCmd.CommandText = $@"
 SELECT mt.description, v.voucher_no, v.payload->'lines' AS lines
 FROM moneytree_transactions mt
 JOIN vouchers v ON v.id = mt.voucher_id AND v.company_code = mt.company_code
 WHERE mt.company_code = $1 AND mt.posting_status = 'posted' AND mt.voucher_id IS NOT NULL
   AND NOT EXISTS (
     SELECT 1 FROM jsonb_array_elements(v.payload->'lines') AS line
-    WHERE line->>'accountCode' IN ('183','319')
+    WHERE line->>'accountCode' IN ({placeholders})
       AND COALESCE(line->>'isTaxLine','false') = 'false'
   )
 ORDER BY mt.updated_at DESC
 LIMIT 200";
-            hvCmd.Parameters.AddWithValue(companyCode);
+                hvCmd.Parameters.AddWithValue(companyCode);
+                foreach (var sc in suspenseAccountCodes) hvCmd.Parameters.AddWithValue(sc);
+            }
+            else
+            {
+                hvCmd.CommandText = @"
+SELECT mt.description, v.voucher_no, v.payload->'lines' AS lines
+FROM moneytree_transactions mt
+JOIN vouchers v ON v.id = mt.voucher_id AND v.company_code = mt.company_code
+WHERE mt.company_code = $1 AND mt.posting_status = 'posted' AND mt.voucher_id IS NOT NULL
+ORDER BY mt.updated_at DESC
+LIMIT 200";
+                hvCmd.Parameters.AddWithValue(companyCode);
+            }
             await using var hvReader = await hvCmd.ExecuteReaderAsync(ct);
             while (await hvReader.ReadAsync(ct))
             {
@@ -1878,15 +1962,42 @@ LIMIT 200";
         // 5. 银行口座の勘定科目コードを事前解決（resolve_bank_account 相当）
         string? bankAccountCode = await ResolveBankAccountCodeAsync(conn, companyCode, row, ct);
 
+        // 6. 手续费科目・进项税科目・手续费是否有消费税の事前解決
+        string? bankFeeAccountCode = null;
+        string? inputTaxAccountCode = null;
+        bool bankFeeHasTax = false;
+        try
+        {
+            bankFeeAccountCode = await GetBankFeeAccountCodeAsync(conn, companyCode, ct);
+            inputTaxAccountCode = await GetInputTaxAccountCodeAsync(conn, companyCode, ct);
+            if (!string.IsNullOrWhiteSpace(bankFeeAccountCode))
+            {
+                await using var taxCmd = conn.CreateCommand();
+                taxCmd.CommandText = "SELECT payload->>'taxType' FROM accounts WHERE company_code=$1 AND account_code=$2 LIMIT 1";
+                taxCmd.Parameters.AddWithValue(companyCode);
+                taxCmd.Parameters.AddWithValue(bankFeeAccountCode);
+                var taxTypeResult = await taxCmd.ExecuteScalarAsync(ct);
+                if (taxTypeResult is string taxType && taxType.StartsWith("INPUT", StringComparison.OrdinalIgnoreCase))
+                    bankFeeHasTax = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[PreIdentify] 手续费科目/消费税情报取得に失敗");
+        }
+
         var matchedOpenItemId = openItems?.Count > 0 ? openItems[0].Id : null;
 
-        _logger.LogInformation("[MoneytreePosting] PreIdentify: desc={Desc}, extracted={Extracted}, kind={Kind}, partnerId={PartnerId}, name={Name}, openItems={OI}, learnedPatterns={LP}, histVouchers={HV}, bankAccount={BankAcct}, deptId={DeptId}, matchedOI={MatchedOI}",
+        _logger.LogInformation("[MoneytreePosting] PreIdentify: desc={Desc}, extracted={Extracted}, kind={Kind}, partnerId={PartnerId}, name={Name}, openItems={OI}, learnedPatterns={LP}, histVouchers={HV}, bankAccount={BankAcct}, deptId={DeptId}, matchedOI={MatchedOI}, feeAcct={FeeAcct}, feeHasTax={FeeHasTax}",
             desc, extractedName, kind ?? "(none)", partnerId ?? "(none)", partnerName ?? "(none)",
             openItems?.Count ?? 0, learnedPatterns?.Count ?? 0, historicalVouchers?.Count ?? 0, bankAccountCode ?? "(none)",
-            departmentId ?? "(none)", matchedOpenItemId ?? "(none)");
+            departmentId ?? "(none)", matchedOpenItemId ?? "(none)", bankFeeAccountCode ?? "(none)", bankFeeHasTax);
 
         return new PreIdentifyResult(true, kind, partnerId, partnerCode, partnerName, extractedName, openItems, learnedPatterns, historicalVouchers, bankAccountCode,
-            CounterpartyDepartmentId: departmentId, MatchedOpenItemId: matchedOpenItemId);
+            CounterpartyDepartmentId: departmentId, MatchedOpenItemId: matchedOpenItemId,
+            BankFeeAccountCode: bankFeeAccountCode, InputTaxAccountCode: inputTaxAccountCode, BankFeeHasTax: bankFeeHasTax,
+            DefaultWithdrawalAccount: defaultWithdrawalAcct, DefaultDepositAccount: defaultDepositAcct,
+            SuspenseAccountCodes: suspenseAccountCodes);
     }
 
     private static async Task<string?> ResolveBankAccountCodeAsync(
@@ -2153,10 +2264,26 @@ LIMIT 200";
 
                 if (isWithdrawal)
                 {
-                    sb.AppendLine($"    - accountCode: \"{oiAccount}\", amount: {amount}, side: \"DR\"{empIdPart}{deptIdPart}");
-                    if (feeAmt > 0)
-                        sb.AppendLine($"    - accountCode: \"858\", amount: {feeAmt}, side: \"DR\", note: \"振込手数料\"");
-                    sb.AppendLine($"    - accountCode: \"{bankAcct}\", amount: {amount + feeAmt}, side: \"CR\"");
+                    int promptLineNo = 1;
+                    sb.AppendLine($"    - lineNo: {promptLineNo++}, accountCode: \"{oiAccount}\", amount: {amount}, side: \"DR\"{empIdPart}{deptIdPart}");
+                    if (feeAmt > 0 && !string.IsNullOrWhiteSpace(preContext.BankFeeAccountCode))
+                    {
+                        var feeAcct = preContext.BankFeeAccountCode;
+                        if (preContext.BankFeeHasTax)
+                        {
+                            var feeNet = Math.Round(feeAmt / 1.1m, 0);
+                            var feeTax = feeAmt - feeNet;
+                            var feeLineNo = promptLineNo++;
+                            sb.AppendLine($"    - lineNo: {feeLineNo}, accountCode: \"{feeAcct}\", amount: {feeNet}, side: \"DR\", note: \"振込手数料\"");
+                            if (feeTax > 0 && !string.IsNullOrWhiteSpace(preContext.InputTaxAccountCode))
+                                sb.AppendLine($"    - lineNo: {promptLineNo++}, accountCode: \"{preContext.InputTaxAccountCode}\", amount: {feeTax}, side: \"DR\", note: \"振込手数料消費税\", isTaxLine: true, taxRate: 10, baseLineNo: {feeLineNo}");
+                        }
+                        else
+                        {
+                            sb.AppendLine($"    - lineNo: {promptLineNo++}, accountCode: \"{feeAcct}\", amount: {feeAmt}, side: \"DR\", note: \"振込手数料\"");
+                        }
+                    }
+                    sb.AppendLine($"    - lineNo: {promptLineNo++}, accountCode: \"{bankAcct}\", amount: {amount + feeAmt}, side: \"CR\"");
                 }
                 else
                 {
@@ -2241,8 +2368,8 @@ LIMIT 200";
                 else
                 {
                     // 完全にパターンなし → search_historical_patterns を呼ぶかデフォルト
-                    var defaultDebit = isWithdrawal ? "183" : bankAcct ?? "(銀行口座)";
-                    var defaultCredit = isWithdrawal ? (bankAcct ?? "(銀行口座)") : "319";
+                    var defaultDebit = isWithdrawal ? (preContext.DefaultWithdrawalAccount ?? "(デフォルト出金科目)") : bankAcct ?? "(銀行口座)";
+                    var defaultCredit = isWithdrawal ? (bankAcct ?? "(銀行口座)") : (preContext.DefaultDepositAccount ?? "(デフォルト入金科目)");
                     sb.AppendLine();
                     sb.AppendLine("【指示】");
                     if (string.IsNullOrWhiteSpace(bankAcct))
@@ -2888,28 +3015,9 @@ LIMIT 1";
     }
 
     /// <summary>
-    /// 可从历史凭证学习的通用科目（仮払金、仮受金等暂挂科目）
-    /// </summary>
-    private static readonly HashSet<string> LearnableAccounts = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "183", // 仮払金 - 出金默认科目
-        "319", // 仮受金 - 入金默认科目
-        "312", // 買掛金
-        "152", // 売掛金
-        "315", // 未払金
-    };
-
-    /// <summary>
     /// 从历史凭证中学习科目（支持借方和贷方）
+    /// 只对暂挂科目（仮払金、仮受金、買掛金、売掛金、未払金等）进行学习
     /// </summary>
-    /// <param name="conn">数据库连接</param>
-    /// <param name="companyCode">公司代码</param>
-    /// <param name="row">银行交易行</param>
-    /// <param name="currentAccount">当前规则解析的科目</param>
-    /// <param name="bankAccountCode">银行科目代码（用于排除）</param>
-    /// <param name="targetDrCr">目标借贷方向：DR=借方，CR=贷方</param>
-    /// <param name="ct">取消令牌</param>
-    /// <returns>学习到的科目，如果没有找到则返回null</returns>
     private async Task<(string? AccountCode, string? AccountName)?> LearnAccountFromHistoryAsync(
         NpgsqlConnection conn,
         string companyCode,
@@ -2917,10 +3025,12 @@ LIMIT 1";
         string currentAccount,
         string bankAccountCode,
         string targetDrCr,
-        CancellationToken ct)
+        CancellationToken ct,
+        HashSet<string>? learnableAccounts = null)
     {
-        // 只对"可学习"的通用科目进行历史学习
-        if (!LearnableAccounts.Contains(currentAccount))
+        // 动态解决可学习科目列表（如果调用方未提供则现场查询）
+        learnableAccounts ??= await ResolveSuspenseAccountCodesAsync(conn, companyCode, ct);
+        if (!learnableAccounts.Contains(currentAccount))
         {
             return null;
         }
@@ -4921,42 +5031,65 @@ LIMIT 1";
         // 注意：matchedWithTotalAmount 时手续费由先方負担，不需要手续费明细行
         if (feeAmount > 0m && isWithdrawal && !matchedWithTotalAmount)
         {
-            // 获取手续费科目和消费税科目
             var bankFeeAccountCode = await GetBankFeeAccountCodeAsync(conn, companyCode, ct);
-            var inputTaxAccountCode = await GetInputTaxAccountCodeAsync(conn, companyCode, ct);
-            
-            // 计算手续费的本体金额和消费税（税率10%）
-            var feeNetAmount = Math.Round(feeAmount / 1.1m, 0);  // 本体金额（含税÷1.1，四舍五入）
-            var feeTaxAmount = feeAmount - feeNetAmount;  // 税额
-            
-            // 手续费本体明细行
-            var feeLineNo = lineNo++;
-            linesArray.Add(new JsonObject
+
+            // 检查手续费科目是否设定了消费税（INPUT_TAX）
+            bool feeHasTax = false;
+            try
             {
-                ["lineNo"] = feeLineNo,
-                ["accountCode"] = bankFeeAccountCode,
-                ["drcr"] = "DR",
-                ["amount"] = feeNetAmount,
-                ["note"] = "振込手数料"
-            });
-            
-            // 仮払消費税明細行
-            if (feeTaxAmount > 0 && !string.IsNullOrWhiteSpace(inputTaxAccountCode))
+                await using var taxChk = conn.CreateCommand();
+                taxChk.CommandText = "SELECT payload->>'taxType' FROM accounts WHERE company_code=$1 AND account_code=$2 LIMIT 1";
+                taxChk.Parameters.AddWithValue(companyCode);
+                taxChk.Parameters.AddWithValue(bankFeeAccountCode);
+                var taxTypeVal = await taxChk.ExecuteScalarAsync(ct);
+                if (taxTypeVal is string tt && tt.StartsWith("INPUT", StringComparison.OrdinalIgnoreCase))
+                    feeHasTax = true;
+            }
+            catch { }
+
+            if (feeHasTax)
+            {
+                var inputTaxAccountCode = await GetInputTaxAccountCodeAsync(conn, companyCode, ct);
+                var feeNetAmount = Math.Round(feeAmount / 1.1m, 0);
+                var feeTaxAmount = feeAmount - feeNetAmount;
+
+                var feeLineNo = lineNo++;
+                linesArray.Add(new JsonObject
+                {
+                    ["lineNo"] = feeLineNo,
+                    ["accountCode"] = bankFeeAccountCode,
+                    ["drcr"] = "DR",
+                    ["amount"] = feeNetAmount,
+                    ["note"] = "振込手数料"
+                });
+
+                if (feeTaxAmount > 0 && !string.IsNullOrWhiteSpace(inputTaxAccountCode))
+                {
+                    linesArray.Add(new JsonObject
+                    {
+                        ["lineNo"] = lineNo++,
+                        ["accountCode"] = inputTaxAccountCode,
+                        ["drcr"] = "DR",
+                        ["amount"] = feeTaxAmount,
+                        ["taxRate"] = BankFeeTaxRate,
+                        ["note"] = "振込手数料消費税",
+                        ["baseLineNo"] = feeLineNo,
+                        ["isTaxLine"] = true
+                    });
+                }
+            }
+            else
             {
                 linesArray.Add(new JsonObject
                 {
                     ["lineNo"] = lineNo++,
-                    ["accountCode"] = inputTaxAccountCode,
+                    ["accountCode"] = bankFeeAccountCode,
                     ["drcr"] = "DR",
-                    ["amount"] = feeTaxAmount,
-                    ["taxRate"] = BankFeeTaxRate,
-                    ["note"] = "振込手数料消費税",
-                    ["baseLineNo"] = feeLineNo,
-                    ["isTaxLine"] = true
+                    ["amount"] = feeAmount,
+                    ["note"] = "振込手数料"
                 });
             }
-            
-            // 更新摘要以包含手续费信息
+
             summary += $" (手数料 {feeAmount:#,0})";
         }
 
@@ -5169,7 +5302,9 @@ LIMIT 1";
         LineMeta creditMeta,
         BankFeeInfo? feeInfo = null,
         string? clearingTargetLine = null,
-        List<ClearedItemInfo>? clearedItemInfos = null)
+        List<ClearedItemInfo>? clearedItemInfos = null,
+        bool standaloneFeeHasTax = false,
+        string? standaloneFeeInputTaxAcct = null)
     {
         var summary = ApplyTemplate(action.SummaryTemplate ?? $"Moneytree 入金 | {row.Description}", row, amount);
         var postingDate = ResolvePostingDate(action.PostingDateMode, row);
@@ -5193,39 +5328,51 @@ LIMIT 1";
         var lineNo = 1;
         var lines = new JsonArray();
 
-        // 如果是独立的手续费凭证，需要拆分消费税
         if (isStandaloneBankFee)
         {
-            // 计算手续费的本体金额和消费税
-            var feeNetAmount = Math.Round(amount / (1 + BankFeeTaxRate / 100), 0);  // 本体金额（含税÷1.1，四舍五入）
-            var feeTaxAmount = amount - feeNetAmount;  // 税额
-
-            // 手续费本体明细
-            var feeLineNo = lineNo++;
-            lines.Add(new JsonObject
+            if (standaloneFeeHasTax && !string.IsNullOrWhiteSpace(standaloneFeeInputTaxAcct))
             {
-                ["lineNo"] = feeLineNo,
-                ["accountCode"] = debitAccount,
-                ["drcr"] = "DR",
-                ["amount"] = feeNetAmount,
-                ["note"] = debitNote
-            });
-            ApplyLineMeta(lines[0]!.AsObject(), debitMeta);
+                var feeNetAmount = Math.Round(amount / (1 + BankFeeTaxRate / 100), 0);
+                var feeTaxAmount = amount - feeNetAmount;
 
-            // 仮払消費税明细（如果规则配置了 inputTaxAccountCode）
-            if (feeTaxAmount > 0 && action.InputTaxAccountCode is not null)
-            {
+                var feeLineNo = lineNo++;
                 lines.Add(new JsonObject
                 {
-                    ["lineNo"] = lineNo++,
-                    ["accountCode"] = action.InputTaxAccountCode,
+                    ["lineNo"] = feeLineNo,
+                    ["accountCode"] = debitAccount,
                     ["drcr"] = "DR",
-                    ["amount"] = feeTaxAmount,
-                    ["taxRate"] = BankFeeTaxRate,
-                    ["note"] = "消費税",
-                    ["baseLineNo"] = feeLineNo,
-                    ["isTaxLine"] = true
+                    ["amount"] = feeNetAmount,
+                    ["note"] = debitNote
                 });
+                ApplyLineMeta(lines[0]!.AsObject(), debitMeta);
+
+                if (feeTaxAmount > 0)
+                {
+                    lines.Add(new JsonObject
+                    {
+                        ["lineNo"] = lineNo++,
+                        ["accountCode"] = standaloneFeeInputTaxAcct,
+                        ["drcr"] = "DR",
+                        ["amount"] = feeTaxAmount,
+                        ["taxRate"] = BankFeeTaxRate,
+                        ["note"] = "消費税",
+                        ["baseLineNo"] = feeLineNo,
+                        ["isTaxLine"] = true
+                    });
+                }
+            }
+            else
+            {
+                var feeLineNo = lineNo++;
+                lines.Add(new JsonObject
+                {
+                    ["lineNo"] = feeLineNo,
+                    ["accountCode"] = debitAccount,
+                    ["drcr"] = "DR",
+                    ["amount"] = amount,
+                    ["note"] = debitNote
+                });
+                ApplyLineMeta(lines[0]!.AsObject(), debitMeta);
             }
         }
         else
@@ -5266,39 +5413,50 @@ LIMIT 1";
         // 添加配对手续费明细行（如果有配对的手续费）
         if (feeInfo is not null)
         {
-            // 计算手续费的本体金额和消费税
-            var feeNetAmount = Math.Round(feeInfo.TotalAmount / (1 + BankFeeTaxRate / 100), 0);  // 本体金额（含税÷1.1，四舍五入）
-            var feeTaxAmount = feeInfo.TotalAmount - feeNetAmount;  // 税额
-
-            // 手续费本体明细
-            var feeLineNo = lineNo++;
-            lines.Add(new JsonObject
+            if (feeInfo.HasTax)
             {
-                ["lineNo"] = feeLineNo,
-                ["accountCode"] = feeInfo.FeeAccountCode,
-                ["drcr"] = "DR",
-                ["amount"] = feeNetAmount,
-                ["note"] = "振込手数料"
-            });
+                var feeNetAmount = Math.Round(feeInfo.TotalAmount / (1 + BankFeeTaxRate / 100), 0);
+                var feeTaxAmount = feeInfo.TotalAmount - feeNetAmount;
 
-            // 仮払消費税明细
-            if (feeTaxAmount > 0 && !string.IsNullOrWhiteSpace(feeInfo.InputTaxAccountCode))
+                var feeLineNo = lineNo++;
+                lines.Add(new JsonObject
+                {
+                    ["lineNo"] = feeLineNo,
+                    ["accountCode"] = feeInfo.FeeAccountCode,
+                    ["drcr"] = "DR",
+                    ["amount"] = feeNetAmount,
+                    ["note"] = "振込手数料"
+                });
+
+                if (feeTaxAmount > 0 && !string.IsNullOrWhiteSpace(feeInfo.InputTaxAccountCode))
+                {
+                    lines.Add(new JsonObject
+                    {
+                        ["lineNo"] = lineNo++,
+                        ["accountCode"] = feeInfo.InputTaxAccountCode,
+                        ["drcr"] = "DR",
+                        ["amount"] = feeTaxAmount,
+                        ["taxRate"] = BankFeeTaxRate,
+                        ["note"] = "振込手数料消費税",
+                        ["baseLineNo"] = feeLineNo,
+                        ["isTaxLine"] = true
+                    });
+                }
+            }
+            else
             {
                 lines.Add(new JsonObject
                 {
                     ["lineNo"] = lineNo++,
-                    ["accountCode"] = feeInfo.InputTaxAccountCode,
+                    ["accountCode"] = feeInfo.FeeAccountCode,
                     ["drcr"] = "DR",
-                    ["amount"] = feeTaxAmount,
-                    ["taxRate"] = BankFeeTaxRate,
-                    ["note"] = "振込手数料消費税",
-                    ["baseLineNo"] = feeLineNo,
-                    ["isTaxLine"] = true
+                    ["amount"] = feeInfo.TotalAmount,
+                    ["note"] = "振込手数料"
                 });
             }
         }
 
-        // 贷方银行科目（总金额 = 支付金额 + 手续费）
+        // 贷方银行科目（总金额 = 支付金額 + 手续费）
         var creditLine = new JsonObject
         {
             ["lineNo"] = lineNo++,
@@ -6906,7 +7064,8 @@ WHERE oi.id = $1";
         decimal TotalAmount,          // 含税总额
         string FeeAccountCode,        // 手续费科目代码（如6610雑費）
         string? InputTaxAccountCode,  // 仮払消費税科目代码
-        string BankAccountCode        // 银行科目代码
+        string BankAccountCode,       // 银行科目代码
+        bool HasTax = false           // 手续费科目是否设定了消费税
     );
 
     /// <summary>
@@ -7335,6 +7494,41 @@ ORDER BY transaction_date, row_sequence";
             return code.Trim();
         }
         throw new InvalidOperationException("会社設定に振込手数料科目（bankFeeAccountCode）が設定されていません。会社設定を確認してください。");
+    }
+
+    private static async Task<(string withdrawal, string deposit)> GetDefaultSuspenseAccountsAsync(
+        NpgsqlConnection conn, string companyCode, CancellationToken ct)
+    {
+        string? withdrawal = await ResolveAccountByNameAsync(conn, companyCode, "仮払金", ct);
+        string? deposit = await ResolveAccountByNameAsync(conn, companyCode, "仮受金", ct);
+        if (!string.IsNullOrWhiteSpace(withdrawal) && !string.IsNullOrWhiteSpace(deposit))
+            return (withdrawal, deposit);
+        throw new InvalidOperationException($"勘定科目マスタに仮払金または仮受金が見つかりません（company_code={companyCode}）。科目マスタを確認してください。");
+    }
+
+    private static async Task<HashSet<string>> ResolveSuspenseAccountCodesAsync(
+        NpgsqlConnection conn, string companyCode, CancellationToken ct)
+    {
+        var codes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"SELECT account_code FROM accounts WHERE company_code = $1
+            AND (payload->>'name' LIKE '%仮払金%' OR payload->>'name' LIKE '%仮受金%')";
+        cmd.Parameters.AddWithValue(companyCode);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            codes.Add(reader.GetString(0));
+        return codes;
+    }
+
+    private static async Task<string?> ResolveAccountByNameAsync(
+        NpgsqlConnection conn, string companyCode, string namePattern, CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT account_code FROM accounts WHERE company_code=$1 AND payload->>'name' LIKE $2 ORDER BY account_code LIMIT 1";
+        cmd.Parameters.AddWithValue(companyCode);
+        cmd.Parameters.AddWithValue($"%{namePattern}%");
+        var result = await cmd.ExecuteScalarAsync(ct);
+        return result is string s && !string.IsNullOrWhiteSpace(s) ? s.Trim() : null;
     }
 
     /// <summary>
