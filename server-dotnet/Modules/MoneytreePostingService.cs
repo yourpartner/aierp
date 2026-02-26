@@ -1785,7 +1785,7 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
             var sideFilter = $@"AND EXISTS (
                 SELECT 1 FROM jsonb_array_elements(v.payload->'lines') AS line
                 WHERE (line->>'lineNo')::int = oi.voucher_line_no
-                  AND line->>'side' = '{expectedSide}'
+                  AND COALESCE(line->>'drcr','DR') = '{expectedSide}'
             )";
             var dateWindowDays = hasPartner ? 60 : 5;
             await using var oiCmd = conn.CreateCommand();
