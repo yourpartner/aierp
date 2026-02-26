@@ -7369,6 +7369,11 @@ sealed class SearchQueryBuilder
 
         if (items.All(v => v is Guid || (v is string s && Guid.TryParse(s, out _))))
         {
+            if (kind == ExpressionKind.Column)
+            {
+                var texts = items.Select(v => v?.ToString() ?? string.Empty).ToArray();
+                return $"{expr}::text = ANY({AddParam(texts, NpgsqlDbType.Array | NpgsqlDbType.Text)})";
+            }
             var guids = items.Select(v =>
             {
                 if (v is Guid g) return g;
@@ -7479,7 +7484,12 @@ sealed class SearchQueryBuilder
                 return (dt.Date, expr, NpgsqlDbType.Date);
             case string s:
                 if (Guid.TryParse(s, out var guid))
+                {
+                    // Column type might be text or uuid — use ::text cast to work with both
+                    if (kind == ExpressionKind.Column)
+                        return (s, $"{expr}::text", NpgsqlDbType.Text);
                     return (guid, expr, NpgsqlDbType.Uuid);
+                }
                 if (DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dt2))
                     return (dt2.Date, kind == ExpressionKind.JsonText ? $"NULLIF({expr}, '')::date" : expr, NpgsqlDbType.Date);
                 if (kind == ExpressionKind.JsonText && decimal.TryParse(s, NumberStyles.Number, CultureInfo.InvariantCulture, out var dec2Json))
