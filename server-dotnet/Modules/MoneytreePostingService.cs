@@ -1781,6 +1781,12 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
             hasPartner, partnerId ?? "(none)", amount, totalAmount, txDate.ToString("yyyy-MM-dd"));
         {
             var partnerFilter = hasPartner ? "AND oi.partner_id = $4" : "";
+            var expectedSide = isWithdrawal ? "CR" : "DR";
+            var sideFilter = $@"AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements(v.payload->'lines') AS line
+                WHERE (line->>'lineNo')::int = oi.voucher_line_no
+                  AND line->>'side' = '{expectedSide}'
+            )";
             var dateWindowDays = hasPartner ? 60 : 5;
             await using var oiCmd = conn.CreateCommand();
             oiCmd.CommandText = $@"
@@ -1799,6 +1805,7 @@ WITH oi_with_detail AS (
       AND oi.cleared_flag = false
       AND ABS(oi.residual_amount) > 0.01
       {partnerFilter}
+      {sideFilter}
 )
 SELECT id, account_code, residual_amount, doc_date::text, voucher_no, effective_date::text
 FROM oi_with_detail
@@ -2245,7 +2252,7 @@ LIMIT 200";
 
                 sb.AppendLine($"■ マッチする未清項: open_item_id={bestOi.Id}, account={oiAccount}, residual=¥{bestOi.ResidualAmount:N0}, voucher_no={bestOi.VoucherNo}");
                 sb.AppendLine();
-                sb.AppendLine("【指示】以下のパラメータで create_voucher を呼び、その後 clear_open_item を呼んでください。");
+                sb.AppendLine("【指示】以下のパラメータで create_voucher を呼んでください（clear_open_item は不要、システムが自動消込します）。");
                 sb.AppendLine("※ 下記のパラメータをそのまま使ってください。変更しないでください。");
                 sb.AppendLine();
 
@@ -2265,8 +2272,9 @@ LIMIT 200";
                 if (isWithdrawal)
                 {
                     int promptLineNo = 1;
+                    var feeInVoucher = (feeAmt > 0 && !string.IsNullOrWhiteSpace(preContext.BankFeeAccountCode));
                     sb.AppendLine($"    - lineNo: {promptLineNo++}, accountCode: \"{oiAccount}\", amount: {amount}, side: \"DR\"{empIdPart}{deptIdPart}");
-                    if (feeAmt > 0 && !string.IsNullOrWhiteSpace(preContext.BankFeeAccountCode))
+                    if (feeInVoucher)
                     {
                         var feeAcct = preContext.BankFeeAccountCode;
                         if (preContext.BankFeeHasTax)
@@ -2283,7 +2291,8 @@ LIMIT 200";
                             sb.AppendLine($"    - lineNo: {promptLineNo++}, accountCode: \"{feeAcct}\", amount: {feeAmt}, side: \"DR\", note: \"振込手数料\"");
                         }
                     }
-                    sb.AppendLine($"    - lineNo: {promptLineNo++}, accountCode: \"{bankAcct}\", amount: {amount + feeAmt}, side: \"CR\"");
+                    var creditAmount = feeInVoucher ? amount + feeAmt : amount;
+                    sb.AppendLine($"    - lineNo: {promptLineNo++}, accountCode: \"{bankAcct}\", amount: {creditAmount}, side: \"CR\"");
                 }
                 else
                 {
@@ -2308,7 +2317,7 @@ LIMIT 200";
                     sb.AppendLine($"     出金のため: 借方=未清項科目, 貸方=銀行口座");
                 else
                     sb.AppendLine($"     入金のため: 借方=銀行口座, 貸方=未清項科目");
-                sb.AppendLine("  3. create_voucher 成功後、clear_open_item で消込してください。");
+                sb.AppendLine("  3. create_voucher を呼んでください（clear_open_item は不要、システムが自動消込します）。");
             }
             // === Case C: 未清項なし → 歴史/学習パターンまたはデフォルト ===
             else
@@ -2398,7 +2407,7 @@ LIMIT 200";
             sb.AppendLine("  Step 3: search_bank_open_items で未清項を検索");
             sb.AppendLine("  Step 4a: マッチあり → その科目で仕訳作成 + clear_open_item で消込");
             sb.AppendLine("  Step 4b: マッチなし → search_historical_patterns で過去パターン検索");
-            sb.AppendLine("  Step 4c: パターンもなし → デフォルト科目（出金:仮払金183/入金:仮受金319）で記帳");
+            sb.AppendLine("  Step 4c: パターンもなし → デフォルト科目（出金:仮払金/入金:仮受金）で記帳");
         }
         else
         {
@@ -2607,7 +2616,8 @@ WHERE id = $5 AND posting_status NOT IN ('posted', 'linked')";
             // 2. 自动清账
             if (!string.IsNullOrWhiteSpace(openItemId) && Guid.TryParse(openItemId, out var oiGuid) && !string.IsNullOrWhiteSpace(voucherNo))
             {
-                // 找出支付凭证中匹配科目的行号
+                // 找出支付凭证中匹配 open item 科目的行号
+                var matchedOiAcct = preContext.OpenItems?.FirstOrDefault(o => o.Id == openItemId)?.AccountCode;
                 int paymentLineNo = 0;
                 {
                     await using var plCmd = conn.CreateCommand();
@@ -2624,7 +2634,7 @@ WHERE id = $5 AND posting_status NOT IN ('posted', 'linked')";
                             {
                                 var plAcct = plLine.TryGetProperty("accountCode", out var plAc) ? plAc.GetString() : null;
                                 var plLn = plLine.TryGetProperty("lineNo", out var plLnV) ? plLnV.GetInt32() : 0;
-                                if (plAcct != null && plLn > 0)
+                                if (plAcct != null && plLn > 0 && (matchedOiAcct == null || plAcct == matchedOiAcct))
                                 {
                                     paymentLineNo = plLn;
                                     break;
@@ -2748,7 +2758,7 @@ SET residual_amount = 0,
              true
            ),
     updated_at = now() 
-WHERE voucher_id = $2 AND company_code = $3 AND account_code = $4 AND cleared_flag = false
+WHERE voucher_id = $2 AND company_code = $3 AND account_code = $4 AND voucher_line_no = $8 AND cleared_flag = false
 RETURNING id";
                     selfClearCmd.Parameters.AddWithValue(clearByRef);                        // $1 cleared_by
                     selfClearCmd.Parameters.AddWithValue(voucherId);                          // $2 payment voucher id
@@ -2757,6 +2767,7 @@ RETURNING id";
                     selfClearCmd.Parameters.AddWithValue(originalVoucherNo ?? "");            // $5 clearedItems.voucherNo
                     selfClearCmd.Parameters.AddWithValue(originalVoucherId?.ToString() ?? ""); // $6 clearedItems.voucherId
                     selfClearCmd.Parameters.AddWithValue(originalLineNo);                     // $7 clearedItems.lineNo
+                    selfClearCmd.Parameters.AddWithValue(paymentLineNo);                     // $8 voucher_line_no
 
                     await using (var selfReader = await selfClearCmd.ExecuteReaderAsync(ct))
                     {

@@ -369,6 +369,7 @@ SELECT id, account_code, residual_amount, doc_date, voucher_no, drcr, effective_
 FROM oi_with_detail
 WHERE drcr = $2
   AND effective_date <= ($3::date + interval '5 day')
+  AND effective_date >= ($3::date - interval '180 day')
 ORDER BY ABS(ABS(residual_amount) - $4) ASC, ABS(effective_date - $3::date) ASC
 LIMIT 20";
         cmd.Parameters.AddWithValue(companyCode);       // $1
