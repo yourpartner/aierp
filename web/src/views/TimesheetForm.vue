@@ -228,7 +228,7 @@ async function buildDays(){
       hours: 0, 
       overtime: 0, 
       task:'', 
-      status: 'saved',
+      status: 'draft',
       isWeekend: !isWd,
       isHoliday: isHday
     }
@@ -371,7 +371,8 @@ function statusLabel(s: string) {
     case 'submitted': return '提出済'
     case 'saved': return '保存済'
     case 'rejected': return '却下'
-    default: return '保存済'
+    case 'draft': return ''
+    default: return ''
   }
 }
 
