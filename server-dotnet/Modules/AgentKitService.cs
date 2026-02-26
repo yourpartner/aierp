@@ -4030,6 +4030,7 @@ public sealed class AgentKitService
             : null;
 
         // 银行交易记帳：AI 可能传原始交易ID，需要补 bank_ 前缀匹配已注册的虚拟 session
+        string? bankDescription = null;
         if (!string.IsNullOrWhiteSpace(context.BankTransactionId))
         {
             var bankDocSessionId = $"bank_{context.BankTransactionId}";
@@ -4038,6 +4039,20 @@ public sealed class AgentKitService
                 context.GetFileIdsByDocumentSession(documentSessionId).ToArray().Length == 0)
             {
                 documentSessionId = bankDocSessionId;
+            }
+            // 获取 moneytree 明细摘要，用于银行科目行的 note
+            try
+            {
+                await using var bankDescConn = await _ds.OpenConnectionAsync(ct);
+                await using var bankDescCmd = bankDescConn.CreateCommand();
+                bankDescCmd.CommandText = "SELECT description FROM moneytree_transactions WHERE id = $1 AND company_code = $2";
+                bankDescCmd.Parameters.AddWithValue(Guid.Parse(context.BankTransactionId));
+                bankDescCmd.Parameters.AddWithValue(context.CompanyCode);
+                bankDescription = (await bankDescCmd.ExecuteScalarAsync(ct))?.ToString();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[AgentKit] Failed to fetch bank transaction description for {TxId}", context.BankTransactionId);
             }
         }
 
@@ -4316,6 +4331,7 @@ public sealed class AgentKitService
 
         // 查询系统中默认的现金科目（不再硬编码 1000）
         var defaultCashAccount = await GetDefaultCashAccountCodeAsync(context.CompanyCode, ct);
+        var defaultCashNote = bankDescription ?? "現金支出";
         
         // var creditAdjusted = false;
 
@@ -4328,7 +4344,7 @@ public sealed class AgentKitService
                 {
                     ["accountCode"] = defaultCashAccount,
                     ["drcr"] = "CR",
-                    ["note"] = "現金支出"
+                    ["note"] = defaultCashNote
                 };
                 linesNode.Add(creditLine);
                 // creditAdjusted = true;
@@ -4348,7 +4364,7 @@ public sealed class AgentKitService
             }
             if (!firstCredit.ContainsKey("note"))
             {
-                firstCredit["note"] = "現金支出";
+                firstCredit["note"] = defaultCashNote;
             }
         }
 
@@ -4369,7 +4385,7 @@ public sealed class AgentKitService
                     ["accountCode"] = cashAccount,
                     ["drcr"] = "CR",
                     ["amount"] = Math.Round(debitTotal, 2),
-                    ["note"] = "現金支出"
+                    ["note"] = defaultCashNote
                 };
                 linesNode.Add(creditLine);
             }
