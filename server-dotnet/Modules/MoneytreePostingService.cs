@@ -1781,12 +1781,6 @@ WHERE id = ANY($1) AND posting_status = 'pending'";
             hasPartner, partnerId ?? "(none)", amount, totalAmount, txDate.ToString("yyyy-MM-dd"));
         {
             var partnerFilter = hasPartner ? "AND oi.partner_id = $4" : "";
-            var expectedSide = isWithdrawal ? "CR" : "DR";
-            var sideFilter = $@"AND EXISTS (
-                SELECT 1 FROM jsonb_array_elements(v.payload->'lines') AS line
-                WHERE (line->>'lineNo')::int = oi.voucher_line_no
-                  AND COALESCE(line->>'drcr','DR') = '{expectedSide}'
-            )";
             var dateWindowDays = hasPartner ? 60 : 5;
             await using var oiCmd = conn.CreateCommand();
             oiCmd.CommandText = $@"
@@ -1805,7 +1799,6 @@ WITH oi_with_detail AS (
       AND oi.cleared_flag = false
       AND ABS(oi.residual_amount) > 0.01
       {partnerFilter}
-      {sideFilter}
 )
 SELECT id, account_code, residual_amount, doc_date::text, voucher_no, effective_date::text
 FROM oi_with_detail
