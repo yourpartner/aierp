@@ -170,13 +170,13 @@ const proxyNoTarget = computed(() => proxyMode.value && !proxyEmployeeId.value)
 const proxyMode = ref(false)
 const proxyEmployeeId = ref<string>('')
 const proxyEmployeeName = ref<string>('')
-const employeeOptions = ref<{value:string, label:string, userId:string}[]>([])
+const employeeOptions = ref<{value:string, label:string, mappedUserId:string}[]>([])
 const employeeLoading = ref(false)
 
 function targetUserId(): string {
   if (proxyMode.value && proxyEmployeeId.value) {
     const opt = employeeOptions.value.find(e => e.value === proxyEmployeeId.value)
-    return opt?.userId || ''
+    return opt?.mappedUserId || proxyEmployeeId.value
   }
   return currentUserId()
 }
@@ -187,7 +187,7 @@ async function searchEmployees(q: string) {
     const where: any[] = []
     if (q) {
       where.push({ anyOf: [
-        { json: 'name', op: 'contains', value: q },
+        { json: 'nameKanji', op: 'contains', value: q },
         { json: 'nameKana', op: 'contains', value: q },
         { field: 'employee_code', op: 'contains', value: q }
       ]})
@@ -197,13 +197,31 @@ async function searchEmployees(q: string) {
       orderBy: [{ field: 'employee_code', dir: 'ASC' }]
     })
     const list = Array.isArray(r.data?.data) ? r.data.data : []
-    employeeOptions.value = list
-      .filter((x: any) => x.payload?.userId)
-      .map((x: any) => ({
+    const options = list.map((x: any) => {
+      const name = x.payload?.nameKanji || x.payload?.name || x.payload?.nameKana || ''
+      return {
         value: x.id,
-        label: `${x.payload?.name || ''} (${x.employee_code || ''})`,
-        userId: x.payload?.userId || ''
-      }))
+        label: name ? `${name} (${x.employee_code || ''})` : (x.employee_code || x.id),
+        mappedUserId: ''
+      }
+    })
+    // Fetch user→employee mapping to use correct userId for employees with accounts
+    try {
+      const uRes = await api.get('/api/users')
+      const users = Array.isArray(uRes.data?.users) ? uRes.data.users : []
+      const empToUser = new Map<string, string>()
+      for (const u of users) {
+        if (u.employeeId) empToUser.set(u.employeeId, u.id)
+      }
+      for (const opt of options) {
+        opt.mappedUserId = empToUser.get(opt.value) || opt.value
+      }
+    } catch {
+      for (const opt of options) {
+        opt.mappedUserId = opt.value
+      }
+    }
+    employeeOptions.value = options
   } catch {
     employeeOptions.value = []
   } finally {
