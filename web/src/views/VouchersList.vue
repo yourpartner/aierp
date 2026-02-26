@@ -554,7 +554,10 @@ async function searchPartners(query: string) {
     const q = (query || '').trim()
     const where: any[] = []
     if (q){
-      where.push({ json: 'name', op: 'contains', value: q })
+      where.push({ anyOf: [
+        { json: 'name', op: 'contains', value: q },
+        { field: 'partner_code', op: 'contains', value: q }
+      ]})
     }
     const resp = await api.post('/objects/businesspartner/search', {
       page: 1,
@@ -564,10 +567,9 @@ async function searchPartners(query: string) {
     })
     const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
     partnerOptions.value = rows.map((x:any) => {
-      const id = x.id || ''
       const code = x.partner_code || x.payload?.code || ''
       const name = x.payload?.name || x.name || ''
-      return { value: id, label: name ? `${name} (${code})` : code }
+      return { value: code, label: name ? `${name} (${code})` : code }
     }).filter((x:any) => !!x.value)
   }catch{
     partnerOptions.value = []
