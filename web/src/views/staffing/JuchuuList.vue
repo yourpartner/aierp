@@ -151,25 +151,53 @@
     <!-- 受注フォームダイアログ -->
     <el-dialog
       v-model="dialogVisible"
-      :title="editId ? '受注編集' : '新規受注登録'"
-      width="860px"
+      :title="dialogTitle"
+      width="800px"
       :close-on-click-modal="false"
       destroy-on-close
+      class="juchuu-dialog"
     >
       <JuchuuForm
+        ref="juchuuFormRef"
         :juchuu-id="editId || undefined"
         @saved="onSaved"
         @cancel="dialogVisible = false"
       />
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="dialogVisible = false">キャンセル</el-button>
+          <!-- Step 1（アップロード画面）のフッター -->
+          <template v-if="formStep === 'upload'">
+            <el-button plain @click="skipUpload">
+              スキップして入力へ
+            </el-button>
+            <el-button type="primary" @click="doUploadAndOcr" :disabled="!juchuuFormRef?.selectedFile">
+              <el-icon><Upload /></el-icon>
+              アップロード＆解析
+            </el-button>
+          </template>
+          <!-- Step 2（フォーム画面）のフッター -->
+          <template v-else-if="formStep === 'form'">
+            <el-button type="primary" @click="doSave" :loading="formSaving">
+              <el-icon><Check /></el-icon>
+              保存
+            </el-button>
+          </template>
+          <!-- OCR中はボタン無効 -->
+          <template v-else-if="formStep === 'ocr-loading'">
+            <el-button type="primary" disabled :loading="true">解析中...</el-button>
+          </template>
+        </div>
+      </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import {
   DocumentChecked, Plus, Search, Edit,
-  CircleCheck, CircleClose
+  CircleCheck, CircleClose, Upload, Check
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '../../api'
@@ -189,6 +217,37 @@ const keyword = ref('')
 
 const dialogVisible = ref(false)
 const editId = ref<string | undefined>(undefined)
+const juchuuFormRef = ref<any>(null)
+const formSaving = ref(false)
+
+// JuchuuForm の現在ステップをリアクティブに取得
+const formStep = computed(() => juchuuFormRef.value?.step ?? (editId.value ? 'form' : 'upload'))
+
+const dialogTitle = computed(() => {
+  if (editId.value) return '受注編集'
+  if (formStep.value === 'upload') return '新規受注登録 — 注文書アップロード'
+  if (formStep.value === 'ocr-loading') return '新規受注登録 — 解析中...'
+  return '新規受注登録 — 受注情報入力'
+})
+
+async function doUploadAndOcr() {
+  await juchuuFormRef.value?.uploadAndOcr()
+}
+
+function skipUpload() {
+  if (juchuuFormRef.value) {
+    juchuuFormRef.value.step = 'form'
+  }
+}
+
+async function doSave() {
+  formSaving.value = true
+  try {
+    await juchuuFormRef.value?.save()
+  } finally {
+    formSaving.value = false
+  }
+}
 
 async function load() {
   loading.value = true
@@ -306,5 +365,10 @@ onMounted(load)
 .rate-cell small {
   font-weight: normal;
   color: #999;
+}
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>
