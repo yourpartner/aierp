@@ -2047,7 +2047,7 @@ app.MapPost("/schemas/{name}", async (HttpRequest req, string name, NpgsqlDataSo
 // - JSON Schema validation
 // - Filter/sort whitelists (query.filters/sorts)
 // - coreFields (generated columns and constraints created via migrations)
-static readonly string EmployeeActiveContractsSqlTemplate = @"EXISTS (
+string EmployeeActiveContractsSqlTemplate = @"EXISTS (
     SELECT 1
     FROM jsonb_array_elements(
         CASE
@@ -2072,7 +2072,7 @@ static readonly string EmployeeActiveContractsSqlTemplate = @"EXISTS (
             )
         )
 )";
-static readonly string EmployeeActiveContractsSql = EmployeeActiveContractsSqlTemplate.Replace("{{REF_DATE}}", "CURRENT_DATE");
+string EmployeeActiveContractsSql = EmployeeActiveContractsSqlTemplate.Replace("{{REF_DATE}}", "CURRENT_DATE");
 
 // GetActiveSchema has moved to Domain/SchemasService; table mapping lives in Infrastructure.Crud.TableFor.
 async Task<IResult> HandleObjectSearch(HttpRequest req, string entity, NpgsqlDataSource ds, AzureBlobService blobService)
