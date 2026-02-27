@@ -157,7 +157,7 @@
       destroy-on-close
     >
       <JuchuuForm
-        :juchuu-id="editId"
+        :juchuu-id="editId || undefined"
         @saved="onSaved"
         @cancel="dialogVisible = false"
       />
@@ -165,13 +165,14 @@
   </div>
 </template>
 
-<script setup>
-import { ref, onMounted, defineEmits } from 'vue'
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import {
   DocumentChecked, Plus, Search, Edit,
   CircleCheck, CircleClose
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import api from '../../api'
 import JuchuuForm from './JuchuuForm.vue'
 
 const emit = defineEmits(['open-hatchuu-form'])
@@ -187,41 +188,23 @@ const contractTypeFilter = ref('')
 const keyword = ref('')
 
 const dialogVisible = ref(false)
-const editId = ref(null)
-
-function apiBase() {
-  const host = window.location.hostname
-  if (host === 'localhost' || host === '127.0.0.1') return 'http://localhost:5181'
-  return ''
-}
-
-function getHeaders() {
-  const token = localStorage.getItem('token') || sessionStorage.getItem('token')
-  const cc = localStorage.getItem('companyCode') || 'JP01'
-  return {
-    'Authorization': `Bearer ${token}`,
-    'x-company-code': cc,
-    'Content-Type': 'application/json'
-  }
-}
+const editId = ref<string | undefined>(undefined)
 
 async function load() {
   loading.value = true
   try {
-    const params = new URLSearchParams({
+    const params: Record<string, any> = {
       limit: pageSize.value,
       offset: (currentPage.value - 1) * pageSize.value
-    })
-    if (statusFilter.value) params.set('status', statusFilter.value)
-    if (contractTypeFilter.value) params.set('contractType', contractTypeFilter.value)
-    if (keyword.value) params.set('keyword', keyword.value)
+    }
+    if (statusFilter.value) params.status = statusFilter.value
+    if (contractTypeFilter.value) params.contractType = contractTypeFilter.value
+    if (keyword.value) params.keyword = keyword.value
 
-    const res = await fetch(`${apiBase()}/staffing/juchuu?${params}`, { headers: getHeaders() })
-    if (!res.ok) throw new Error(await res.text())
-    const data = await res.json()
-    rows.value = data.data || []
-    total.value = data.total || 0
-  } catch (e) {
+    const res = await api.get('/staffing/juchuu', { params })
+    rows.value = res.data.data || []
+    total.value = res.data.total || 0
+  } catch (e: any) {
     ElMessage.error(`読み込みエラー: ${e.message}`)
   } finally {
     loading.value = false
@@ -229,11 +212,11 @@ async function load() {
 }
 
 function openNew() {
-  editId.value = null
+  editId.value = undefined
   dialogVisible.value = true
 }
 
-function onEdit(row) {
+function onEdit(row: any) {
   editId.value = row.id
   dialogVisible.value = true
 }
@@ -244,24 +227,24 @@ function onSaved() {
   ElMessage.success('保存しました')
 }
 
-function onCreateHatchuu(row) {
+function onCreateHatchuu(row: any) {
   emit('open-hatchuu-form', { juchuuId: row.id, juchuuNo: row.juchuuNo, clientName: row.clientName })
 }
 
-function contractTypeLabel(t) {
-  return { ses: 'SES', dispatch: '派遣', contract: '請負' }[t] || t || '-'
+function contractTypeLabel(t: string) {
+  return ({ ses: 'SES', dispatch: '派遣', contract: '請負' } as Record<string,string>)[t] || t || '-'
 }
-function contractTypeColor(t) {
-  return { ses: 'primary', dispatch: 'warning', contract: 'success' }[t] || 'info'
+function contractTypeColor(t: string) {
+  return ({ ses: 'primary', dispatch: 'warning', contract: 'success' } as Record<string,string>)[t] || 'info'
 }
-function rateTypeLabel(t) {
-  return { monthly: '月', daily: '日', hourly: '時' }[t] || t || '-'
+function rateTypeLabel(t: string) {
+  return ({ monthly: '月', daily: '日', hourly: '時' } as Record<string,string>)[t] || t || '-'
 }
-function statusLabel(s) {
-  return { draft: '下書き', active: '有効', ended: '終了', terminated: '解約' }[s] || s || '-'
+function statusLabel(s: string) {
+  return ({ draft: '下書き', active: '有効', ended: '終了', terminated: '解約' } as Record<string,string>)[s] || s || '-'
 }
-function statusColor(s) {
-  return { draft: 'info', active: 'success', ended: '', terminated: 'danger' }[s] ?? 'info'
+function statusColor(s: string) {
+  return ({ draft: 'info', active: 'success', ended: '', terminated: 'danger' } as Record<string,string>)[s] ?? 'info'
 }
 
 onMounted(load)

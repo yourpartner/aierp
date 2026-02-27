@@ -184,10 +184,11 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, reactive, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Check, Link } from '@element-plus/icons-vue'
+import api from '../../api'
 
 const props = defineProps({
   hatchuuId: { type: String, default: null },
@@ -198,12 +199,12 @@ const emit = defineEmits(['saved', 'cancel'])
 
 const loading = ref(false)
 const saving = ref(false)
-const formRef = ref(null)
+const formRef = ref<any>(null)
 
-const juchuuOptions = ref([])
-const resourceOptions = ref([])
-const supplierOptions = ref([])
-const linkedJuchuuInfo = ref(null)
+const juchuuOptions = ref<any[]>([])
+const resourceOptions = ref<any[]>([])
+const supplierOptions = ref<any[]>([])
+const linkedJuchuuInfo = ref<any>(null)
 
 const form = reactive({
   juchuuId: props.initialJuchuuId || null,
@@ -230,21 +231,6 @@ const rules = {
   contractType: [{ required: true, message: '契約形態を選択してください', trigger: 'change' }],
 }
 
-function apiBase() {
-  const host = window.location.hostname
-  if (host === 'localhost' || host === '127.0.0.1') return 'http://localhost:5181'
-  return ''
-}
-
-function getHeaders() {
-  const token = localStorage.getItem('token') || sessionStorage.getItem('token')
-  const cc = localStorage.getItem('companyCode') || 'JP01'
-  return {
-    'Authorization': `Bearer ${token}`,
-    'x-company-code': cc,
-    'Content-Type': 'application/json'
-  }
-}
 
 // 受注紐付けオプション設定（受注一覧から渡された場合）
 onMounted(() => {
@@ -254,25 +240,21 @@ onMounted(() => {
   }
 })
 
-async function searchJuchuu(q) {
+async function searchJuchuu(q: string) {
   if (!q) return
-  const res = await fetch(`${apiBase()}/staffing/juchuu?keyword=${encodeURIComponent(q)}&limit=20`, { headers: getHeaders() })
-  if (!res.ok) return
-  const data = await res.json()
-  juchuuOptions.value = (data.data || []).map(j => ({
+  const res = await api.get('/staffing/juchuu', { params: { keyword: q, limit: 20 } })
+  juchuuOptions.value = (res.data.data || []).map((j: any) => ({
     value: j.id,
     label: `${j.juchuuNo} ${j.clientName ? `(${j.clientName})` : ''}`
   }))
 }
 
-async function loadJuchuuInfo(juchuuId) {
+async function loadJuchuuInfo(juchuuId: string | null) {
   if (!juchuuId) { linkedJuchuuInfo.value = null; return }
   try {
-    const res = await fetch(`${apiBase()}/staffing/juchuu/${juchuuId}`, { headers: getHeaders() })
-    if (!res.ok) return
-    const data = await res.json()
+    const res = await api.get(`/staffing/juchuu/${juchuuId}`)
+    const data = res.data
     linkedJuchuuInfo.value = { clientName: data.clientName, billingRate: data.billingRate }
-    // 受注情報から勤務条件を自動コピー（未設定の場合）
     if (!form.workLocation && data.workLocation) form.workLocation = data.workLocation
     if (!form.startDate && data.startDate) form.startDate = data.startDate
     if (!form.endDate && data.endDate) form.endDate = data.endDate
@@ -281,32 +263,27 @@ async function loadJuchuuInfo(juchuuId) {
 
 watch(() => form.juchuuId, (val) => loadJuchuuInfo(val))
 
-async function searchResources(q) {
+async function searchResources(q: string) {
   if (!q) return
-  const res = await fetch(`${apiBase()}/staffing/resources?keyword=${encodeURIComponent(q)}&limit=20`, { headers: getHeaders() })
-  if (!res.ok) return
-  const data = await res.json()
-  resourceOptions.value = (data.data || []).map(r => ({
+  const res = await api.get('/staffing/resources', { params: { keyword: q, limit: 20 } })
+  resourceOptions.value = (res.data.data || []).map((r: any) => ({
     value: r.id,
     label: `${r.displayName || r.resourceCode} (${r.resourceCode})`
   }))
 }
 
-async function searchSuppliers(q) {
+async function searchSuppliers(q: string) {
   if (!q) return
-  const res = await fetch(`${apiBase()}/businesspartners?keyword=${encodeURIComponent(q)}&limit=20`, { headers: getHeaders() })
-  if (!res.ok) return
-  const data = await res.json()
-  supplierOptions.value = (data.data || []).map(bp => ({ value: bp.id, label: bp.name || bp.partnerCode }))
+  const res = await api.get('/businesspartners', { params: { keyword: q, limit: 20 } })
+  supplierOptions.value = (res.data.data || []).map((bp: any) => ({ value: bp.id, label: bp.name || bp.partnerCode }))
 }
 
 async function load() {
   if (!props.hatchuuId) return
   loading.value = true
   try {
-    const res = await fetch(`${apiBase()}/staffing/hatchuu/${props.hatchuuId}`, { headers: getHeaders() })
-    if (!res.ok) throw new Error(await res.text())
-    const data = await res.json()
+    const res = await api.get(`/staffing/hatchuu/${props.hatchuuId}`)
+    const data = res.data
     Object.assign(form, {
       juchuuId: data.juchuuId,
       resourceId: data.resourceId,
@@ -327,7 +304,6 @@ async function load() {
       monthlyWorkHours: data.monthlyWorkHours ?? 160,
       notes: data.notes,
     })
-    // option初期値
     if (data.juchuuId && data.juchuuNo) {
       juchuuOptions.value = [{ value: data.juchuuId, label: `${data.juchuuNo}${data.clientName ? ` (${data.clientName})` : ''}` }]
       linkedJuchuuInfo.value = { clientName: data.clientName, billingRate: data.billingRate }
@@ -338,7 +314,7 @@ async function load() {
     if (data.supplierPartnerId && data.supplierName) {
       supplierOptions.value = [{ value: data.supplierPartnerId, label: data.supplierName }]
     }
-  } catch (e) {
+  } catch (e: any) {
     ElMessage.error(`読み込みエラー: ${e.message}`)
   } finally {
     loading.value = false
@@ -349,37 +325,33 @@ async function save() {
   await formRef.value?.validate()
   saving.value = true
   try {
-    const url = props.hatchuuId
-      ? `${apiBase()}/staffing/hatchuu/${props.hatchuuId}`
-      : `${apiBase()}/staffing/hatchuu`
-    const method = props.hatchuuId ? 'PUT' : 'POST'
-    const res = await fetch(url, {
-      method,
-      headers: getHeaders(),
-      body: JSON.stringify({
-        juchuuId: form.juchuuId,
-        resourceId: form.resourceId,
-        supplierPartnerId: form.supplierPartnerId,
-        contractType: form.contractType,
-        status: form.status,
-        startDate: form.startDate,
-        endDate: form.endDate,
-        costRate: form.costRate,
-        costRateType: form.costRateType,
-        settlementType: form.settlementType,
-        settlementLowerH: form.settlementLowerH,
-        settlementUpperH: form.settlementUpperH,
-        workLocation: form.workLocation,
-        workDays: form.workDays,
-        workStartTime: form.workStartTime,
-        workEndTime: form.workEndTime,
-        monthlyWorkHours: form.monthlyWorkHours,
-        notes: form.notes,
-      })
-    })
-    if (!res.ok) throw new Error(await res.text())
+    const payload = {
+      juchuuId: form.juchuuId,
+      resourceId: form.resourceId,
+      supplierPartnerId: form.supplierPartnerId,
+      contractType: form.contractType,
+      status: form.status,
+      startDate: form.startDate,
+      endDate: form.endDate,
+      costRate: form.costRate,
+      costRateType: form.costRateType,
+      settlementType: form.settlementType,
+      settlementLowerH: form.settlementLowerH,
+      settlementUpperH: form.settlementUpperH,
+      workLocation: form.workLocation,
+      workDays: form.workDays,
+      workStartTime: form.workStartTime,
+      workEndTime: form.workEndTime,
+      monthlyWorkHours: form.monthlyWorkHours,
+      notes: form.notes,
+    }
+    if (props.hatchuuId) {
+      await api.put(`/staffing/hatchuu/${props.hatchuuId}`, payload)
+    } else {
+      await api.post('/staffing/hatchuu', payload)
+    }
     emit('saved')
-  } catch (e) {
+  } catch (e: any) {
     ElMessage.error(`保存エラー: ${e.message}`)
   } finally {
     saving.value = false

@@ -175,8 +175,8 @@
     >
       <HatchuuForm
         :hatchuu-id="editId"
-        :initial-juchuu-id="initialJuchuuId"
-        :initial-juchuu-no="initialJuchuuNo"
+        :initial-juchuu-id="currentJuchuuId"
+        :initial-juchuu-no="currentJuchuuNo"
         @saved="onSaved"
         @cancel="dialogVisible = false"
       />
@@ -194,13 +194,14 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import {
   DocumentAdd, Plus, Search, Edit,
   Document, Printer
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import api from '../../api'
 import HatchuuForm from './HatchuuForm.vue'
 
 const props = defineProps({
@@ -208,7 +209,7 @@ const props = defineProps({
   initialJuchuuNo: { type: String, default: null }
 })
 
-const rows = ref([])
+const rows = ref<any[]>([])
 const total = ref(0)
 const loading = ref(false)
 const currentPage = ref(1)
@@ -219,47 +220,29 @@ const contractTypeFilter = ref('')
 const keyword = ref('')
 
 const dialogVisible = ref(false)
-const editId = ref(null)
-const initialJuchuuId = ref(props.initialJuchuuId)
-const initialJuchuuNo = ref(props.initialJuchuuNo)
+const editId = ref<string | undefined>(undefined)
+const currentJuchuuId = ref<string | undefined>(props.initialJuchuuId || undefined)
+const currentJuchuuNo = ref<string | undefined>(props.initialJuchuuNo || undefined)
 
 const pdfDialogVisible = ref(false)
 const pdfHtml = ref('')
 
-function apiBase() {
-  const host = window.location.hostname
-  if (host === 'localhost' || host === '127.0.0.1') return 'http://localhost:5181'
-  return ''
-}
-
-function getHeaders() {
-  const token = localStorage.getItem('token') || sessionStorage.getItem('token')
-  const cc = localStorage.getItem('companyCode') || 'JP01'
-  return {
-    'Authorization': `Bearer ${token}`,
-    'x-company-code': cc,
-    'Content-Type': 'application/json'
-  }
-}
-
 async function load() {
   loading.value = true
   try {
-    const params = new URLSearchParams({
+    const params: Record<string, any> = {
       limit: pageSize.value,
       offset: (currentPage.value - 1) * pageSize.value
-    })
-    if (statusFilter.value) params.set('status', statusFilter.value)
-    if (contractTypeFilter.value) params.set('contractType', contractTypeFilter.value)
-    if (keyword.value) params.set('keyword', keyword.value)
-    if (props.initialJuchuuId) params.set('juchuuId', props.initialJuchuuId)
+    }
+    if (statusFilter.value) params.status = statusFilter.value
+    if (contractTypeFilter.value) params.contractType = contractTypeFilter.value
+    if (keyword.value) params.keyword = keyword.value
+    if (props.initialJuchuuId) params.juchuuId = props.initialJuchuuId
 
-    const res = await fetch(`${apiBase()}/staffing/hatchuu?${params}`, { headers: getHeaders() })
-    if (!res.ok) throw new Error(await res.text())
-    const data = await res.json()
-    rows.value = (data.data || []).map(r => ({ ...r, _generating: false }))
-    total.value = data.total || 0
-  } catch (e) {
+    const res = await api.get('/staffing/hatchuu', { params })
+    rows.value = (res.data.data || []).map((r: any) => ({ ...r, _generating: false }))
+    total.value = res.data.total || 0
+  } catch (e: any) {
     ElMessage.error(`読み込みエラー: ${e.message}`)
   } finally {
     loading.value = false
@@ -267,14 +250,16 @@ async function load() {
 }
 
 function openNew() {
-  editId.value = null
+  editId.value = undefined
+  currentJuchuuId.value = undefined
+  currentJuchuuNo.value = undefined
   dialogVisible.value = true
 }
 
-function onEdit(row) {
+function onEdit(row: any) {
   editId.value = row.id
-  initialJuchuuId.value = null
-  initialJuchuuNo.value = null
+  currentJuchuuId.value = undefined
+  currentJuchuuNo.value = undefined
   dialogVisible.value = true
 }
 
@@ -284,52 +269,45 @@ function onSaved() {
   ElMessage.success('保存しました')
 }
 
-async function onGeneratePdf(row) {
+async function onGeneratePdf(row: any) {
   row._generating = true
   try {
-    const res = await fetch(`${apiBase()}/staffing/hatchuu/${row.id}/generate-pdf`, {
-      method: 'POST',
-      headers: getHeaders()
-    })
-    if (!res.ok) throw new Error(await res.text())
-    const data = await res.json()
+    const res = await api.post(`/staffing/hatchuu/${row.id}/generate-pdf`)
     row.hasPdf = true
-    pdfHtml.value = data.htmlContent
+    pdfHtml.value = res.data.htmlContent
     pdfDialogVisible.value = true
     ElMessage.success('発注書を生成しました')
     load()
-  } catch (e) {
+  } catch (e: any) {
     ElMessage.error(`PDF生成エラー: ${e.message}`)
   } finally {
     row._generating = false
   }
 }
 
-async function printPdf(row) {
+async function printPdf(row: any) {
   try {
-    const res = await fetch(`${apiBase()}/staffing/hatchuu/${row.id}/doc-html`, { headers: getHeaders() })
-    if (!res.ok) throw new Error(await res.text())
-    const data = await res.json()
-    if (data.url) window.open(data.url, '_blank')
-  } catch (e) {
+    const res = await api.get(`/staffing/hatchuu/${row.id}/doc-html`)
+    if (res.data.url) window.open(res.data.url, '_blank')
+  } catch (e: any) {
     ElMessage.error(`表示エラー: ${e.message}`)
   }
 }
 
-function contractTypeLabel(t) {
-  return { ses: 'SES', dispatch: '派遣', contract: '請負' }[t] || t || '-'
+function contractTypeLabel(t: string) {
+  return ({ ses: 'SES', dispatch: '派遣', contract: '請負' } as Record<string,string>)[t] || t || '-'
 }
-function contractTypeColor(t) {
-  return { ses: 'primary', dispatch: 'warning', contract: 'success' }[t] || 'info'
+function contractTypeColor(t: string) {
+  return ({ ses: 'primary', dispatch: 'warning', contract: 'success' } as Record<string,string>)[t] || 'info'
 }
-function rateTypeLabel(t) {
-  return { monthly: '月', daily: '日', hourly: '時' }[t] || t || '-'
+function rateTypeLabel(t: string) {
+  return ({ monthly: '月', daily: '日', hourly: '時' } as Record<string,string>)[t] || t || '-'
 }
-function statusLabel(s) {
-  return { draft: '下書き', active: '有効', ended: '終了', terminated: '解約' }[s] || s || '-'
+function statusLabel(s: string) {
+  return ({ draft: '下書き', active: '有効', ended: '終了', terminated: '解約' } as Record<string,string>)[s] || s || '-'
 }
-function statusColor(s) {
-  return { draft: 'info', active: 'success', ended: '', terminated: 'danger' }[s] ?? 'info'
+function statusColor(s: string) {
+  return ({ draft: 'info', active: 'success', ended: '', terminated: 'danger' } as Record<string,string>)[s] ?? 'info'
 }
 
 onMounted(load)

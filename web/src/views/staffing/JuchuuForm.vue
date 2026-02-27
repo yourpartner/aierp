@@ -271,12 +271,13 @@
   </div>
 </template>
 
-<script setup>
-import { ref, reactive, watch, computed, onMounted } from 'vue'
+<script setup lang="ts">
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   UploadFilled, Upload, Check, Document
 } from '@element-plus/icons-vue'
+import api from '../../api'
 
 const props = defineProps({
   juchuuId: { type: String, default: null }
@@ -287,13 +288,12 @@ const loading = ref(false)
 const saving = ref(false)
 const uploading = ref(false)
 const activeTab = ref('basic')
-const formRef = ref(null)
-const uploadRef = ref(null)
-const selectedFile = ref(null)
-const ocrResult = ref(null)
+const formRef = ref<any>(null)
+const selectedFile = ref<any>(null)
+const ocrResult = ref<any>(null)
 
-const clientOptions = ref([])
-const resourceOptions = ref([])
+const clientOptions = ref<any[]>([])
+const resourceOptions = ref<any[]>([])
 
 const form = reactive({
   clientPartnerId: null,
@@ -321,58 +321,38 @@ const rules = {
   contractType: [{ required: true, message: '契約形態を選択してください', trigger: 'change' }],
 }
 
-function apiBase() {
-  const host = window.location.hostname
-  if (host === 'localhost' || host === '127.0.0.1') return 'http://localhost:5181'
-  return ''
-}
-
-function getHeaders() {
-  const token = localStorage.getItem('token') || sessionStorage.getItem('token')
-  const cc = localStorage.getItem('companyCode') || 'JP01'
-  return {
-    'Authorization': `Bearer ${token}`,
-    'x-company-code': cc,
-    'Content-Type': 'application/json'
-  }
-}
-
+// api モジュールの baseURL（/api）を使ってアップロードURLを構築
 const uploadUrl = computed(() => {
   if (!props.juchuuId) return ''
-  return `${apiBase()}/staffing/juchuu/${props.juchuuId}/upload-doc`
+  return `/api/staffing/juchuu/${props.juchuuId}/upload-doc`
 })
 
 const uploadHeaders = computed(() => {
-  const token = localStorage.getItem('token') || sessionStorage.getItem('token')
-  const cc = localStorage.getItem('companyCode') || 'JP01'
-  const key = localStorage.getItem('openaiKey') || ''
-  return {
-    'Authorization': `Bearer ${token}`,
-    'x-company-code': cc,
-    'x-openai-key': key
-  }
+  const token = (localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token') || '').trim()
+  const cc = localStorage.getItem('company_code') || 'JP01'
+  const key = localStorage.getItem('openai_key') || ''
+  const headers: Record<string, string> = { 'x-company-code': cc }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  if (key) headers['x-openai-key'] = key
+  return headers
 })
 
-async function searchClients(q) {
+async function searchClients(q: string) {
   if (!q) return
-  const res = await fetch(`${apiBase()}/businesspartners?keyword=${encodeURIComponent(q)}&type=client&limit=20`, { headers: getHeaders() })
-  if (!res.ok) return
-  const data = await res.json()
-  clientOptions.value = (data.data || []).map(bp => ({ value: bp.id, label: bp.name || bp.partnerCode }))
+  const res = await api.get('/businesspartners', { params: { keyword: q, limit: 20 } })
+  clientOptions.value = (res.data.data || []).map((bp: any) => ({ value: bp.id, label: bp.name || bp.partnerCode }))
 }
 
-async function searchResources(q) {
+async function searchResources(q: string) {
   if (!q) return
-  const res = await fetch(`${apiBase()}/staffing/resources?keyword=${encodeURIComponent(q)}&limit=20`, { headers: getHeaders() })
-  if (!res.ok) return
-  const data = await res.json()
-  resourceOptions.value = (data.data || []).map(r => ({
+  const res = await api.get('/staffing/resources', { params: { keyword: q, limit: 20 } })
+  resourceOptions.value = (res.data.data || []).map((r: any) => ({
     value: r.id,
     label: `${r.displayName || r.resourceCode} (${r.resourceCode})`
   }))
 }
 
-function beforeUpload(file) {
+function beforeUpload(file: any) {
   selectedFile.value = file
   return false // 手動アップロード
 }
@@ -388,20 +368,10 @@ async function doUpload() {
   try {
     const formData = new FormData()
     formData.append('file', selectedFile.value)
-    const token = localStorage.getItem('token') || sessionStorage.getItem('token')
-    const cc = localStorage.getItem('companyCode') || 'JP01'
-    const key = localStorage.getItem('openaiKey') || ''
-
-    const res = await fetch(`${apiBase()}/staffing/juchuu/${props.juchuuId}/upload-doc`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'x-company-code': cc,
-        'x-openai-key': key
-      },
-      body: formData
+    const res = await api.post(`/staffing/juchuu/${props.juchuuId}/upload-doc`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
     })
-    const data = await res.json()
+    const data = res.data
     form.attachedDocBlobName = data.blobName
     if (data.parsed) {
       ocrResult.value = data.parsed
@@ -410,14 +380,14 @@ async function doUpload() {
       ElMessage.success('アップロード完了（OCR解析なし）')
     }
     selectedFile.value = null
-  } catch (e) {
+  } catch (e: any) {
     ElMessage.error(`アップロードエラー: ${e.message}`)
   } finally {
     uploading.value = false
   }
 }
 
-function onUploadSuccess(res) {
+function onUploadSuccess(res: any) {
   form.attachedDocBlobName = res.blobName
   if (res.parsed) {
     ocrResult.value = res.parsed
@@ -452,17 +422,16 @@ function applyOcrResult() {
 }
 
 function viewDoc() {
-  if (!form.attachedDocBlobName) return
-  window.open(`${apiBase()}/staffing/juchuu/${props.juchuuId}`, '_blank')
+  if (!form.attachedDocBlobName || !props.juchuuId) return
+  window.open(`/api/staffing/juchuu/${props.juchuuId}`, '_blank')
 }
 
 async function load() {
   if (!props.juchuuId) return
   loading.value = true
   try {
-    const res = await fetch(`${apiBase()}/staffing/juchuu/${props.juchuuId}`, { headers: getHeaders() })
-    if (!res.ok) throw new Error(await res.text())
-    const data = await res.json()
+    const res = await api.get(`/staffing/juchuu/${props.juchuuId}`)
+    const data = res.data
     Object.assign(form, {
       clientPartnerId: data.clientPartnerId,
       resourceId: data.resourceId,
@@ -484,18 +453,16 @@ async function load() {
       notes: data.notes,
       attachedDocBlobName: data.attachedDocBlobName,
     })
-    // 顧客・リソースのoption初期値
     if (data.clientPartnerId && data.clientName) {
       clientOptions.value = [{ value: data.clientPartnerId, label: data.clientName }]
     }
     if (data.resourceId && data.resourceName) {
       resourceOptions.value = [{ value: data.resourceId, label: `${data.resourceName} (${data.resourceCode})` }]
     }
-    // OCR済みテキスト
     if (data.ocrRawText) {
       try { ocrResult.value = JSON.parse(data.ocrRawText) } catch { }
     }
-  } catch (e) {
+  } catch (e: any) {
     ElMessage.error(`読み込みエラー: ${e.message}`)
   } finally {
     loading.value = false
@@ -506,37 +473,33 @@ async function save() {
   await formRef.value?.validate()
   saving.value = true
   try {
-    const url = props.juchuuId
-      ? `${apiBase()}/staffing/juchuu/${props.juchuuId}`
-      : `${apiBase()}/staffing/juchuu`
-    const method = props.juchuuId ? 'PUT' : 'POST'
-    const res = await fetch(url, {
-      method,
-      headers: getHeaders(),
-      body: JSON.stringify({
-        clientPartnerId: form.clientPartnerId,
-        resourceId: form.resourceId,
-        contractType: form.contractType,
-        status: form.status,
-        startDate: form.startDate,
-        endDate: form.endDate,
-        billingRate: form.billingRate,
-        billingRateType: form.billingRateType,
-        overtimeRateMultiplier: form.overtimeRateMultiplier,
-        settlementType: form.settlementType,
-        settlementLowerH: form.settlementLowerH,
-        settlementUpperH: form.settlementUpperH,
-        workLocation: form.workLocation,
-        workDays: form.workDays,
-        workStartTime: form.workStartTime,
-        workEndTime: form.workEndTime,
-        monthlyWorkHours: form.monthlyWorkHours,
-        notes: form.notes,
-      })
-    })
-    if (!res.ok) throw new Error(await res.text())
+    const payload = {
+      clientPartnerId: form.clientPartnerId,
+      resourceId: form.resourceId,
+      contractType: form.contractType,
+      status: form.status,
+      startDate: form.startDate,
+      endDate: form.endDate,
+      billingRate: form.billingRate,
+      billingRateType: form.billingRateType,
+      overtimeRateMultiplier: form.overtimeRateMultiplier,
+      settlementType: form.settlementType,
+      settlementLowerH: form.settlementLowerH,
+      settlementUpperH: form.settlementUpperH,
+      workLocation: form.workLocation,
+      workDays: form.workDays,
+      workStartTime: form.workStartTime,
+      workEndTime: form.workEndTime,
+      monthlyWorkHours: form.monthlyWorkHours,
+      notes: form.notes,
+    }
+    if (props.juchuuId) {
+      await api.put(`/staffing/juchuu/${props.juchuuId}`, payload)
+    } else {
+      await api.post('/staffing/juchuu', payload)
+    }
     emit('saved')
-  } catch (e) {
+  } catch (e: any) {
     ElMessage.error(`保存エラー: ${e.message}`)
   } finally {
     saving.value = false
