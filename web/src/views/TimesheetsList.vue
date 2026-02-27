@@ -92,7 +92,7 @@
     </el-card>
 
     <!-- 新規工数入力ダイアログ -->
-    <el-dialog v-model="newFormVisible" title="工数入力" width="1100px" destroy-on-close :close-on-click-modal="false">
+    <el-dialog v-model="newFormVisible" title="工数入力" width="1100px" destroy-on-close>
       <TimesheetForm dialog-mode @saved="onFormSaved" />
     </el-dialog>
 
