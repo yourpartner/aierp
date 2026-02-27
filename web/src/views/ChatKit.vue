@@ -3628,6 +3628,8 @@ const pathToEmbedKeyMap: Record<string, string> = {
   '/staffing/resources': 'staffing.resources',
   '/staffing/projects': 'staffing.projects',
   '/staffing/contracts': 'staffing.contracts',
+  '/staffing/juchuu': 'staffing.juchuu',
+  '/staffing/hatchuu': 'staffing.hatchuu',
   '/staffing/timesheets': 'staffing.timesheets',
   '/staffing/invoices': 'staffing.invoices',
   '/staffing/analytics': 'staffing.analytics',
@@ -3889,6 +3891,8 @@ const embedMap:Record<string, any> = {
   ,'staffing.resources': defineAsyncComponent(() => import('./staffing/ResourcePoolList.vue'))
   ,'staffing.projects': defineAsyncComponent(() => import('./staffing/ProjectsList.vue'))
   ,'staffing.contracts': defineAsyncComponent(() => import('./staffing/ContractsList.vue'))
+  ,'staffing.juchuu': defineAsyncComponent(() => import('./staffing/JuchuuList.vue'))
+  ,'staffing.hatchuu': defineAsyncComponent(() => import('./staffing/HatchuuList.vue'))
   ,'staffing.timesheets': defineAsyncComponent(() => import('./staffing/TimesheetSummaryList.vue'))
   ,'staffing.invoices': defineAsyncComponent(() => import('./staffing/InvoicesList.vue'))
   ,'staffing.analytics': defineAsyncComponent(() => import('./staffing/AnalyticsDashboard.vue'))

@@ -38,6 +38,8 @@ public static class ModuleRegistration
         registry.Register<ResourcePoolModule>();
         registry.Register<StaffingProjectModule>();
         registry.Register<StaffingContractModule>();
+        registry.Register<StaffingJuchuuModule>();
+        registry.Register<StaffingHatchuuModule>();
         // Phase 2: 勤怠・請求
         registry.Register<StaffingTimesheetModule>();
         registry.Register<StaffingBillingModule>();

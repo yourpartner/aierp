@@ -137,6 +137,8 @@ public static class Crud
             "staffing_project" => "stf_projects",
             "staffing_project_candidate" => "stf_project_candidates",
             "staffing_contract" => "stf_contracts",
+            "staffing_juchuu" => "stf_juchuu",
+            "staffing_hatchuu" => "stf_hatchuu",
             "staffing_timesheet_summary" => "stf_timesheet_summaries",
             "staffing_invoice" => "stf_invoices",
             "staffing_invoice_line" => "stf_invoice_lines",
