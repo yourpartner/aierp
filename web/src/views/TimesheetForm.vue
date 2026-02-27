@@ -23,14 +23,6 @@
       </div>
       </template>
 
-      <!-- 代理入力スイッチ（管理者用） -->
-      <div v-if="canManageTimesheets" class="timesheet-form-proxy">
-        <el-switch v-model="proxyMode" @change="onProxyModeChange" active-text="代理入力" inactive-text="" />
-        <el-tag v-if="proxyMode && proxyEmployeeName" type="warning" effect="plain" size="small">
-          <el-icon style="margin-right: 2px"><User /></el-icon>{{ proxyEmployeeName }} の工数を代理入力中
-        </el-tag>
-      </div>
-
       <!-- 操作エリア -->
       <div class="timesheet-form-actions">
         <el-date-picker v-model="month" type="month" placeholder="月を選択" format="YYYY-MM" value-format="YYYY-MM" @change="buildDays" class="timesheet-form-actions__month" />
@@ -38,20 +30,23 @@
           <span class="legend-item"><span class="dot weekend"></span>週末</span>
           <span class="legend-item"><span class="dot holiday"></span>祝日</span>
         </div>
-        <el-select
-          v-if="proxyMode"
-          v-model="proxyEmployeeId"
-          filterable
-          remote
-          :remote-method="searchEmployees"
-          :loading="employeeLoading"
-          placeholder="社員を検索..."
-          style="width: 260px; margin-left: auto"
-          @change="onProxyEmployeeChange"
-          clearable
-        >
-          <el-option v-for="o in employeeOptions" :key="o.value" :value="o.value" :label="o.label" />
-        </el-select>
+        <div v-if="canManageTimesheets" class="timesheet-form-actions__proxy">
+          <el-switch v-model="proxyMode" @change="onProxyModeChange" active-text="代理入力" inactive-text="" />
+          <el-select
+            v-if="proxyMode"
+            v-model="proxyEmployeeId"
+            filterable
+            remote
+            :remote-method="searchEmployees"
+            :loading="employeeLoading"
+            placeholder="社員を検索..."
+            style="width: 240px"
+            @change="onProxyEmployeeChange"
+            clearable
+          >
+            <el-option v-for="o in employeeOptions" :key="o.value" :value="o.value" :label="o.label" />
+          </el-select>
+        </div>
       </div>
 
       <el-table :data="rows" border stripe highlight-current-row class="timesheet-form-table" :row-class-name="rowClass">
@@ -130,7 +125,7 @@
 import { ref, computed } from 'vue'
 import api from '../api'
 import { ElMessage } from 'element-plus'
-import { EditPen, Check, Upload, User } from '@element-plus/icons-vue'
+import { EditPen, Check, Upload } from '@element-plus/icons-vue'
 
 type DayRow = { 
   id?: string, 
@@ -580,15 +575,6 @@ loadSettings().then(buildDays)
   gap: 8px;
 }
 
-.timesheet-form-proxy {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 8px;
-  padding: 8px 16px;
-}
-
 /* 操作エリア */
 .timesheet-form-actions {
   display: flex;
@@ -612,9 +598,10 @@ loadSettings().then(buildDays)
   color: #666;
 }
 
-.timesheet-form-actions__note {
-  font-size: 12px;
-  color: #999;
+.timesheet-form-actions__proxy {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   margin-left: auto;
 }
 

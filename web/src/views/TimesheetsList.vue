@@ -65,9 +65,15 @@
             <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" align="center">
+        <el-table-column label="操作" width="240" align="center">
           <template #default="{ row }">
             <el-button size="small" type="primary" link @click="viewDetail(row)">詳細</el-button>
+            <el-button size="small" type="success" link @click="downloadExcel(row)">
+              <el-icon><Download /></el-icon>Excel
+            </el-button>
+            <el-button size="small" type="warning" link @click="downloadPdf(row)">
+              <el-icon><Download /></el-icon>PDF
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -137,7 +143,17 @@
         </el-table>
       </div>
       <template #footer>
-        <el-button @click="detailVisible = false">閉じる</el-button>
+        <div class="detail-footer">
+          <div class="detail-footer__downloads">
+            <el-button type="success" @click="downloadExcel(currentDetailRow)">
+              <el-icon><Download /></el-icon>Excel
+            </el-button>
+            <el-button type="warning" @click="downloadPdf(currentDetailRow)">
+              <el-icon><Download /></el-icon>PDF
+            </el-button>
+          </div>
+          <el-button @click="detailVisible = false">閉じる</el-button>
+        </div>
       </template>
     </el-dialog>
   </div>
@@ -146,7 +162,10 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import api from '../api'
-import { Clock, Plus, Search } from '@element-plus/icons-vue'
+import { Clock, Plus, Search, Download } from '@element-plus/icons-vue'
+import * as XLSX from 'xlsx'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 function decodeJwt(token: string): any | null {
   try {
@@ -196,6 +215,7 @@ const detailTitle = ref('')
 const detailLoading = ref(false)
 const detailData = ref<any>({})
 const detailRows = ref<any[]>([])
+const currentDetailRow = ref<any>({})
 
 const weekdayNames = ['日', '月', '火', '水', '木', '金', '土']
 
@@ -313,6 +333,7 @@ async function search() {
 async function viewDetail(row: any) {
   detailVisible.value = true
   detailLoading.value = true
+  currentDetailRow.value = row
   detailTitle.value = `${row.employeeName || '自分'} - ${row.month} 勤怠詳細`
   detailData.value = {
     workDays: row.workDays,
@@ -356,6 +377,144 @@ async function viewDetail(row: any) {
     detailRows.value = []
   } finally {
     detailLoading.value = false
+  }
+}
+
+async function loadTimesheetDetail(row: any): Promise<any[]> {
+  const where: any[] = []
+  if (row.month) where.push({ field: 'month', op: 'in', value: [row.month] })
+  if (!canViewAll.value) {
+    const uid = currentUserId()
+    if (uid) where.push({ json: 'creatorUserId', op: 'in', value: [uid] })
+  } else if (row.createdBy) {
+    where.push({ json: 'creatorUserId', op: 'in', value: [row.createdBy] })
+  }
+  const resp = await api.post('/objects/timesheet/search', { page: 1, pageSize: 200, where, orderBy: [{ field: 'timesheet_date', dir: 'ASC' }] })
+  const records = Array.isArray(resp.data?.data) ? resp.data.data : []
+  return records.map((item: any) => {
+    const payload = item.payload || {}
+    const dateStr = payload.date || ''
+    const d = new Date(dateStr)
+    const dayOfWeek = d.getDay()
+    return {
+      date: dateStr,
+      weekday: weekdayNames[dayOfWeek] || '',
+      isWeekend: dayOfWeek === 0 || dayOfWeek === 6,
+      isHoliday: payload.isHoliday || false,
+      startTime: payload.startTime || '',
+      endTime: payload.endTime || '',
+      lunchMinutes: payload.lunchMinutes || 0,
+      hours: payload.hours || 0,
+      overtime: payload.overtime || 0,
+      task: payload.task || ''
+    }
+  })
+}
+
+function buildExportRows(details: any[]) {
+  return details.map(r => ({
+    '日付': r.date,
+    '曜日': r.weekday,
+    '開始': r.startTime || '',
+    '終了': r.endTime || '',
+    '休憩(分)': r.lunchMinutes || '',
+    '勤務時間(H)': r.hours ? Number(r.hours.toFixed(2)) : '',
+    '残業時間(H)': r.overtime ? Number(r.overtime.toFixed(2)) : '',
+    '作業内容': r.task || ''
+  }))
+}
+
+async function downloadExcel(row: any) {
+  try {
+    const details = detailVisible.value && detailRows.value.length ? detailRows.value : await loadTimesheetDetail(row)
+    const empName = row.employeeName || '自分'
+    const month = row.month || ''
+
+    const exportData = buildExportRows(details)
+    const workDays = details.filter(d => d.hours > 0).length
+    const totalHours = details.reduce((s, d) => s + (d.hours || 0), 0)
+    const totalOvertime = details.reduce((s, d) => s + (d.overtime || 0), 0)
+
+    exportData.push({} as any)
+    exportData.push({
+      '日付': '合計',
+      '曜日': '',
+      '開始': '',
+      '終了': '',
+      '休憩(分)': '',
+      '勤務時間(H)': Number(totalHours.toFixed(2)),
+      '残業時間(H)': Number(totalOvertime.toFixed(2)),
+      '作業内容': `勤務日数: ${workDays}日`
+    })
+
+    const ws = XLSX.utils.json_to_sheet(exportData)
+    const colWidths = [12, 6, 8, 8, 10, 14, 14, 30]
+    ws['!cols'] = colWidths.map(w => ({ wch: w }))
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, `${month} 勤怠`)
+    XLSX.writeFile(wb, `勤怠_${empName}_${month}.xlsx`)
+  } catch (e) {
+    console.error('Excel download failed:', e)
+  }
+}
+
+async function downloadPdf(row: any) {
+  try {
+    const details = detailVisible.value && detailRows.value.length ? detailRows.value : await loadTimesheetDetail(row)
+    const empName = row.employeeName || '自分'
+    const month = row.month || ''
+
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+
+    doc.setFontSize(16)
+    doc.text(`勤怠表 - ${month}`, 14, 18)
+    doc.setFontSize(11)
+    doc.text(`従業員: ${empName}`, 14, 26)
+
+    const head = [['日付', '曜日', '開始', '終了', '休憩(分)', '勤務時間(H)', '残業時間(H)', '作業内容']]
+    const body = details.map(r => [
+      r.date,
+      r.weekday,
+      r.startTime || '',
+      r.endTime || '',
+      r.lunchMinutes || '',
+      r.hours ? r.hours.toFixed(2) : '',
+      r.overtime ? r.overtime.toFixed(2) : '',
+      r.task || ''
+    ])
+
+    const workDays = details.filter(d => d.hours > 0).length
+    const totalHours = details.reduce((s, d) => s + (d.hours || 0), 0)
+    const totalOvertime = details.reduce((s, d) => s + (d.overtime || 0), 0)
+    body.push(['合計', '', '', '', '', totalHours.toFixed(2), totalOvertime.toFixed(2), `勤務日数: ${workDays}日`])
+
+    autoTable(doc, {
+      startY: 32,
+      head,
+      body,
+      styles: { fontSize: 8, cellPadding: 2 },
+      headStyles: { fillColor: [64, 158, 255], textColor: 255, fontStyle: 'bold' },
+      columnStyles: {
+        0: { cellWidth: 24 },
+        1: { cellWidth: 14, halign: 'center' },
+        2: { cellWidth: 18, halign: 'center' },
+        3: { cellWidth: 18, halign: 'center' },
+        4: { cellWidth: 18, halign: 'center' },
+        5: { cellWidth: 24, halign: 'right' },
+        6: { cellWidth: 24, halign: 'right' },
+        7: { cellWidth: 'auto' }
+      },
+      didParseCell(data: any) {
+        if (data.section === 'body' && data.row.index === body.length - 1) {
+          data.cell.styles.fontStyle = 'bold'
+          data.cell.styles.fillColor = [245, 247, 250]
+        }
+      }
+    })
+
+    doc.save(`勤怠_${empName}_${month}.pdf`)
+  } catch (e) {
+    console.error('PDF download failed:', e)
   }
 }
 
@@ -508,6 +667,19 @@ onMounted(() => {
   font-size: 18px;
   font-weight: 600;
   color: #303133;
+}
+
+/* 詳細フッター */
+.detail-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.detail-footer__downloads {
+  display: flex;
+  gap: 8px;
 }
 
 @media (max-width: 768px) {
