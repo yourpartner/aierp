@@ -184,7 +184,9 @@ function targetUserId(): string {
 async function searchEmployees(q: string) {
   employeeLoading.value = true
   try {
-    const where: any[] = []
+    const where: any[] = [
+      { field: '__employment_status__', op: 'eq', value: 'active' }
+    ]
     if (q) {
       where.push({ anyOf: [
         { json: 'nameKanji', op: 'contains', value: q },
@@ -193,7 +195,7 @@ async function searchEmployees(q: string) {
       ]})
     }
     const r = await api.post('/objects/employee/search', {
-      page: 1, pageSize: 50, where,
+      page: 1, pageSize: 200, where,
       orderBy: [{ field: 'employee_code', dir: 'ASC' }]
     })
     const list = Array.isArray(r.data?.data) ? r.data.data : []
