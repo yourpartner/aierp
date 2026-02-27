@@ -6818,7 +6818,8 @@ function onChatDragLeave(){
 <style>
 /* Global overrides for embedded Element Plus dialogs */
 .el-overlay-dialog {
-  display: flex !important;
+  /* display: flex without !important so Element Plus v-show can still apply display:none to close dialogs */
+  display: flex;
   align-items: flex-start !important;
   justify-content: center !important;
   overflow-y: auto !important;
@@ -6878,6 +6879,13 @@ function onChatDragLeave(){
 /* 确保嵌套弹窗的 overlay 允许 overflow */
 .el-overlay-dialog .el-overlay {
   overflow: visible !important;
+}
+/* 确保嵌套弹窗的按钮（footer）可以点击 */
+.el-overlay-dialog .el-dialog__footer {
+  pointer-events: auto !important;
+}
+.el-overlay-dialog .el-dialog__footer .el-button {
+  pointer-events: auto !important;
 }
 
 
