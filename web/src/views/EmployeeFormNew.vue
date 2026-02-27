@@ -238,37 +238,45 @@
                     type="textarea" 
                     :rows="2" 
                     size="small" 
-                    placeholder="例：月給30万円、交通費月1万円支給" 
+                    placeholder="例：月給30万円、交通費月1万円支給、社会保険・雇用保険加入、残業手当あり" 
+                    @input="onSalaryDescriptionInput(idx)"
                     @blur="parseSalaryDescription(idx)"
                   />
                 </div>
                 <el-button size="small" text type="danger" @click="removeSalary(idx)" style="margin-top:18px; align-self:flex-start">
                   <el-icon><Delete /></el-icon>
                 </el-button>
-                <!-- 構造化設定（LLM 解析結果） -->
-                <div v-if="item.payrollConfig" class="salary-config" style="width:100%; margin-top:4px; padding:8px 12px; background:#f8fafe; border-radius:6px; border:1px solid #e8edf3;">
-                  <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
-                    <span style="font-size:12px; color:#606266; font-weight:500;">給与設定</span>
-                    <el-tag v-if="item._parsing" size="small" type="info">解析中...</el-tag>
-                    <el-button v-else size="small" text type="primary" style="font-size:11px; padding:0 4px;" @click="parseSalaryDescription(idx)">再解析</el-button>
+                <!-- 解析結果サマリー（読み取り専用タグ表示） -->
+                <div v-if="item._parsing || item.payrollConfig" class="salary-summary" style="width:100%; margin-top:6px;">
+                  <div v-if="item._parsing" style="display:flex; align-items:center; gap:6px; color:#909399; font-size:12px;">
+                    <el-icon class="is-loading"><Loading /></el-icon> 解析中...
                   </div>
-                  <div style="display:flex; flex-wrap:wrap; gap:8px 16px; font-size:12px;">
-                    <div style="display:flex; align-items:center; gap:4px;">
-                      <span style="color:#909399;">基本給:</span>
-                      <el-input-number v-model="item.payrollConfig.baseSalary" size="small" :min="0" :step="10000" :controls="false" style="width:100px;" />
-                    </div>
-                    <div style="display:flex; align-items:center; gap:4px;">
-                      <span style="color:#909399;">通勤手当:</span>
-                      <el-input-number v-model="item.payrollConfig.commuteAllowance" size="small" :min="0" :step="1000" :controls="false" style="width:80px;" />
-                    </div>
-                    <el-checkbox v-model="item.payrollConfig.socialInsurance" size="small">社会保険</el-checkbox>
-                    <el-checkbox v-model="item.payrollConfig.employmentInsurance" size="small">雇用保険</el-checkbox>
-                    <el-checkbox v-model="item.payrollConfig.incomeTax" size="small">源泉徴収</el-checkbox>
-                    <el-checkbox v-model="item.payrollConfig.residentTax" size="small">住民税</el-checkbox>
-                    <el-checkbox v-model="item.payrollConfig.overtime" size="small">残業手当</el-checkbox>
-                    <el-checkbox v-model="item.payrollConfig.holidayWork" size="small">休日手当</el-checkbox>
-                    <el-checkbox v-model="item.payrollConfig.lateNight" size="small">深夜手当</el-checkbox>
-                    <el-checkbox v-model="item.payrollConfig.absenceDeduction" size="small">欠勤控除</el-checkbox>
+                  <div v-else-if="item.payrollConfig" style="display:flex; flex-wrap:wrap; align-items:center; gap:6px;">
+                    <!-- 金額タグ -->
+                    <el-tag v-if="item.payrollConfig.baseSalary" size="small" type="primary" effect="plain">
+                      基本給 ¥{{ Number(item.payrollConfig.baseSalary).toLocaleString() }}
+                    </el-tag>
+                    <el-tag v-if="item.payrollConfig.commuteAllowance" size="small" type="primary" effect="plain">
+                      交通費 ¥{{ Number(item.payrollConfig.commuteAllowance).toLocaleString() }}
+                    </el-tag>
+                    <!-- 保険・税タグ -->
+                    <el-tag v-if="item.payrollConfig.socialInsurance" size="small" type="success" effect="plain">社会保険</el-tag>
+                    <el-tag v-if="item.payrollConfig.employmentInsurance" size="small" type="success" effect="plain">雇用保険</el-tag>
+                    <el-tag v-if="item.payrollConfig.incomeTax" size="small" type="warning" effect="plain">源泉徴収</el-tag>
+                    <el-tag v-if="item.payrollConfig.residentTax" size="small" type="warning" effect="plain">住民税</el-tag>
+                    <!-- 手当・控除タグ -->
+                    <el-tag v-if="item.payrollConfig.overtime" size="small" type="info" effect="plain">残業手当</el-tag>
+                    <el-tag v-if="item.payrollConfig.holidayWork" size="small" type="info" effect="plain">休日手当</el-tag>
+                    <el-tag v-if="item.payrollConfig.lateNight" size="small" type="info" effect="plain">深夜手当</el-tag>
+                    <el-tag v-if="item.payrollConfig.absenceDeduction" size="small" type="danger" effect="plain">欠勤控除</el-tag>
+                    <!-- 何も検出されなかった場合 -->
+                    <span v-if="!item.payrollConfig.baseSalary && !item.payrollConfig.commuteAllowance &&
+                                !item.payrollConfig.socialInsurance && !item.payrollConfig.employmentInsurance &&
+                                !item.payrollConfig.incomeTax && !item.payrollConfig.residentTax &&
+                                !item.payrollConfig.overtime && !item.payrollConfig.holidayWork &&
+                                !item.payrollConfig.lateNight && !item.payrollConfig.absenceDeduction"
+                          style="font-size:12px; color:#c0c4cc;">キーワードが検出されませんでした</span>
+                    <el-button size="small" text type="primary" style="font-size:11px; padding:0;" @click="parseSalaryDescription(idx)">再解析</el-button>
                   </div>
                 </div>
               </div>
@@ -759,7 +767,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { 
   User, Phone, Document, OfficeBuilding, FirstAidKit, 
   CreditCard, Warning, Folder, Plus, Delete, Upload, Check,
-  Setting, Edit, InfoFilled, Money, UserFilled, Download
+  Setting, Edit, InfoFilled, Money, UserFilled, Download, Loading
 } from '@element-plus/icons-vue'
 import api from '../api'
 import BankBranchPicker from '../components/BankBranchPicker.vue'
@@ -919,7 +927,7 @@ async function loadEmployee() {
       quitDate: data.insurance?.quitDate || ''
     },
     contracts: Array.isArray(data.contracts) ? data.contracts : [],
-    salaries: Array.isArray(data.salaries) ? data.salaries : [],
+    salaries: Array.isArray(data.salaries) ? data.salaries.map((s: any) => ({ ...s, payrollConfig: s.payrollConfig ?? null })) : [],
     departments: Array.isArray(data.departments) ? data.departments : [],
     bankAccounts: Array.isArray(data.bankAccounts) ? data.bankAccounts : [],
     emergencies: Array.isArray(data.emergencies) ? data.emergencies : [],
@@ -928,6 +936,14 @@ async function loadEmployee() {
     primaryDepartmentName: data.primaryDepartmentName || ''
   })
   
+  // description があるが payrollConfig がない場合は自動解析
+  model.salaries.forEach((_: any, idx: number) => {
+    const s = model.salaries[idx]
+    if (s.description?.trim() && !s.payrollConfig) {
+      parseSalaryDescription(idx)
+    }
+  })
+
   // 解析银行账户的银行名称和支店名称
   await resolveBankNames()
 }
@@ -1248,12 +1264,28 @@ function removeSalary(idx: number) {
   model.salaries.splice(idx, 1)
 }
 
+// debounce タイマー管理
+const _salaryParseTimers = new Map<number, ReturnType<typeof setTimeout>>()
+
+function onSalaryDescriptionInput(idx: number) {
+  // 既存タイマーをクリア
+  const existing = _salaryParseTimers.get(idx)
+  if (existing) clearTimeout(existing)
+  // 800ms 後に自動解析
+  const timer = setTimeout(() => {
+    _salaryParseTimers.delete(idx)
+    parseSalaryDescription(idx)
+  }, 800)
+  _salaryParseTimers.set(idx, timer)
+}
+
 async function parseSalaryDescription(idx: number) {
   const item = model.salaries[idx]
-  if (!item?.description?.trim()) return
+  if (!item?.description?.trim()) {
+    item.payrollConfig = null
+    return
+  }
   if (item._parsing) return
-
-  // 检查描述是否与上次解析时一致
   if (item._lastParsedDesc === item.description && item.payrollConfig) return
 
   item._parsing = true

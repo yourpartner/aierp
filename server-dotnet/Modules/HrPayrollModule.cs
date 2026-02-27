@@ -802,22 +802,28 @@ public static class HrPayrollModule
     public static void MapHrPayrollModule(this WebApplication app)
     {
         // POST /payroll/parse-salary-description
-        // LLM で給与説明テキストから構造化配置を抽出する。
+        // キーワードベースで給与説明テキストを解析し構造化 payrollConfig を返す。
+        // LLM が設定されている場合は後から LLM でマージして精度向上。
         // Body: { description: string }
-        // Returns: { payrollConfig: { baseSalary, commuteAllowance, socialInsurance, ... } }
+        // Returns: { payrollConfig: { baseSalary, commuteAllowance, insuranceBase, socialInsurance, ... } }
         app.MapPost("/payroll/parse-salary-description", async (HttpRequest req, IConfiguration cfg, IHttpClientFactory httpFactory, CancellationToken ct) =>
         {
-            var apiKey = cfg["OpenAI:ApiKey"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-            if (string.IsNullOrWhiteSpace(apiKey))
-                return Results.StatusCode(500);
-
             using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
             var description = doc.RootElement.TryGetProperty("description", out var d) && d.ValueKind == JsonValueKind.String
                 ? d.GetString()?.Trim() : null;
             if (string.IsNullOrWhiteSpace(description))
                 return Results.BadRequest(new { error = "description is required" });
 
-            var systemPrompt = @"あなたは日本の給与計算の専門家です。
+            // ── キーワードベース解析（LLM不要、常に動作） ──────────────────────
+            var config = ParseSalaryConfigByKeyword(description);
+
+            // ── LLM による補完（OpenAI が設定されている場合のみ） ────────────────
+            var apiKey = cfg["OpenAI:ApiKey"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+            if (!string.IsNullOrWhiteSpace(apiKey))
+            {
+                try
+                {
+                    var systemPrompt = @"あなたは日本の給与計算の専門家です。
 従業員の給与説明テキスト（自然言語）を受け取り、構造化された給与設定JSONを返してください。
 
 出力は以下のJSON形式のみ（余計なテキスト不要）:
@@ -835,53 +841,43 @@ public static class HrPayrollModule
   ""absenceDeduction"": <boolean>
 }
 
-各フィールドの意味:
-- baseSalary: 基本給・月給・固定給（円）。「万」は10000倍に変換。明示がなければnull
-- commuteAllowance: 通勤手当・交通費（円）。明示がなければnull
-- insuranceBase: 標準報酬月額・社保基数（円）。特に指定がなければnull（baseSalaryが使われる）
-- socialInsurance: 社会保険（健康保険＋厚生年金）に加入するか。「加入しません」「なし」「対象外」等はfalse
-- employmentInsurance: 雇用保険に加入するか
-- incomeTax: 源泉徴収税（所得税）を控除するか
-- residentTax: 住民税を特別徴収するか
-- overtime: 残業手当・時間外手当を計算するか
-- holidayWork: 休日出勤手当を計算するか
-- lateNight: 深夜手当を計算するか
-- absenceDeduction: 欠勤控除を適用するか
-
 重要なルール:
-- 明示的に言及されていない項目はfalseにする（デフォルト無効）
-- 「〜しません」「〜なし」「〜対象外」「〜不要」等の否定表現があればfalse
-- 「社会保険」は健康保険と厚生年金の両方を含む
-- 金額の「万」は×10000に変換（例：30万→300000）
-- 「社会保険加入」とだけ書いてあればtrue、「社会保険加入しません」ならfalse";
+- 明示的に言及されていない項目はfalseにする
+- 「〜しません」「〜なし」「〜対象外」等の否定表現があればfalse
+- 金額の「万」は×10000に変換（例：30万→300000）";
+                    var http = httpFactory.CreateClient("openai");
+                    http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+                    var requestBody = new
+                    {
+                        model = "gpt-4o-mini",
+                        temperature = 0.0,
+                        messages = new object[]
+                        {
+                            new { role = "system", content = systemPrompt },
+                            new { role = "user", content = description }
+                        },
+                        response_format = new { type = "json_object" }
+                    };
+                    var json = System.Text.Json.JsonSerializer.Serialize(requestBody);
+                    using var response = await http.PostAsync("chat/completions",
+                        new StringContent(json, System.Text.Encoding.UTF8, "application/json"), ct);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var responseText = await response.Content.ReadAsStringAsync(ct);
+                        using var respDoc = JsonDocument.Parse(responseText);
+                        var llmContent = respDoc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+                        if (!string.IsNullOrWhiteSpace(llmContent))
+                        {
+                            // LLM 結果でキーワード結果を上書き（より精度が高い）
+                            using var llmDoc = JsonDocument.Parse(llmContent);
+                            config = MergeLlmIntoKeywordConfig(config, llmDoc.RootElement);
+                        }
+                    }
+                }
+                catch { /* LLM 失敗時はキーワード結果をそのまま使用 */ }
+            }
 
-            var http = httpFactory.CreateClient("openai");
-            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
-            var requestBody = new
-            {
-                model = "gpt-4o-mini",
-                temperature = 0.0,
-                messages = new object[]
-                {
-                    new { role = "system", content = systemPrompt },
-                    new { role = "user", content = description }
-                },
-                response_format = new { type = "json_object" }
-            };
-            var json = System.Text.Json.JsonSerializer.Serialize(requestBody);
-            using var response = await http.PostAsync("chat/completions",
-                new StringContent(json, System.Text.Encoding.UTF8, "application/json"), ct);
-            var responseText = await response.Content.ReadAsStringAsync(ct);
-            if (!response.IsSuccessStatusCode)
-                return Results.StatusCode(502);
-
-            using var respDoc = JsonDocument.Parse(responseText);
-            var content = respDoc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
-            if (string.IsNullOrWhiteSpace(content))
-                return Results.StatusCode(502);
-
-            using var configDoc = JsonDocument.Parse(content);
-            return Results.Ok(new { payrollConfig = configDoc.RootElement });
+            return Results.Ok(new { payrollConfig = config });
         });
 
         // POST /ai/payroll/compile
@@ -5954,6 +5950,132 @@ ORDER BY r.period_month DESC, e.employee_code ASC";
             if (source.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0) return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// キーワードマッチングで給与説明テキストを解析し payrollConfig を生成する。
+    /// LLM 不要で常に動作し、/payroll/parse-salary-description の主処理として使用される。
+    /// </summary>
+    private static object ParseSalaryConfigByKeyword(string description)
+    {
+        var s = description.Normalize(NormalizationForm.FormKC); // 全角→半角正規化
+
+        // ── 金額抽出ヘルパー ─────────────────────────────────────────────────────
+        decimal? ExtractAmountNear(string[] anchors)
+        {
+            var normalizedAnchors = anchors.Select(a => a.Normalize(NormalizationForm.FormKC)).ToArray();
+            int anchorPos = -1;
+            foreach (var anchor in normalizedAnchors)
+            {
+                var pos = s.IndexOf(anchor, StringComparison.OrdinalIgnoreCase);
+                if (pos >= 0 && (anchorPos < 0 || pos < anchorPos)) anchorPos = pos;
+            }
+            if (anchorPos < 0) return null;
+
+            // アンカーの前後 40 文字を検索対象に
+            var start = Math.Max(0, anchorPos - 10);
+            var end = Math.Min(s.Length, anchorPos + 40);
+            var seg = s[start..end];
+
+            // パターン1: 数値 + 万円 / 万 (e.g. "30万円", "30万", "３０万")
+            var mMan = System.Text.RegularExpressions.Regex.Match(seg, @"([\d,]+)\s*万\s*円?");
+            if (mMan.Success && decimal.TryParse(mMan.Groups[1].Value.Replace(",", ""), out var manVal))
+                return manVal * 10000m;
+
+            // パターン2: 数値 + 円 (e.g. "300,000円", "300000円")
+            var mYen = System.Text.RegularExpressions.Regex.Match(seg, @"([\d,]+)\s*円");
+            if (mYen.Success && decimal.TryParse(mYen.Groups[1].Value.Replace(",", ""), out var yenVal))
+                return yenVal;
+
+            // パターン3: 数値のみ（1000以上） (e.g. "300000")
+            var mNum = System.Text.RegularExpressions.Regex.Match(seg, @"\b([\d]{4,})\b");
+            if (mNum.Success && decimal.TryParse(mNum.Groups[1].Value, out var numVal) && numVal >= 1000m)
+                return numVal;
+
+            return null;
+        }
+
+        // ── 金額フィールド ────────────────────────────────────────────────────────
+        var baseSalary      = ExtractAmountNear(new[] { "基本給", "月給", "月给", "基本工资", "固定給", "固定", "月額", "基本给" });
+        var commuteAllowance = ExtractAmountNear(CommuteKeywords);
+        var insuranceBase   = ExtractAmountNear(new[] { "標準報酬", "標準報酬月額", "報酬月額", "算定基礎", "社保基数", "保険基数" });
+
+        // ── ブール判定 ────────────────────────────────────────────────────────────
+        bool socialInsurance =
+            ContainsAny(s, "社会保険", "社保", "健康保険", "厚生年金") &&
+            !ContainsAny(s, SocialInsuranceExcludeKeywords);
+
+        bool employmentInsurance =
+            ContainsAny(s, "雇用保険", "雇佣保险") &&
+            !ContainsAny(s, EmploymentInsuranceExcludeKeywords);
+
+        bool incomeTax =
+            ContainsAny(s, "源泉", "源泉徴収", "所得税", "月額表", "甲欄");
+
+        bool residentTax =
+            ContainsAny(s, "住民税", "市民税", "県民税", "地方税", "特別徴収");
+
+        bool overtime =
+            ContainsAny(s, "残業", "時間外", "残業手当", "時間外手当", "加班");
+
+        bool holidayWork =
+            ContainsAny(s, "休日手当", "休日労働", "法定休日", "休日出勤", "节假日");
+
+        bool lateNight =
+            ContainsAny(s, "深夜", "深夜手当", "22時", "夜間手当");
+
+        bool absenceDeduction =
+            ContainsAny(s, "欠勤", "欠勤控除", "遅刻", "早退", "勤怠控除");
+
+        return new
+        {
+            baseSalary       = baseSalary.HasValue       ? (object)baseSalary.Value       : null,
+            commuteAllowance = commuteAllowance.HasValue ? (object)commuteAllowance.Value : null,
+            insuranceBase    = insuranceBase.HasValue    ? (object)insuranceBase.Value    : null,
+            socialInsurance,
+            employmentInsurance,
+            incomeTax,
+            residentTax,
+            overtime,
+            holidayWork,
+            lateNight,
+            absenceDeduction
+        };
+    }
+
+    /// <summary>
+    /// LLM 解析結果をキーワード解析結果にマージする。
+    /// LLM が null でないフィールドのみ上書きし、キーワード結果を補完する。
+    /// </summary>
+    private static object MergeLlmIntoKeywordConfig(object keywordConfig, JsonElement llmElement)
+    {
+        decimal? GetNum(string key) =>
+            llmElement.TryGetProperty(key, out var p) && p.ValueKind == JsonValueKind.Number
+                ? (decimal?)p.GetDecimal() : null;
+        bool? GetBool(string key) =>
+            llmElement.TryGetProperty(key, out var p) && p.ValueKind == JsonValueKind.True  ? true
+          : llmElement.TryGetProperty(key, out var p2) && p2.ValueKind == JsonValueKind.False ? false
+          : (bool?)null;
+
+        // キーワード結果をリフレクションで取得してマージ
+        var kType = keywordConfig.GetType();
+        decimal? KNum(string name) { var v = kType.GetProperty(name)?.GetValue(keywordConfig); return v is decimal d ? d : (decimal?)null; }
+        bool KBool(string name) { var v = kType.GetProperty(name)?.GetValue(keywordConfig); return v is bool b && b; }
+
+        return new
+        {
+            baseSalary       = (object?)(GetNum("baseSalary")       ?? KNum("baseSalary")),
+            commuteAllowance = (object?)(GetNum("commuteAllowance") ?? KNum("commuteAllowance")),
+            insuranceBase    = (object?)(GetNum("insuranceBase")    ?? KNum("insuranceBase")),
+            socialInsurance      = GetBool("socialInsurance")      ?? KBool("socialInsurance"),
+            employmentInsurance  = GetBool("employmentInsurance")  ?? KBool("employmentInsurance"),
+            incomeTax            = GetBool("incomeTax")            ?? KBool("incomeTax"),
+            residentTax          = GetBool("residentTax")          ?? KBool("residentTax"),
+            overtime             = GetBool("overtime")             ?? KBool("overtime"),
+            holidayWork          = GetBool("holidayWork")          ?? KBool("holidayWork"),
+            lateNight            = GetBool("lateNight")            ?? KBool("lateNight"),
+            absenceDeduction     = GetBool("absenceDeduction")     ?? KBool("absenceDeduction")
+        };
     }
 
     private static string NormalizeNumberText(string text)
