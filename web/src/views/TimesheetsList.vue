@@ -9,7 +9,7 @@
             <el-tag size="small" type="info" class="timesheets-header__count">{{ total }}件</el-tag>
           </div>
           <div class="timesheets-header__right">
-            <el-button type="primary" @click="$router.push('/timesheet/new')">
+            <el-button type="primary" @click="openNewForm">
               <el-icon><Plus /></el-icon>
               <span>新規入力</span>
             </el-button>
@@ -91,6 +91,11 @@
       </div>
     </el-card>
 
+    <!-- 新規工数入力ダイアログ -->
+    <el-dialog v-model="newFormVisible" title="工数入力" width="1100px" destroy-on-close :close-on-click-modal="false">
+      <TimesheetForm dialog-mode @saved="onFormSaved" />
+    </el-dialog>
+
     <!-- 详细弹窗 -->
     <el-dialog v-model="detailVisible" :title="detailTitle" width="900px" destroy-on-close>
       <div v-loading="detailLoading">
@@ -166,6 +171,7 @@ import { Clock, Plus, Search, Download } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import TimesheetForm from './TimesheetForm.vue'
 
 function decodeJwt(token: string): any | null {
   try {
@@ -198,6 +204,17 @@ const canViewAll = computed(() => {
   const caps = (sessionStorage.getItem('userCaps') || '').split(',').filter(Boolean)
   return caps.includes('timesheet:manage') || caps.includes('admin') || caps.includes('hr:admin')
 })
+
+const newFormVisible = ref(false)
+
+function openNewForm() {
+  newFormVisible.value = true
+}
+
+function onFormSaved() {
+  newFormVisible.value = false
+  search()
+}
 
 const loading = ref(false)
 const rows = ref<any[]>([])

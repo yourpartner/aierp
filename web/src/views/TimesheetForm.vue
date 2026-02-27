@@ -1,124 +1,115 @@
 <template>
-  <div class="timesheet-form">
-    <el-card class="timesheet-form-card" v-loading="loading" element-loading-text="読み込み中...">
-      <template #header>
-        <div class="timesheet-form-header">
-          <div class="timesheet-form-header__left">
-            <el-icon class="timesheet-form-header__icon"><EditPen /></el-icon>
-            <span class="timesheet-form-header__title">工数入力</span>
-            <el-tag v-if="submissionStatus" size="small" :type="submissionStatusTagType(submissionStatus)" class="timesheet-form-header__status">
-          {{ submissionStatusLabel(submissionStatus) }}
-        </el-tag>
-          </div>
-          <div class="timesheet-form-header__right">
-            <el-button type="primary" @click="saveAll" :loading="saving" :disabled="monthLocked || proxyNoTarget">
-              <el-icon><Check /></el-icon>
-              <span>当月の変更を保存</span>
-            </el-button>
-            <el-button type="success" @click="submitForApproval" :loading="submitting" :disabled="monthLocked || !canSubmitSelectedMonth || proxyNoTarget">
-              <el-icon><Upload /></el-icon>
-              <span>月次提出</span>
-            </el-button>
-          </div>
-      </div>
-      </template>
-
-      <!-- 操作エリア -->
-      <div class="timesheet-form-actions">
-        <el-date-picker v-model="month" type="month" placeholder="月を選択" format="YYYY-MM" value-format="YYYY-MM" @change="buildDays" class="timesheet-form-actions__month" />
-        <div class="timesheet-form-actions__legend">
-          <span class="legend-item"><span class="dot weekend"></span>週末</span>
-          <span class="legend-item"><span class="dot holiday"></span>祝日</span>
+  <div :class="dialogMode ? 'timesheet-form-dialog-body' : 'timesheet-form'" v-loading="loading" element-loading-text="読み込み中...">
+    <!-- ページモード時のカードヘッダー -->
+    <div v-if="!dialogMode" class="timesheet-form-card-header">
+      <div class="timesheet-form-header">
+        <div class="timesheet-form-header__left">
+          <el-icon class="timesheet-form-header__icon"><EditPen /></el-icon>
+          <span class="timesheet-form-header__title">工数入力</span>
+          <el-tag v-if="submissionStatus" size="small" :type="submissionStatusTagType(submissionStatus)" class="timesheet-form-header__status">
+            {{ submissionStatusLabel(submissionStatus) }}
+          </el-tag>
         </div>
-        <div v-if="canManageTimesheets" class="timesheet-form-actions__proxy">
-          <el-switch v-model="proxyMode" @change="onProxyModeChange" active-text="代理入力" inactive-text="" />
-          <el-select
-            v-if="proxyMode"
-            v-model="proxyEmployeeId"
-            filterable
-            remote
-            :remote-method="searchEmployees"
-            :loading="employeeLoading"
-            placeholder="社員を検索..."
-            style="width: 240px"
-            @change="onProxyEmployeeChange"
-            clearable
-          >
-            <el-option v-for="o in employeeOptions" :key="o.value" :value="o.value" :label="o.label" />
-          </el-select>
+        <div class="timesheet-form-header__right">
+          <el-button type="primary" @click="saveAll" :loading="saving" :disabled="monthLocked || proxyNoTarget">
+            <el-icon><Check /></el-icon><span>当月の変更を保存</span>
+          </el-button>
+          <el-button type="success" @click="submitForApproval" :loading="submitting" :disabled="monthLocked || !canSubmitSelectedMonth || proxyNoTarget">
+            <el-icon><Upload /></el-icon><span>月次提出</span>
+          </el-button>
         </div>
       </div>
+    </div>
 
-      <el-table :data="rows" border stripe highlight-current-row class="timesheet-form-table" :row-class-name="rowClass">
-        <el-table-column label="日付" width="100">
-          <template #default="{ row }">
-            <div class="date-cell">
-              <span>{{ row.date }}</span>
-              <el-tag v-if="row.isHoliday && !row.isWeekend" size="small" type="danger" effect="plain" class="holiday-tag">祝</el-tag>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="曜日" width="70">
-          <template #default="{ row }">
-            <span :class="{ 'text-red': row.isWeekend || row.isHoliday }">{{ weekdayLabel(row.date) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="開始" width="120">
-          <template #default="{ row }">
-            <el-time-select
-              v-model="row.startTime"
-              :start="'06:00'"
-              :end="'23:30'"
-              :step="'00:10'"
-              @change="onTimePicked(row)"
-              placeholder="時間を選択"
-              :disabled="monthLocked"
-            />
-          </template>
-        </el-table-column>
-        <el-table-column label="終了" width="120">
-          <template #default="{ row }">
-            <el-time-select
-              v-model="row.endTime"
-              :start="'06:00'"
-              :end="'23:30'"
-              :step="'00:10'"
-              @change="onTimePicked(row)"
-              placeholder="時間を選択"
-              :disabled="monthLocked"
-            />
-          </template>
-        </el-table-column>
-        <el-table-column label="休憩(分)" width="80">
-          <template #default="{ row }">
-            <el-input-number
-              v-model="row.lunchMinutes"
-              :min="0"
-              :max="240"
-              :controls="false"
-              @change="recomputeRow(row)"
-              style="width: 70px"
-              :disabled="monthLocked"
-            />
-          </template>
-        </el-table-column>
-        <el-table-column label="勤務時間" width="70">
-          <template #default="{ row }">{{ formatHourDisplay(row.hours) }}</template>
-        </el-table-column>
-        <el-table-column label="残業" width="70">
-          <template #default="{ row }">
-            <span v-if="row.isHoliday" class="text-orange">{{ formatHourDisplay(row.hours) }}</span>
-            <span v-else>{{ formatHourDisplay(row.overtime) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="作業内容" min-width="320">
-          <template #default="{ row }"><el-input v-model="row.task" placeholder="作業内容" :disabled="monthLocked" /></template>
-        </el-table-column>
-        <el-table-column label="ステータス" width="90" fixed="right">
-          <template #default="{ row }">{{ statusLabel(row.status) }}</template>
-        </el-table-column>
-        </el-table>
-    </el-card>
+    <!-- ダイアログモード時のステータス表示 -->
+    <div v-if="dialogMode && submissionStatus" class="timesheet-form-dialog-status">
+      <el-tag size="small" :type="submissionStatusTagType(submissionStatus)">
+        {{ submissionStatusLabel(submissionStatus) }}
+      </el-tag>
+    </div>
+
+    <!-- 操作エリア（共通） -->
+    <div class="timesheet-form-actions">
+      <el-date-picker v-model="month" type="month" placeholder="月を選択" format="YYYY-MM" value-format="YYYY-MM" @change="buildDays" class="timesheet-form-actions__month" />
+      <div class="timesheet-form-actions__legend">
+        <span class="legend-item"><span class="dot weekend"></span>週末</span>
+        <span class="legend-item"><span class="dot holiday"></span>祝日</span>
+      </div>
+      <div v-if="canManageTimesheets" class="timesheet-form-actions__proxy">
+        <el-switch v-model="proxyMode" @change="onProxyModeChange" active-text="代理入力" inactive-text="" />
+        <el-select
+          v-if="proxyMode"
+          v-model="proxyEmployeeId"
+          filterable
+          remote
+          :remote-method="searchEmployees"
+          :loading="employeeLoading"
+          placeholder="社員を検索..."
+          style="width: 240px"
+          @change="onProxyEmployeeChange"
+          clearable
+        >
+          <el-option v-for="o in employeeOptions" :key="o.value" :value="o.value" :label="o.label" />
+        </el-select>
+      </div>
+    </div>
+
+    <!-- テーブル（共通） -->
+    <el-table :data="rows" border stripe highlight-current-row class="timesheet-form-table" :row-class-name="rowClass" :max-height="dialogMode ? 480 : undefined">
+      <el-table-column label="日付" width="100">
+        <template #default="{ row }">
+          <div class="date-cell">
+            <span>{{ row.date }}</span>
+            <el-tag v-if="row.isHoliday && !row.isWeekend" size="small" type="danger" effect="plain" class="holiday-tag">祝</el-tag>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="曜日" width="70">
+        <template #default="{ row }">
+          <span :class="{ 'text-red': row.isWeekend || row.isHoliday }">{{ weekdayLabel(row.date) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="開始" width="120">
+        <template #default="{ row }">
+          <el-time-select v-model="row.startTime" :start="'06:00'" :end="'23:30'" :step="'00:10'" @change="onTimePicked(row)" placeholder="時間を選択" :disabled="monthLocked" />
+        </template>
+      </el-table-column>
+      <el-table-column label="終了" width="120">
+        <template #default="{ row }">
+          <el-time-select v-model="row.endTime" :start="'06:00'" :end="'23:30'" :step="'00:10'" @change="onTimePicked(row)" placeholder="時間を選択" :disabled="monthLocked" />
+        </template>
+      </el-table-column>
+      <el-table-column label="休憩(分)" width="80">
+        <template #default="{ row }">
+          <el-input-number v-model="row.lunchMinutes" :min="0" :max="240" :controls="false" @change="recomputeRow(row)" style="width: 70px" :disabled="monthLocked" />
+        </template>
+      </el-table-column>
+      <el-table-column label="勤務時間" width="70">
+        <template #default="{ row }">{{ formatHourDisplay(row.hours) }}</template>
+      </el-table-column>
+      <el-table-column label="残業" width="70">
+        <template #default="{ row }">
+          <span v-if="row.isHoliday" class="text-orange">{{ formatHourDisplay(row.hours) }}</span>
+          <span v-else>{{ formatHourDisplay(row.overtime) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="作業内容" min-width="300">
+        <template #default="{ row }"><el-input v-model="row.task" placeholder="作業内容" :disabled="monthLocked" /></template>
+      </el-table-column>
+      <el-table-column label="ステータス" width="90" fixed="right">
+        <template #default="{ row }">{{ statusLabel(row.status) }}</template>
+      </el-table-column>
+    </el-table>
+
+    <!-- ダイアログモード時の保存ボタン -->
+    <div v-if="dialogMode" class="timesheet-form-dialog-footer">
+      <el-button type="primary" @click="saveAll" :loading="saving" :disabled="monthLocked || proxyNoTarget">
+        <el-icon><Check /></el-icon>当月の変更を保存
+      </el-button>
+      <el-button type="success" @click="submitForApproval" :loading="submitting" :disabled="monthLocked || !canSubmitSelectedMonth || proxyNoTarget">
+        <el-icon><Upload /></el-icon>月次提出
+      </el-button>
+    </div>
   </div>
 </template>
 <script setup lang="ts">
@@ -126,6 +117,9 @@ import { ref, computed } from 'vue'
 import api from '../api'
 import { ElMessage } from 'element-plus'
 import { EditPen, Check, Upload } from '@element-plus/icons-vue'
+
+const props = defineProps<{ dialogMode?: boolean }>()
+const emit = defineEmits<{ saved: [] }>()
 
 type DayRow = { 
   id?: string, 
@@ -463,6 +457,7 @@ async function saveDirtyRows(showToast: boolean) {
 
 async function saveAll(){
   await saveDirtyRows(true)
+  if (props.dialogMode) emit('saved')
 }
 
 async function submitForApproval(){
@@ -573,6 +568,35 @@ loadSettings().then(buildDays)
 .timesheet-form-header__right {
   display: flex;
   gap: 8px;
+}
+
+/* ページモード カードヘッダー */
+.timesheet-form-card-header {
+  background: #fff;
+  border-radius: 12px 12px 0 0;
+  border: 1px solid #e4e7ed;
+  border-bottom: none;
+  padding: 16px 20px;
+  margin-bottom: 0;
+}
+
+/* ダイアログモード */
+.timesheet-form-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.timesheet-form-dialog-status {
+  margin-bottom: 8px;
+}
+
+.timesheet-form-dialog-footer {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #ebeef5;
 }
 
 /* 操作エリア */
