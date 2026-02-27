@@ -2047,7 +2047,7 @@ app.MapPost("/schemas/{name}", async (HttpRequest req, string name, NpgsqlDataSo
 // - JSON Schema validation
 // - Filter/sort whitelists (query.filters/sorts)
 // - coreFields (generated columns and constraints created via migrations)
-const string EmployeeActiveContractsSql = @"EXISTS (
+static readonly string EmployeeActiveContractsSqlTemplate = @"EXISTS (
     SELECT 1
     FROM jsonb_array_elements(
         CASE
@@ -2062,16 +2062,17 @@ const string EmployeeActiveContractsSql = @"EXISTS (
                 ELSE NULL
             END,
             '1900-01-01'::date
-        ) <= CURRENT_DATE
+        ) <= {{REF_DATE}}
         AND (
             NOT (ct ? 'periodTo')
             OR btrim(COALESCE(ct->>'periodTo', '')) = ''
             OR (
                 (ct->>'periodTo') ~ '^\d{4}-\d{2}-\d{2}$'
-                AND (ct->>'periodTo')::date >= CURRENT_DATE
+                AND (ct->>'periodTo')::date >= {{REF_DATE}}
             )
         )
 )";
+static readonly string EmployeeActiveContractsSql = EmployeeActiveContractsSqlTemplate.Replace("{{REF_DATE}}", "CURRENT_DATE");
 
 // GetActiveSchema has moved to Domain/SchemasService; table mapping lives in Infrastructure.Crud.TableFor.
 async Task<IResult> HandleObjectSearch(HttpRequest req, string entity, NpgsqlDataSource ds, AzureBlobService blobService)
@@ -2100,20 +2101,26 @@ async Task<IResult> HandleObjectSearch(HttpRequest req, string entity, NpgsqlDat
     var requiresCompany = Crud.RequiresCompanyCode(table);
     var builder = new SearchQueryBuilder(table, companyCode, user, requiresCompany);
     string? employmentStatusFilter = null;
+    string? employmentAsOfDate = null;
     if (string.Equals(entity, "employee", StringComparison.OrdinalIgnoreCase))
     {
         employmentStatusFilter = ExtractEmploymentStatusFilter(searchRequest.Where);
+        employmentAsOfDate = ExtractSpecialStringFilter(searchRequest.Where, "__employment_as_of__");
     }
     builder.ApplyWhere(searchRequest.Where);
     if (!string.IsNullOrEmpty(employmentStatusFilter))
     {
+        var dateSql = !string.IsNullOrEmpty(employmentAsOfDate)
+            ? $"'{employmentAsOfDate}'::date"
+            : "CURRENT_DATE";
+        var activeSql = EmployeeActiveContractsSqlTemplate.Replace("{{REF_DATE}}", dateSql);
         if (string.Equals(employmentStatusFilter, "active", StringComparison.OrdinalIgnoreCase))
         {
-            builder.AddWhereExpression(EmployeeActiveContractsSql);
+            builder.AddWhereExpression(activeSql);
         }
         else if (string.Equals(employmentStatusFilter, "resigned", StringComparison.OrdinalIgnoreCase))
         {
-            builder.AddWhereExpression($"NOT ({EmployeeActiveContractsSql})");
+            builder.AddWhereExpression($"NOT ({activeSql})");
         }
     }
     // openitem 默认只返回未清账的项目（residual_amount > 0）
@@ -2210,6 +2217,24 @@ static string? ExtractEmploymentStatusFilter(List<SearchClause>? clauses)
         var normalized = value?.Trim().ToLowerInvariant();
         if (string.IsNullOrEmpty(normalized) || normalized == "all") return null;
         return normalized;
+    }
+    return null;
+}
+
+static string? ExtractSpecialStringFilter(List<SearchClause>? clauses, string fieldName)
+{
+    if (clauses is null) return null;
+    for (var i = clauses.Count - 1; i >= 0; i--)
+    {
+        var clause = clauses[i];
+        if (clause is null) continue;
+        if (!string.Equals(clause.Field, fieldName, StringComparison.OrdinalIgnoreCase))
+            continue;
+        var value = clause.Value.ValueKind == JsonValueKind.String ? clause.Value.GetString() : null;
+        clauses.RemoveAt(i);
+        if (!string.IsNullOrWhiteSpace(value) && System.Text.RegularExpressions.Regex.IsMatch(value!, @"^\d{4}-\d{2}-\d{2}$"))
+            return value;
+        return null;
     }
     return null;
 }

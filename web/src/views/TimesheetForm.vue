@@ -23,38 +23,35 @@
       </div>
       </template>
 
-      <!-- 代理入力（管理者用） -->
+      <!-- 代理入力スイッチ（管理者用） -->
       <div v-if="canManageTimesheets" class="timesheet-form-proxy">
         <el-switch v-model="proxyMode" @change="onProxyModeChange" active-text="代理入力" inactive-text="" />
-        <template v-if="proxyMode">
-          <el-select
-            v-model="proxyEmployeeId"
-            filterable
-            remote
-            :remote-method="searchEmployees"
-            :loading="employeeLoading"
-            placeholder="社員を検索..."
-            style="width: 260px"
-            @change="onProxyEmployeeChange"
-            clearable
-          >
-            <el-option v-for="o in employeeOptions" :key="o.value" :value="o.value" :label="o.label" />
-          </el-select>
-          <el-tag v-if="proxyEmployeeName" type="warning" effect="plain" size="small">
-            <el-icon style="margin-right: 2px"><User /></el-icon>{{ proxyEmployeeName }} の工数を代理入力中
-          </el-tag>
-        </template>
+        <el-tag v-if="proxyMode && proxyEmployeeName" type="warning" effect="plain" size="small">
+          <el-icon style="margin-right: 2px"><User /></el-icon>{{ proxyEmployeeName }} の工数を代理入力中
+        </el-tag>
       </div>
 
       <!-- 操作エリア -->
       <div class="timesheet-form-actions">
         <el-date-picker v-model="month" type="month" placeholder="月を選択" format="YYYY-MM" value-format="YYYY-MM" @change="buildDays" class="timesheet-form-actions__month" />
         <div class="timesheet-form-actions__legend">
-        <span class="legend-item"><span class="dot weekend"></span>週末</span>
-        <span class="legend-item"><span class="dot holiday"></span>祝日</span>
+          <span class="legend-item"><span class="dot weekend"></span>週末</span>
+          <span class="legend-item"><span class="dot holiday"></span>祝日</span>
         </div>
-        <span v-if="monthLocked" class="timesheet-form-actions__note">提出済みのため修正できません</span>
-        <span v-else-if="!canSubmitSelectedMonth" class="timesheet-form-actions__note">当月は月締め後に提出してください</span>
+        <el-select
+          v-if="proxyMode"
+          v-model="proxyEmployeeId"
+          filterable
+          remote
+          :remote-method="searchEmployees"
+          :loading="employeeLoading"
+          placeholder="社員を検索..."
+          style="width: 260px; margin-left: auto"
+          @change="onProxyEmployeeChange"
+          clearable
+        >
+          <el-option v-for="o in employeeOptions" :key="o.value" :value="o.value" :label="o.label" />
+        </el-select>
       </div>
 
       <el-table :data="rows" border stripe highlight-current-row class="timesheet-form-table" :row-class-name="rowClass">
@@ -184,9 +181,14 @@ function targetUserId(): string {
 async function searchEmployees(q: string) {
   employeeLoading.value = true
   try {
+    const ym = month.value
+    const asOfDate = ym ? `${ym}-01` : undefined
     const where: any[] = [
       { field: '__employment_status__', op: 'eq', value: 'active' }
     ]
+    if (asOfDate) {
+      where.push({ field: '__employment_as_of__', op: 'eq', value: asOfDate })
+    }
     if (q) {
       where.push({ anyOf: [
         { json: 'nameKanji', op: 'contains', value: q },
@@ -312,12 +314,15 @@ async function buildDays(){
   loading.value = true
   const ym = month.value
 
-  if (proxyMode.value && !proxyEmployeeId.value) {
-    rows.value = []
-    submissionStatus.value = ''
-    monthLocked.value = false
-    loading.value = false
-    return
+  if (proxyMode.value) {
+    searchEmployees('')
+    if (!proxyEmployeeId.value) {
+      rows.value = []
+      submissionStatus.value = ''
+      monthLocked.value = false
+      loading.value = false
+      return
+    }
   }
 
   // 方案A: 当月は提出できない（前月まで）
@@ -580,11 +585,8 @@ loadSettings().then(buildDays)
   flex-wrap: wrap;
   gap: 12px;
   align-items: center;
-  margin-bottom: 12px;
-  padding: 12px 16px;
-  background: #fdf6ec;
-  border: 1px solid #faecd8;
-  border-radius: 8px;
+  margin-bottom: 8px;
+  padding: 8px 16px;
 }
 
 /* 操作エリア */
