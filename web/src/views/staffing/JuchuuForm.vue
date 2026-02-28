@@ -73,37 +73,11 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="リソース">
-              <el-select
-                v-model="form.resourceId"
-                filterable remote clearable
-                :remote-method="searchResources"
-                placeholder="リソースを選択"
-                style="width:100%"
-              >
-                <el-option v-for="opt in resourceOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="20">
-          <el-col :span="12">
             <el-form-item label="契約形態" prop="contractType">
               <el-select v-model="form.contractType" style="width:100%">
                 <el-option label="SES（準委任）" value="ses" />
                 <el-option label="派遣" value="dispatch" />
                 <el-option label="請負" value="contract" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="ステータス">
-              <el-select v-model="form.status" style="width:100%">
-                <el-option label="下書き" value="draft" />
-                <el-option label="有効" value="active" />
-                <el-option label="終了" value="ended" />
-                <el-option label="解約" value="terminated" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -122,46 +96,15 @@
           </el-col>
         </el-row>
 
-        <!-- 請求条件 -->
-        <el-divider content-position="left">請求条件</el-divider>
         <el-row :gutter="20">
-          <el-col :span="10">
-            <el-form-item label="請求単価">
-              <el-input-number v-model="form.billingRate" :precision="0" :step="10000" :min="0" style="width:150px" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="6">
-            <el-form-item label="種別">
-              <el-select v-model="form.billingRateType" style="width:100%">
-                <el-option label="月額" value="monthly" />
-                <el-option label="日額" value="daily" />
-                <el-option label="時給" value="hourly" />
+          <el-col :span="12">
+            <el-form-item label="ステータス">
+              <el-select v-model="form.status" style="width:100%">
+                <el-option label="下書き" value="draft" />
+                <el-option label="有効" value="active" />
+                <el-option label="終了" value="ended" />
+                <el-option label="解約" value="terminated" />
               </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="残業割増率">
-              <el-input-number v-model="form.overtimeRateMultiplier" :precision="2" :step="0.05" :min="1" :max="3" style="width:110px" />
-              <el-text type="info" style="margin-left:6px;font-size:12px">倍</el-text>
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="20">
-          <el-col :span="10">
-            <el-form-item label="精算方式">
-              <el-radio-group v-model="form.settlementType">
-                <el-radio value="range">幅精算</el-radio>
-                <el-radio value="fixed">固定</el-radio>
-              </el-radio-group>
-            </el-form-item>
-          </el-col>
-          <el-col :span="14" v-if="form.settlementType === 'range'">
-            <el-form-item label="精算時間">
-              <el-input-number v-model="form.settlementLowerH" :min="0" :max="300" style="width:100px" />
-              <span style="margin:0 8px;color:#999">H 〜</span>
-              <el-input-number v-model="form.settlementUpperH" :min="0" :max="300" style="width:100px" />
-              <span style="margin-left:6px;color:#999">H</span>
             </el-form-item>
           </el-col>
         </el-row>
@@ -198,7 +141,108 @@
           </el-col>
         </el-row>
 
-        <!-- 注文書・備考 -->
+        <!-- 要員明細 -->
+        <el-divider content-position="left">
+          <span>要員明細</span>
+          <el-button
+            type="primary" plain size="small" style="margin-left:12px"
+            @click="addDetail"
+          ><el-icon><Plus /></el-icon>行追加</el-button>
+        </el-divider>
+
+        <div class="detail-table-wrap">
+          <table class="detail-table" v-if="form.details.length > 0">
+            <thead>
+              <tr>
+                <th style="width:200px">要員</th>
+                <th style="width:120px">請求単価</th>
+                <th style="width:80px">種別</th>
+                <th style="width:90px">精算方式</th>
+                <th style="width:160px">精算時間（H）</th>
+                <th style="width:80px">残業率</th>
+                <th style="width:40px"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(detail, idx) in form.details" :key="idx">
+                <td>
+                  <el-select
+                    v-model="detail.resourceId"
+                    filterable remote clearable
+                    :remote-method="(q: string) => searchResources(q, idx)"
+                    placeholder="要員を選択"
+                    style="width:100%"
+                    size="small"
+                  >
+                    <el-option
+                      v-for="opt in getResourceOptions(idx)"
+                      :key="opt.value" :label="opt.label" :value="opt.value"
+                    />
+                  </el-select>
+                </td>
+                <td>
+                  <el-input-number
+                    v-model="detail.billingRate"
+                    :precision="0" :step="10000" :min="0"
+                    :controls="false"
+                    style="width:100%"
+                    size="small"
+                    placeholder="単価"
+                  />
+                </td>
+                <td>
+                  <el-select v-model="detail.billingRateType" style="width:100%" size="small">
+                    <el-option label="月額" value="monthly" />
+                    <el-option label="日額" value="daily" />
+                    <el-option label="時給" value="hourly" />
+                  </el-select>
+                </td>
+                <td>
+                  <el-select v-model="detail.settlementType" style="width:100%" size="small">
+                    <el-option label="幅精算" value="range" />
+                    <el-option label="固定" value="fixed" />
+                  </el-select>
+                </td>
+                <td>
+                  <template v-if="detail.settlementType === 'range'">
+                    <el-input-number
+                      v-model="detail.settlementLowerH"
+                      :min="0" :max="300" :controls="false"
+                      style="width:65px" size="small"
+                    />
+                    <span style="margin:0 4px;color:#999">〜</span>
+                    <el-input-number
+                      v-model="detail.settlementUpperH"
+                      :min="0" :max="300" :controls="false"
+                      style="width:65px" size="small"
+                    />
+                  </template>
+                  <el-text v-else type="info" size="small">—</el-text>
+                </td>
+                <td>
+                  <el-input-number
+                    v-model="detail.overtimeRateMultiplier"
+                    :precision="2" :step="0.05" :min="1" :max="3"
+                    :controls="false"
+                    style="width:100%"
+                    size="small"
+                    placeholder="1.25"
+                  />
+                </td>
+                <td>
+                  <el-button link type="danger" size="small" @click="removeDetail(idx)">
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="detail-empty">
+            <el-text type="info">要員が未登録です。「行追加」で要員を追加してください。</el-text>
+          </div>
+        </div>
+
+        <!-- 添付・備考 -->
         <el-divider content-position="left">添付・備考</el-divider>
         <el-row :gutter="20">
           <el-col :span="24">
@@ -231,48 +275,76 @@
       <div class="loading-subtext">AIが注文書の内容を読み取っています。しばらくお待ちください。</div>
     </div>
 
+    <!-- フッターボタン -->
+    <div class="juchuu-form-footer">
+      <el-button @click="emit('cancel')">キャンセル</el-button>
+      <template v-if="step === 'upload'">
+        <el-button plain @click="step = 'form'">スキップして入力へ</el-button>
+        <el-button type="primary" :disabled="!selectedFile" @click="uploadAndOcr">
+          <el-icon><Upload /></el-icon>
+          アップロード＆解析
+        </el-button>
+      </template>
+      <template v-else-if="step === 'ocr-loading'">
+        <el-button type="primary" disabled :loading="true">解析中...</el-button>
+      </template>
+      <template v-else-if="step === 'form'">
+        <el-button type="primary" :loading="saving" @click="save">
+          <el-icon><Check /></el-icon>
+          保存
+        </el-button>
+      </template>
+    </div>
+
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  Document, UploadFilled, Paperclip, Delete, Loading
+  Document, UploadFilled, Paperclip, Delete, Loading, Upload, Check, Plus
 } from '@element-plus/icons-vue'
 import api from '../../api'
+
+interface DetailRow {
+  resourceId: string | null
+  billingRate: number | null
+  billingRateType: string
+  overtimeRateMultiplier: number
+  settlementType: string
+  settlementLowerH: number
+  settlementUpperH: number
+  notes: string | null
+}
 
 const props = defineProps({
   juchuuId: { type: String, default: null }
 })
 const emit = defineEmits(['saved', 'cancel'])
 
-// ステップ管理: 'upload' | 'ocr-loading' | 'form'
 const step = ref<'upload' | 'ocr-loading' | 'form'>(props.juchuuId ? 'form' : 'upload')
 
 const loading = ref(false)
 const saving = ref(false)
-const uploading = ref(false)
 const formRef = ref<any>(null)
 const selectedFile = ref<any>(null)
 const ocrApplied = ref(false)
 
 const clientOptions = ref<any[]>([])
-const resourceOptions = ref<any[]>([])
+// 要員オプションは行ごとに管理
+const resourceOptionsMap = ref<Record<number, any[]>>({})
+
+function getResourceOptions(idx: number): any[] {
+  return resourceOptionsMap.value[idx] || []
+}
 
 const form = reactive({
   clientPartnerId: null as string | null,
-  resourceId: null as string | null,
   contractType: 'ses',
   status: 'active',
   startDate: null as string | null,
   endDate: null as string | null,
-  billingRate: null as number | null,
-  billingRateType: 'monthly',
-  overtimeRateMultiplier: 1.25,
-  settlementType: 'range',
-  settlementLowerH: 140,
-  settlementUpperH: 180,
   workLocation: null as string | null,
   workDays: '月〜金',
   workStartTime: '09:00',
@@ -280,10 +352,40 @@ const form = reactive({
   monthlyWorkHours: 160,
   notes: null as string | null,
   attachedDocBlobName: null as string | null,
+  details: [] as DetailRow[],
 })
 
 const rules = {
   contractType: [{ required: true, message: '契約形態を選択してください', trigger: 'change' }],
+}
+
+function newDetailRow(): DetailRow {
+  return {
+    resourceId: null,
+    billingRate: null,
+    billingRateType: 'monthly',
+    overtimeRateMultiplier: 1.25,
+    settlementType: 'range',
+    settlementLowerH: 140,
+    settlementUpperH: 180,
+    notes: null,
+  }
+}
+
+function addDetail() {
+  form.details.push(newDetailRow())
+}
+
+function removeDetail(idx: number) {
+  form.details.splice(idx, 1)
+  // インデックス再整理
+  const newMap: Record<number, any[]> = {}
+  Object.keys(resourceOptionsMap.value).forEach(k => {
+    const n = parseInt(k)
+    if (n < idx) newMap[n] = resourceOptionsMap.value[n]
+    else if (n > idx) newMap[n - 1] = resourceOptionsMap.value[n]
+  })
+  resourceOptionsMap.value = newMap
 }
 
 // ---- ファイル選択 ----
@@ -291,17 +393,18 @@ function onFileChange(uploadFile: any) {
   selectedFile.value = uploadFile.raw || uploadFile
 }
 
-// ---- 顧客・リソース検索 ----
+// ---- 顧客検索 ----
 async function searchClients(q: string) {
   if (!q) return
   const res = await api.get('/businesspartners', { params: { keyword: q, limit: 20 } })
   clientOptions.value = (res.data.data || []).map((bp: any) => ({ value: bp.id, label: bp.name || bp.partnerCode }))
 }
 
-async function searchResources(q: string) {
+// ---- 要員検索（行ごと） ----
+async function searchResources(q: string, rowIdx: number) {
   if (!q) return
   const res = await api.get('/staffing/resources', { params: { keyword: q, limit: 20 } })
-  resourceOptions.value = (res.data.data || []).map((r: any) => ({
+  resourceOptionsMap.value[rowIdx] = (res.data.data || []).map((r: any) => ({
     value: r.id,
     label: `${r.displayName || r.resourceCode} (${r.resourceCode})`
   }))
@@ -316,7 +419,6 @@ function viewDoc() {
 // ---- Step 1: アップロード ＋ OCR ----
 async function uploadAndOcr() {
   if (!selectedFile.value) {
-    // ファイルなしでスキップ（手入力）
     step.value = 'form'
     return
   }
@@ -325,7 +427,6 @@ async function uploadAndOcr() {
   let newId = props.juchuuId
 
   try {
-    // 1. 先にレコードを作成（IDが必要）
     if (!newId) {
       const res = await api.post('/staffing/juchuu', {
         contractType: form.contractType,
@@ -334,7 +435,6 @@ async function uploadAndOcr() {
       newId = res.data.id
     }
 
-    // 2. PDFアップロード + OCR解析
     const formData = new FormData()
     formData.append('file', selectedFile.value)
     const openaiKey = localStorage.getItem('openai_key') || ''
@@ -345,7 +445,6 @@ async function uploadAndOcr() {
     const parsed = uploadRes.data?.parsed
 
     if (parsed) {
-      // OCR結果をフォームに反映
       applyOcrData(parsed)
       ocrApplied.value = true
     }
@@ -363,18 +462,26 @@ function applyOcrData(parsed: any) {
   if (parsed.contractType) form.contractType = parsed.contractType
   if (parsed.startDate) form.startDate = parsed.startDate
   if (parsed.endDate) form.endDate = parsed.endDate
-  if (parsed.billingRate) form.billingRate = parsed.billingRate
-  if (parsed.billingRateType) form.billingRateType = parsed.billingRateType
-  if (parsed.overtimeRateMultiplier) form.overtimeRateMultiplier = parsed.overtimeRateMultiplier
-  if (parsed.settlementType) form.settlementType = parsed.settlementType
-  if (parsed.settlementLowerH) form.settlementLowerH = parsed.settlementLowerH
-  if (parsed.settlementUpperH) form.settlementUpperH = parsed.settlementUpperH
   if (parsed.workLocation) form.workLocation = parsed.workLocation
   if (parsed.workDays) form.workDays = parsed.workDays
   if (parsed.workStartTime) form.workStartTime = parsed.workStartTime
   if (parsed.workEndTime) form.workEndTime = parsed.workEndTime
   if (parsed.monthlyWorkHours) form.monthlyWorkHours = parsed.monthlyWorkHours
   if (parsed.notes) form.notes = parsed.notes
+
+  // リソース明細の適用
+  if (Array.isArray(parsed.resources) && parsed.resources.length > 0) {
+    form.details = parsed.resources.map((r: any) => ({
+      resourceId: null,  // OCRはリソースIDを知らないのでnull
+      billingRate: r.billingRate ?? null,
+      billingRateType: r.billingRateType ?? 'monthly',
+      overtimeRateMultiplier: r.overtimeRateMultiplier ?? 1.25,
+      settlementType: r.settlementType ?? 'range',
+      settlementLowerH: r.settlementLowerH ?? 140,
+      settlementUpperH: r.settlementUpperH ?? 180,
+      notes: r.resourceName ?? null,  // OCRで読み取った氏名をnotesに一時記録
+    }))
+  }
 }
 
 // ---- Step 2: 保存 ----
@@ -384,23 +491,26 @@ async function save() {
   try {
     const payload = {
       clientPartnerId: form.clientPartnerId,
-      resourceId: form.resourceId,
       contractType: form.contractType,
       status: form.status,
       startDate: form.startDate,
       endDate: form.endDate,
-      billingRate: form.billingRate,
-      billingRateType: form.billingRateType,
-      overtimeRateMultiplier: form.overtimeRateMultiplier,
-      settlementType: form.settlementType,
-      settlementLowerH: form.settlementLowerH,
-      settlementUpperH: form.settlementUpperH,
       workLocation: form.workLocation,
       workDays: form.workDays,
       workStartTime: form.workStartTime,
       workEndTime: form.workEndTime,
       monthlyWorkHours: form.monthlyWorkHours,
       notes: form.notes,
+      details: form.details.map(d => ({
+        resourceId: d.resourceId,
+        billingRate: d.billingRate,
+        billingRateType: d.billingRateType,
+        overtimeRateMultiplier: d.overtimeRateMultiplier,
+        settlementType: d.settlementType,
+        settlementLowerH: d.settlementLowerH,
+        settlementUpperH: d.settlementUpperH,
+        notes: d.notes,
+      })),
     }
     if (props.juchuuId) {
       await api.put(`/staffing/juchuu/${props.juchuuId}`, payload)
@@ -424,17 +534,10 @@ async function load() {
     const data = res.data
     Object.assign(form, {
       clientPartnerId: data.clientPartnerId,
-      resourceId: data.resourceId,
       contractType: data.contractType || 'ses',
       status: data.status || 'active',
       startDate: data.startDate,
       endDate: data.endDate,
-      billingRate: data.billingRate,
-      billingRateType: data.billingRateType || 'monthly',
-      overtimeRateMultiplier: data.overtimeRateMultiplier ?? 1.25,
-      settlementType: data.settlementType || 'range',
-      settlementLowerH: data.settlementLowerH ?? 140,
-      settlementUpperH: data.settlementUpperH ?? 180,
       workLocation: data.workLocation,
       workDays: data.workDays || '月〜金',
       workStartTime: data.workStartTime || '09:00',
@@ -442,13 +545,29 @@ async function load() {
       monthlyWorkHours: data.monthlyWorkHours ?? 160,
       notes: data.notes,
       attachedDocBlobName: data.attachedDocBlobName,
+      details: (data.details || []).map((d: any): DetailRow => ({
+        resourceId: d.resourceId ?? null,
+        billingRate: d.billingRate ?? null,
+        billingRateType: d.billingRateType ?? 'monthly',
+        overtimeRateMultiplier: d.overtimeRateMultiplier ?? 1.25,
+        settlementType: d.settlementType ?? 'range',
+        settlementLowerH: d.settlementLowerH ?? 140,
+        settlementUpperH: d.settlementUpperH ?? 180,
+        notes: d.notes ?? null,
+      })),
     })
     if (data.clientPartnerId && data.clientName) {
       clientOptions.value = [{ value: data.clientPartnerId, label: data.clientName }]
     }
-    if (data.resourceId && data.resourceName) {
-      resourceOptions.value = [{ value: data.resourceId, label: `${data.resourceName} (${data.resourceCode})` }]
-    }
+    // 各明細行の要員オプションを設定
+    ;(data.details || []).forEach((d: any, i: number) => {
+      if (d.resourceId && d.resourceName) {
+        resourceOptionsMap.value[i] = [{
+          value: d.resourceId,
+          label: `${d.resourceName}${d.resourceCode ? ' (' + d.resourceCode + ')' : ''}`
+        }]
+      }
+    })
   } catch (e: any) {
     ElMessage.error(`読み込みエラー: ${e.message}`)
   } finally {
@@ -456,8 +575,7 @@ async function load() {
   }
 }
 
-// 外部から step 制御・save 呼び出せるように expose
-defineExpose({ step, uploadAndOcr, save, isUploading: () => step.value === 'ocr-loading' })
+defineExpose({ reload: load })
 
 onMounted(load)
 </script>
@@ -538,5 +656,51 @@ onMounted(load)
 .loading-subtext {
   font-size: 13px;
   color: #909399;
+}
+
+/* 要員明細テーブル */
+.detail-table-wrap {
+  margin: 0 0 8px 0;
+  overflow-x: auto;
+}
+.detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.detail-table th {
+  background: #f5f7fa;
+  padding: 8px 6px;
+  border: 1px solid #e4e7ed;
+  font-weight: 600;
+  color: #606266;
+  text-align: center;
+  white-space: nowrap;
+}
+.detail-table td {
+  padding: 6px 4px;
+  border: 1px solid #e4e7ed;
+  vertical-align: middle;
+}
+.detail-table :deep(.el-input-number__decrease),
+.detail-table :deep(.el-input-number__increase) {
+  display: none;
+}
+.detail-empty {
+  padding: 20px;
+  text-align: center;
+  border: 1px dashed #d9d9d9;
+  border-radius: 4px;
+  background: #fafafa;
+}
+
+/* フッターボタン */
+.juchuu-form-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #eee;
 }
 </style>

@@ -13,6 +13,7 @@ namespace Server.Modules.Staffing;
 /// <summary>
 /// 発注管理モジュール
 /// リソース・BP会社への発注（SES/派遣/請負）を管理する。
+/// 発注明細（stf_hatchuu_detail）でリソース・原価条件を複数管理。
 /// 発注書PDF の自動生成に対応。
 /// </summary>
 public class StaffingHatchuuModule : ModuleBase
@@ -38,6 +39,7 @@ public class StaffingHatchuuModule : ModuleBase
             .RequireAuthorization();
 
         const string table = "stf_hatchuu";
+        const string detailTable = "stf_hatchuu_detail";
 
         // ===== 一覧 =====
         group.MapGet("", async (HttpRequest req, NpgsqlDataSource ds) =>
@@ -60,28 +62,35 @@ public class StaffingHatchuuModule : ModuleBase
 
             if (!string.IsNullOrWhiteSpace(status)) { where.Add($"h.status = ${idx++}"); args.Add(status); }
             if (!string.IsNullOrWhiteSpace(juchuuId) && Guid.TryParse(juchuuId, out var jid)) { where.Add($"h.juchuu_id = ${idx++}"); args.Add(jid); }
-            if (!string.IsNullOrWhiteSpace(resourceId) && Guid.TryParse(resourceId, out var rid)) { where.Add($"h.resource_id = ${idx++}"); args.Add(rid); }
-            if (!string.IsNullOrWhiteSpace(keyword)) { where.Add($"(h.hatchuu_no ILIKE ${idx} OR r.payload->>'display_name' ILIKE ${idx})"); args.Add($"%{keyword}%"); idx++; }
+            if (!string.IsNullOrWhiteSpace(resourceId) && Guid.TryParse(resourceId, out var rid))
+            {
+                // resource_idは明細テーブルにある
+                where.Add($"EXISTS (SELECT 1 FROM {detailTable} hd WHERE hd.hatchuu_id = h.id AND hd.resource_id = ${idx++})");
+                args.Add(rid);
+            }
+            if (!string.IsNullOrWhiteSpace(keyword)) { where.Add($"(h.hatchuu_no ILIKE ${idx} OR bp.payload->>'name' ILIKE ${idx})"); args.Add($"%{keyword}%"); idx++; }
 
             var whereClause = string.Join(" AND ", where);
 
             await using var countCmd = conn.CreateCommand();
-            countCmd.CommandText = $"SELECT COUNT(*) FROM {table} h LEFT JOIN stf_resources r ON h.resource_id = r.id WHERE {whereClause}";
+            countCmd.CommandText = $"SELECT COUNT(*) FROM {table} h LEFT JOIN businesspartners bp ON h.supplier_partner_id = bp.id WHERE {whereClause}";
             for (var i = 0; i < args.Count; i++) countCmd.Parameters.AddWithValue(args[i] ?? DBNull.Value);
             var total = Convert.ToInt64(await countCmd.ExecuteScalarAsync());
 
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = $@"
                 SELECT h.id, h.hatchuu_no, h.juchuu_id, h.contract_type, h.status,
-                       h.start_date, h.end_date, h.cost_rate, h.cost_rate_type,
+                       h.start_date, h.end_date,
                        h.doc_generated_url, h.doc_generated_at,
-                       r.payload->>'display_name' as resource_name,
-                       r.payload->>'resource_code' as resource_code,
                        bp.payload->>'name' as supplier_name,
                        j.juchuu_no,
-                       jbp.payload->>'name' as client_name
+                       jbp.payload->>'name' as client_name,
+                       (SELECT COUNT(*) FROM {detailTable} hd WHERE hd.hatchuu_id = h.id) as resource_count,
+                       (SELECT string_agg(r2.payload->>'display_name', ', ' ORDER BY hd2.sort_order)
+                        FROM {detailTable} hd2
+                        LEFT JOIN stf_resources r2 ON hd2.resource_id = r2.id
+                        WHERE hd2.hatchuu_id = h.id) as resource_names
                 FROM {table} h
-                LEFT JOIN stf_resources r ON h.resource_id = r.id
                 LEFT JOIN businesspartners bp ON h.supplier_partner_id = bp.id
                 LEFT JOIN stf_juchuu j ON h.juchuu_id = j.id
                 LEFT JOIN businesspartners jbp ON j.client_partner_id = jbp.id
@@ -105,15 +114,13 @@ public class StaffingHatchuuModule : ModuleBase
                     status = reader.IsDBNull(4) ? null : reader.GetString(4),
                     startDate = reader.IsDBNull(5) ? null : (string?)reader.GetDateTime(5).ToString("yyyy-MM-dd"),
                     endDate = reader.IsDBNull(6) ? null : (string?)reader.GetDateTime(6).ToString("yyyy-MM-dd"),
-                    costRate = reader.IsDBNull(7) ? (decimal?)null : reader.GetDecimal(7),
-                    costRateType = reader.IsDBNull(8) ? null : reader.GetString(8),
-                    hasPdf = !reader.IsDBNull(9),
-                    docGeneratedAt = reader.IsDBNull(10) ? null : (DateTime?)reader.GetDateTime(10),
-                    resourceName = reader.IsDBNull(11) ? null : reader.GetString(11),
-                    resourceCode = reader.IsDBNull(12) ? null : reader.GetString(12),
-                    supplierName = reader.IsDBNull(13) ? null : reader.GetString(13),
-                    juchuuNo = reader.IsDBNull(14) ? null : reader.GetString(14),
-                    clientName = reader.IsDBNull(15) ? null : reader.GetString(15),
+                    hasPdf = !reader.IsDBNull(7),
+                    docGeneratedAt = reader.IsDBNull(8) ? null : (DateTime?)reader.GetDateTime(8),
+                    supplierName = reader.IsDBNull(9) ? null : reader.GetString(9),
+                    juchuuNo = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    clientName = reader.IsDBNull(11) ? null : reader.GetString(11),
+                    resourceCount = reader.IsDBNull(12) ? 0 : Convert.ToInt32(reader.GetValue(12)),
+                    resourceNames = reader.IsDBNull(13) ? null : reader.GetString(13),
                 });
             }
             return Results.Ok(new { data = rows, total });
@@ -126,15 +133,15 @@ public class StaffingHatchuuModule : ModuleBase
                 return Results.BadRequest(new { error = "Missing x-company-code" });
 
             await using var conn = await ds.OpenConnectionAsync();
+
+            // ヘッダー取得
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = $@"
                 SELECT h.*,
-                       r.payload->>'display_name' as resource_name, r.payload->>'resource_code' as resource_code,
                        bp.payload->>'name' as supplier_name, bp.partner_code as supplier_code,
-                       j.juchuu_no, j.billing_rate, j.billing_rate_type,
+                       j.juchuu_no,
                        jbp.payload->>'name' as client_name
                 FROM {table} h
-                LEFT JOIN stf_resources r ON h.resource_id = r.id
                 LEFT JOIN businesspartners bp ON h.supplier_partner_id = bp.id
                 LEFT JOIN stf_juchuu j ON h.juchuu_id = j.id
                 LEFT JOIN businesspartners jbp ON j.client_partner_id = jbp.id
@@ -144,7 +151,69 @@ public class StaffingHatchuuModule : ModuleBase
 
             await using var reader = await cmd.ExecuteReaderAsync();
             if (!await reader.ReadAsync()) return Results.NotFound();
-            return Results.Json(BuildDetailObject(reader, blobService));
+            var headerObj = BuildDetailObject(reader, blobService);
+            await reader.CloseAsync();
+
+            // 明細取得
+            await using var detailCmd = conn.CreateCommand();
+            detailCmd.CommandText = $@"
+                SELECT d.id, d.resource_id, d.cost_rate, d.cost_rate_type,
+                       d.settlement_type, d.settlement_lower_h, d.settlement_upper_h,
+                       d.notes, d.sort_order,
+                       r.payload->>'display_name' as resource_name,
+                       r.payload->>'resource_code' as resource_code,
+                       r.resource_type
+                FROM {detailTable} d
+                LEFT JOIN stf_resources r ON d.resource_id = r.id
+                WHERE d.hatchuu_id = $1
+                ORDER BY d.sort_order, d.created_at";
+            detailCmd.Parameters.AddWithValue(id);
+
+            var details = new List<object>();
+            await using var dr = await detailCmd.ExecuteReaderAsync();
+            while (await dr.ReadAsync())
+            {
+                details.Add(new
+                {
+                    id = dr.GetGuid(0),
+                    resourceId = dr.IsDBNull(1) ? null : dr.GetGuid(1).ToString(),
+                    costRate = dr.IsDBNull(2) ? (decimal?)null : dr.GetDecimal(2),
+                    costRateType = dr.IsDBNull(3) ? null : dr.GetString(3),
+                    settlementType = dr.IsDBNull(4) ? null : dr.GetString(4),
+                    settlementLowerH = dr.IsDBNull(5) ? (decimal?)null : dr.GetDecimal(5),
+                    settlementUpperH = dr.IsDBNull(6) ? (decimal?)null : dr.GetDecimal(6),
+                    notes = dr.IsDBNull(7) ? null : dr.GetString(7),
+                    sortOrder = dr.IsDBNull(8) ? 0 : dr.GetInt32(8),
+                    resourceName = dr.IsDBNull(9) ? null : dr.GetString(9),
+                    resourceCode = dr.IsDBNull(10) ? null : dr.GetString(10),
+                    resourceType = dr.IsDBNull(11) ? null : dr.GetString(11),
+                });
+            }
+
+            var headerDict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(JsonSerializer.Serialize(headerObj))!;
+            return Results.Json(new
+            {
+                id = headerDict.GetValueOrDefault("id"),
+                hatchuuNo = headerDict.GetValueOrDefault("hatchuuNo"),
+                juchuuId = headerDict.GetValueOrDefault("juchuuId"),
+                juchuuNo = headerDict.GetValueOrDefault("juchuuNo"),
+                contractType = headerDict.GetValueOrDefault("contractType"),
+                status = headerDict.GetValueOrDefault("status"),
+                startDate = headerDict.GetValueOrDefault("startDate"),
+                endDate = headerDict.GetValueOrDefault("endDate"),
+                supplierPartnerId = headerDict.GetValueOrDefault("supplierPartnerId"),
+                supplierName = headerDict.GetValueOrDefault("supplierName"),
+                clientName = headerDict.GetValueOrDefault("clientName"),
+                workLocation = headerDict.GetValueOrDefault("workLocation"),
+                workDays = headerDict.GetValueOrDefault("workDays"),
+                workStartTime = headerDict.GetValueOrDefault("workStartTime"),
+                workEndTime = headerDict.GetValueOrDefault("workEndTime"),
+                monthlyWorkHours = headerDict.GetValueOrDefault("monthlyWorkHours"),
+                docBlobName = headerDict.GetValueOrDefault("docBlobName"),
+                docUrl = headerDict.GetValueOrDefault("docUrl"),
+                notes = headerDict.GetValueOrDefault("notes"),
+                details,
+            });
         });
 
         // ===== 新規作成 =====
@@ -157,42 +226,37 @@ public class StaffingHatchuuModule : ModuleBase
             var body = doc.RootElement;
 
             await using var conn = await ds.OpenConnectionAsync();
+            await using var tx = await conn.BeginTransactionAsync();
+
             await using var seqCmd = conn.CreateCommand();
+            seqCmd.Transaction = tx;
             seqCmd.CommandText = "SELECT nextval('seq_hatchuu_no')";
             var seq = Convert.ToInt64(await seqCmd.ExecuteScalarAsync());
             var hatchuuNo = $"HT-{DateTime.Today:yyyy}-{seq:D4}";
 
+            // ヘッダー挿入
             await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
             cmd.CommandText = $@"
                 INSERT INTO {table} (
-                    company_code, hatchuu_no, juchuu_id, resource_id, supplier_partner_id,
+                    company_code, hatchuu_no, juchuu_id, supplier_partner_id,
                     contract_type, status, start_date, end_date,
-                    cost_rate, cost_rate_type,
-                    settlement_type, settlement_lower_h, settlement_upper_h,
                     work_location, work_days, work_start_time, work_end_time, monthly_work_hours,
                     notes, payload
                 ) VALUES (
-                    $1, $2, $3, $4, $5,
-                    $6, $7, $8::date, $9::date,
-                    $10, $11,
-                    $12, $13, $14,
-                    $15, $16, $17, $18, $19,
-                    $20, $21::jsonb
+                    $1, $2, $3, $4,
+                    $5, $6, $7::date, $8::date,
+                    $9, $10, $11, $12, $13,
+                    $14, $15::jsonb
                 ) RETURNING id";
             cmd.Parameters.AddWithValue(cc.ToString());
             cmd.Parameters.AddWithValue(hatchuuNo);
             cmd.Parameters.AddWithValue(TryParseGuid(body, "juchuuId") ?? (object)DBNull.Value);
-            cmd.Parameters.AddWithValue(TryParseGuid(body, "resourceId") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(TryParseGuid(body, "supplierPartnerId") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "contractType") ?? "ses");
             cmd.Parameters.AddWithValue(GetString(body, "status") ?? "active");
             cmd.Parameters.AddWithValue(GetString(body, "startDate") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "endDate") ?? (object)DBNull.Value);
-            cmd.Parameters.AddWithValue(GetDecimal(body, "costRate") ?? (object)DBNull.Value);
-            cmd.Parameters.AddWithValue(GetString(body, "costRateType") ?? "monthly");
-            cmd.Parameters.AddWithValue(GetString(body, "settlementType") ?? "range");
-            cmd.Parameters.AddWithValue(GetDecimal(body, "settlementLowerH") ?? (object)DBNull.Value);
-            cmd.Parameters.AddWithValue(GetDecimal(body, "settlementUpperH") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "workLocation") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "workDays") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "workStartTime") ?? (object)DBNull.Value);
@@ -202,6 +266,37 @@ public class StaffingHatchuuModule : ModuleBase
             cmd.Parameters.AddWithValue("{}");
 
             var newId = (Guid)(await cmd.ExecuteScalarAsync())!;
+
+            // 明細挿入
+            if (body.TryGetProperty("details", out var detailsEl) && detailsEl.ValueKind == JsonValueKind.Array)
+            {
+                var sortOrder = 0;
+                foreach (var detail in detailsEl.EnumerateArray())
+                {
+                    await using var dc = conn.CreateCommand();
+                    dc.Transaction = tx;
+                    dc.CommandText = $@"
+                        INSERT INTO {detailTable} (
+                            company_code, hatchuu_id, resource_id,
+                            cost_rate, cost_rate_type,
+                            settlement_type, settlement_lower_h, settlement_upper_h,
+                            notes, sort_order
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)";
+                    dc.Parameters.AddWithValue(cc.ToString());
+                    dc.Parameters.AddWithValue(newId);
+                    dc.Parameters.AddWithValue(TryParseGuid(detail, "resourceId") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "costRate") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetString(detail, "costRateType") ?? "monthly");
+                    dc.Parameters.AddWithValue(GetString(detail, "settlementType") ?? "range");
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementLowerH") ?? (object)140m);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementUpperH") ?? (object)180m);
+                    dc.Parameters.AddWithValue(GetString(detail, "notes") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(sortOrder++);
+                    await dc.ExecuteNonQueryAsync();
+                }
+            }
+
+            await tx.CommitAsync();
             return Results.Ok(new { id = newId, hatchuuNo });
         });
 
@@ -215,44 +310,36 @@ public class StaffingHatchuuModule : ModuleBase
             var body = doc.RootElement;
 
             await using var conn = await ds.OpenConnectionAsync();
+            await using var tx = await conn.BeginTransactionAsync();
+
+            // ヘッダー更新
             await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
             cmd.CommandText = $@"
                 UPDATE {table} SET
                     juchuu_id           = COALESCE($3, juchuu_id),
-                    resource_id         = COALESCE($4, resource_id),
-                    supplier_partner_id = COALESCE($5, supplier_partner_id),
-                    contract_type       = COALESCE($6, contract_type),
-                    status              = COALESCE($7, status),
-                    start_date          = COALESCE($8::date, start_date),
-                    end_date            = COALESCE($9::date, end_date),
-                    cost_rate           = COALESCE($10, cost_rate),
-                    cost_rate_type      = COALESCE($11, cost_rate_type),
-                    settlement_type     = COALESCE($12, settlement_type),
-                    settlement_lower_h  = COALESCE($13, settlement_lower_h),
-                    settlement_upper_h  = COALESCE($14, settlement_upper_h),
-                    work_location       = COALESCE($15, work_location),
-                    work_days           = COALESCE($16, work_days),
-                    work_start_time     = COALESCE($17, work_start_time),
-                    work_end_time       = COALESCE($18, work_end_time),
-                    monthly_work_hours  = COALESCE($19, monthly_work_hours),
-                    notes               = COALESCE($20, notes),
+                    supplier_partner_id = COALESCE($4, supplier_partner_id),
+                    contract_type       = COALESCE($5, contract_type),
+                    status              = COALESCE($6, status),
+                    start_date          = COALESCE($7::date, start_date),
+                    end_date            = COALESCE($8::date, end_date),
+                    work_location       = COALESCE($9, work_location),
+                    work_days           = COALESCE($10, work_days),
+                    work_start_time     = COALESCE($11, work_start_time),
+                    work_end_time       = COALESCE($12, work_end_time),
+                    monthly_work_hours  = COALESCE($13, monthly_work_hours),
+                    notes               = COALESCE($14, notes),
                     updated_at          = now()
                 WHERE id = $1 AND company_code = $2
                 RETURNING id";
             cmd.Parameters.AddWithValue(id);
             cmd.Parameters.AddWithValue(cc.ToString());
             cmd.Parameters.AddWithValue(TryParseGuid(body, "juchuuId") ?? (object)DBNull.Value);
-            cmd.Parameters.AddWithValue(TryParseGuid(body, "resourceId") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(TryParseGuid(body, "supplierPartnerId") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "contractType") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "status") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "startDate") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "endDate") ?? (object)DBNull.Value);
-            cmd.Parameters.AddWithValue(GetDecimal(body, "costRate") ?? (object)DBNull.Value);
-            cmd.Parameters.AddWithValue(GetString(body, "costRateType") ?? (object)DBNull.Value);
-            cmd.Parameters.AddWithValue(GetString(body, "settlementType") ?? (object)DBNull.Value);
-            cmd.Parameters.AddWithValue(GetDecimal(body, "settlementLowerH") ?? (object)DBNull.Value);
-            cmd.Parameters.AddWithValue(GetDecimal(body, "settlementUpperH") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "workLocation") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "workDays") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue(GetString(body, "workStartTime") ?? (object)DBNull.Value);
@@ -261,8 +348,61 @@ public class StaffingHatchuuModule : ModuleBase
             cmd.Parameters.AddWithValue(GetString(body, "notes") ?? (object)DBNull.Value);
 
             var updated = await cmd.ExecuteScalarAsync();
-            if (updated == null) return Results.NotFound();
+            if (updated == null) { await tx.RollbackAsync(); return Results.NotFound(); }
+
+            // 明細が送られてきた場合は全置換
+            if (body.TryGetProperty("details", out var detailsEl) && detailsEl.ValueKind == JsonValueKind.Array)
+            {
+                await using var delCmd = conn.CreateCommand();
+                delCmd.Transaction = tx;
+                delCmd.CommandText = $"DELETE FROM {detailTable} WHERE hatchuu_id = $1";
+                delCmd.Parameters.AddWithValue(id);
+                await delCmd.ExecuteNonQueryAsync();
+
+                var sortOrder = 0;
+                foreach (var detail in detailsEl.EnumerateArray())
+                {
+                    await using var dc = conn.CreateCommand();
+                    dc.Transaction = tx;
+                    dc.CommandText = $@"
+                        INSERT INTO {detailTable} (
+                            company_code, hatchuu_id, resource_id,
+                            cost_rate, cost_rate_type,
+                            settlement_type, settlement_lower_h, settlement_upper_h,
+                            notes, sort_order
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)";
+                    dc.Parameters.AddWithValue(cc.ToString());
+                    dc.Parameters.AddWithValue(id);
+                    dc.Parameters.AddWithValue(TryParseGuid(detail, "resourceId") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "costRate") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetString(detail, "costRateType") ?? "monthly");
+                    dc.Parameters.AddWithValue(GetString(detail, "settlementType") ?? "range");
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementLowerH") ?? (object)140m);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementUpperH") ?? (object)180m);
+                    dc.Parameters.AddWithValue(GetString(detail, "notes") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(sortOrder++);
+                    await dc.ExecuteNonQueryAsync();
+                }
+            }
+
+            await tx.CommitAsync();
             return Results.Ok(new { id, updated = true });
+        });
+
+        // ===== 削除（ステータスを terminated に変更） =====
+        group.MapDelete("/{id:guid}", async (Guid id, HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            await using var conn = await ds.OpenConnectionAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"UPDATE {table} SET status = 'terminated', updated_at = now() WHERE id = $1 AND company_code = $2 RETURNING id";
+            cmd.Parameters.AddWithValue(id);
+            cmd.Parameters.AddWithValue(cc.ToString());
+            var result = await cmd.ExecuteScalarAsync();
+            if (result == null) return Results.NotFound();
+            return Results.Ok(new { id, deleted = true });
         });
 
         // ===== 発注書PDF生成 =====
@@ -272,20 +412,18 @@ public class StaffingHatchuuModule : ModuleBase
                 return Results.BadRequest(new { error = "Missing x-company-code" });
 
             await using var conn = await ds.OpenConnectionAsync();
+
+            // ヘッダー取得
             await using var queryCmd = conn.CreateCommand();
             queryCmd.CommandText = $@"
                 SELECT h.*,
-                       r.payload->>'display_name' as resource_name,
-                       r.payload->>'resource_code' as resource_code,
-                       r.email as resource_email,
                        bp.payload->>'name' as supplier_name,
                        bp.partner_code as supplier_code,
-                       j.juchuu_no, j.billing_rate,
+                       j.juchuu_no,
                        jbp.payload->>'name' as client_name,
                        comp.payload->>'name' as company_name,
                        comp.payload->>'address' as company_address
                 FROM {table} h
-                LEFT JOIN stf_resources r ON h.resource_id = r.id
                 LEFT JOIN businesspartners bp ON h.supplier_partner_id = bp.id
                 LEFT JOIN stf_juchuu j ON h.juchuu_id = j.id
                 LEFT JOIN businesspartners jbp ON j.client_partner_id = jbp.id
@@ -304,23 +442,16 @@ public class StaffingHatchuuModule : ModuleBase
                 try { var ord = r.GetOrdinal(col); return r.IsDBNull(ord) ? (decimal?)null : r.GetDecimal(ord); } catch { return null; }
             }
 
-            var data = new
+            var headerData = new
             {
                 HatchuuNo    = S(reader, "hatchuu_no"),
                 IssuedDate   = DateTime.Today.ToString("yyyy年MM月dd日"),
                 CompanyName  = S(reader, "company_name") ?? cc.ToString(),
                 CompanyAddr  = S(reader, "company_address"),
                 SupplierName = S(reader, "supplier_name"),
-                ResourceName = S(reader, "resource_name"),
-                ResourceCode = S(reader, "resource_code"),
                 ContractType = ContractTypeLabel(S(reader, "contract_type")),
                 StartDate    = reader.IsDBNull(reader.GetOrdinal("start_date")) ? null : reader.GetDateTime(reader.GetOrdinal("start_date")).ToString("yyyy年MM月dd日"),
                 EndDate      = reader.IsDBNull(reader.GetOrdinal("end_date")) ? null : reader.GetDateTime(reader.GetOrdinal("end_date")).ToString("yyyy年MM月dd日"),
-                CostRate     = D(reader, "cost_rate"),
-                CostRateType = RateTypeLabel(S(reader, "cost_rate_type")),
-                SettlementType  = S(reader, "settlement_type"),
-                SettlementLowerH = D(reader, "settlement_lower_h"),
-                SettlementUpperH = D(reader, "settlement_upper_h"),
                 WorkLocation = S(reader, "work_location"),
                 WorkDays     = S(reader, "work_days"),
                 WorkStart    = S(reader, "work_start_time"),
@@ -330,19 +461,44 @@ public class StaffingHatchuuModule : ModuleBase
                 ClientName   = S(reader, "client_name"),
                 Notes        = S(reader, "notes"),
             };
-            reader.Close();
+            await reader.CloseAsync();
 
-            // HTMLテンプレートでPDF内容を生成
-            var html = BuildHatchuuPdfHtml(data);
+            // 明細取得
+            await using var detailCmd = conn.CreateCommand();
+            detailCmd.CommandText = $@"
+                SELECT r.payload->>'display_name' as resource_name,
+                       r.payload->>'resource_code' as resource_code,
+                       d.cost_rate, d.cost_rate_type,
+                       d.settlement_type, d.settlement_lower_h, d.settlement_upper_h
+                FROM {detailTable} d
+                LEFT JOIN stf_resources r ON d.resource_id = r.id
+                WHERE d.hatchuu_id = $1
+                ORDER BY d.sort_order";
+            detailCmd.Parameters.AddWithValue(id);
+
+            var resourceRows = new List<(string? name, string? code, decimal? rate, string? rateType, string? settlType, decimal? lower, decimal? upper)>();
+            await using var dr = await detailCmd.ExecuteReaderAsync();
+            while (await dr.ReadAsync())
+            {
+                resourceRows.Add((
+                    dr.IsDBNull(0) ? null : dr.GetString(0),
+                    dr.IsDBNull(1) ? null : dr.GetString(1),
+                    dr.IsDBNull(2) ? (decimal?)null : dr.GetDecimal(2),
+                    dr.IsDBNull(3) ? null : dr.GetString(3),
+                    dr.IsDBNull(4) ? null : dr.GetString(4),
+                    dr.IsDBNull(5) ? (decimal?)null : dr.GetDecimal(5),
+                    dr.IsDBNull(6) ? (decimal?)null : dr.GetDecimal(6)
+                ));
+            }
+
+            var html = BuildHatchuuPdfHtml(headerData, resourceRows);
             var htmlBytes = Encoding.UTF8.GetBytes(html);
 
-            // HTMLをBlobに保存（PDF生成はフロントエンドのブラウザ印刷で対応）
             var blobName = $"hatchuu/{cc}/{id}/{DateTime.UtcNow:yyyyMMddHHmmss}_hatchuu.html";
             using var htmlStream = new MemoryStream(htmlBytes);
             await blobService.UploadAsync(htmlStream, blobName, "text/html", CancellationToken.None);
             var docUrl = blobService.GetReadUri(blobName);
 
-            // URLをDBに保存
             await using var updateCmd = conn.CreateCommand();
             updateCmd.CommandText = $"UPDATE {table} SET doc_generated_url = $3, doc_generated_at = now(), updated_at = now() WHERE id = $1 AND company_code = $2";
             updateCmd.Parameters.AddWithValue(id);
@@ -350,7 +506,6 @@ public class StaffingHatchuuModule : ModuleBase
             updateCmd.Parameters.AddWithValue(blobName);
             await updateCmd.ExecuteNonQueryAsync();
 
-            // HTMLコンテンツをそのまま返してフロントエンドで印刷させる
             return Results.Json(new { blobName, docUrl, htmlContent = html, generated = true });
         });
 
@@ -373,11 +528,21 @@ public class StaffingHatchuuModule : ModuleBase
         });
     }
 
-    private static string BuildHatchuuPdfHtml(dynamic d)
+    private static string BuildHatchuuPdfHtml(dynamic d, List<(string? name, string? code, decimal? rate, string? rateType, string? settlType, decimal? lower, decimal? upper)> resources)
     {
-        var settlementRow = d.SettlementType == "range"
-            ? $"精算方式：幅精算（{d.SettlementLowerH}H〜{d.SettlementUpperH}H）"
-            : "精算方式：固定";
+        var resourceRows = new StringBuilder();
+        foreach (var r in resources)
+        {
+            var settlRow = r.settlType == "range"
+                ? $"幅精算（{r.lower}H〜{r.upper}H）"
+                : "固定";
+            resourceRows.Append($@"
+            <tr>
+              <td>{r.code} {r.name}</td>
+              <td class='highlight'>¥{r.rate?.ToString("N0") ?? "−"} / {RateTypeLabel(r.rateType)}</td>
+              <td>{settlRow}</td>
+            </tr>");
+        }
 
         return $@"<!DOCTYPE html>
 <html lang='ja'>
@@ -393,8 +558,9 @@ public class StaffingHatchuuModule : ModuleBase
   .section {{ margin-bottom: 20px; }}
   .section-title {{ font-size: 12pt; font-weight: bold; background: #f0f4ff; padding: 4px 8px; border-left: 4px solid #4472c4; margin-bottom: 8px; }}
   table {{ width: 100%; border-collapse: collapse; }}
-  td {{ padding: 6px 10px; border: 1px solid #ccc; vertical-align: top; }}
+  td, th {{ padding: 6px 10px; border: 1px solid #ccc; vertical-align: top; }}
   td:first-child {{ background: #f8f8f8; font-weight: bold; width: 35%; }}
+  th {{ background: #e8eeff; font-weight: bold; }}
   .footer {{ margin-top: 40px; display: flex; justify-content: space-between; }}
   .sign-box {{ border: 1px solid #ccc; width: 200px; padding: 10px; text-align: center; min-height: 60px; }}
   .highlight {{ color: #1a56db; font-weight: bold; font-size: 13pt; }}
@@ -413,8 +579,7 @@ public class StaffingHatchuuModule : ModuleBase
 <div class='section'>
   <table>
     <tr><td>発注者</td><td><strong>{d.CompanyName}</strong>{(d.CompanyAddr != null ? $"<br><small>{d.CompanyAddr}</small>" : "")}</td></tr>
-    <tr><td>受注者（宛先）</td><td><strong>{d.SupplierName ?? d.ResourceName ?? "（未設定）"}</strong></td></tr>
-    <tr><td>担当リソース</td><td>{d.ResourceCode} {d.ResourceName}</td></tr>
+    <tr><td>受注者（宛先）</td><td><strong>{d.SupplierName ?? "（未設定）"}</strong></td></tr>
     <tr><td>受注番号（参照）</td><td>{d.JuchuuNo} {(d.ClientName != null ? $"（顧客：{d.ClientName}）" : "")}</td></tr>
   </table>
 </div>
@@ -439,10 +604,14 @@ public class StaffingHatchuuModule : ModuleBase
 </div>
 
 <div class='section'>
-  <div class='section-title'>原価条件（支払条件）</div>
+  <div class='section-title'>要員・原価条件</div>
   <table>
-    <tr><td>支払単価</td><td class='highlight'>¥{d.CostRate?.ToString("N0") ?? "−"} / {d.CostRateType}</td></tr>
-    <tr><td>精算方式</td><td>{settlementRow}</td></tr>
+    <tr>
+      <th style='background:#e8eeff;'>要員名</th>
+      <th style='background:#e8eeff;'>支払単価</th>
+      <th style='background:#e8eeff;'>精算方式</th>
+    </tr>
+    {resourceRows}
   </table>
 </div>
 
@@ -502,17 +671,9 @@ public class StaffingHatchuuModule : ModuleBase
             status = S(reader, "status"),
             startDate = reader.IsDBNull(reader.GetOrdinal("start_date")) ? null : reader.GetDateTime(reader.GetOrdinal("start_date")).ToString("yyyy-MM-dd"),
             endDate = reader.IsDBNull(reader.GetOrdinal("end_date")) ? null : reader.GetDateTime(reader.GetOrdinal("end_date")).ToString("yyyy-MM-dd"),
-            resourceId = G(reader, "resource_id")?.ToString(),
-            resourceName = S(reader, "resource_name"),
-            resourceCode = S(reader, "resource_code"),
             supplierPartnerId = G(reader, "supplier_partner_id")?.ToString(),
             supplierName = S(reader, "supplier_name"),
             clientName = S(reader, "client_name"),
-            costRate = D(reader, "cost_rate"),
-            costRateType = S(reader, "cost_rate_type"),
-            settlementType = S(reader, "settlement_type"),
-            settlementLowerH = D(reader, "settlement_lower_h"),
-            settlementUpperH = D(reader, "settlement_upper_h"),
             workLocation = S(reader, "work_location"),
             workDays = S(reader, "work_days"),
             workStartTime = S(reader, "work_start_time"),

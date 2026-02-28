@@ -73,12 +73,10 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="リソース" min-width="130">
+        <el-table-column label="要員" min-width="160">
           <template #default="{ row }">
-            <div v-if="row.resourceName">
-              <div class="cell-main">{{ row.resourceName }}</div>
-              <div class="cell-sub">{{ row.resourceCode }}</div>
-            </div>
+            <div v-if="row.resourceNames" class="cell-main">{{ row.resourceNames }}</div>
+            <el-tag v-else-if="row.resourceCount > 0" type="info" size="small">{{ row.resourceCount }}名</el-tag>
             <span v-else class="cell-empty">-</span>
           </template>
         </el-table-column>
@@ -101,16 +99,6 @@
         <el-table-column label="期間" width="200" align="center">
           <template #default="{ row }">
             <span>{{ row.startDate || '-' }} 〜 {{ row.endDate || '-' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="原価単価" width="130" align="right">
-          <template #default="{ row }">
-            <span v-if="row.costRate" class="rate-cell">
-              ¥{{ Number(row.costRate).toLocaleString() }}
-              <small>/ {{ rateTypeLabel(row.costRateType) }}</small>
-            </span>
-            <span v-else class="cell-empty">-</span>
           </template>
         </el-table-column>
 

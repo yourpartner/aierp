@@ -73,12 +73,10 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="リソース" min-width="130">
+        <el-table-column label="要員" min-width="160">
           <template #default="{ row }">
-            <div v-if="row.resourceName">
-              <div class="cell-main">{{ row.resourceName }}</div>
-              <div class="cell-sub">{{ row.resourceCode }}</div>
-            </div>
+            <div v-if="row.resourceNames" class="cell-main">{{ row.resourceNames }}</div>
+            <el-tag v-else-if="row.resourceCount > 0" type="info" size="small">{{ row.resourceCount }}名</el-tag>
             <span v-else class="cell-empty">-</span>
           </template>
         </el-table-column>
@@ -94,16 +92,6 @@
         <el-table-column label="期間" width="200" align="center">
           <template #default="{ row }">
             <span>{{ row.startDate || '-' }} 〜 {{ row.endDate || '-' }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="請求単価" width="130" align="right">
-          <template #default="{ row }">
-            <span v-if="row.billingRate" class="rate-cell">
-              ¥{{ Number(row.billingRate).toLocaleString() }}
-              <small>/ {{ rateTypeLabel(row.billingRateType) }}</small>
-            </span>
-            <span v-else class="cell-empty">-</span>
           </template>
         </el-table-column>
 
@@ -151,53 +139,26 @@
     <!-- 受注フォームダイアログ -->
     <el-dialog
       v-model="dialogVisible"
-      :title="dialogTitle"
+      :title="editId ? '受注編集' : '新規受注登録'"
       width="800px"
       :close-on-click-modal="false"
       destroy-on-close
       class="juchuu-dialog"
     >
       <JuchuuForm
-        ref="juchuuFormRef"
         :juchuu-id="editId || undefined"
         @saved="onSaved"
         @cancel="dialogVisible = false"
       />
-      <template #footer>
-        <div class="dialog-footer">
-          <el-button @click="dialogVisible = false">キャンセル</el-button>
-          <!-- Step 1（アップロード画面）のフッター -->
-          <template v-if="formStep === 'upload'">
-            <el-button plain @click="skipUpload">
-              スキップして入力へ
-            </el-button>
-            <el-button type="primary" @click="doUploadAndOcr" :disabled="!juchuuFormRef?.selectedFile">
-              <el-icon><Upload /></el-icon>
-              アップロード＆解析
-            </el-button>
-          </template>
-          <!-- Step 2（フォーム画面）のフッター -->
-          <template v-else-if="formStep === 'form'">
-            <el-button type="primary" @click="doSave" :loading="formSaving">
-              <el-icon><Check /></el-icon>
-              保存
-            </el-button>
-          </template>
-          <!-- OCR中はボタン無効 -->
-          <template v-else-if="formStep === 'ocr-loading'">
-            <el-button type="primary" disabled :loading="true">解析中...</el-button>
-          </template>
-        </div>
-      </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted } from 'vue'
 import {
   DocumentChecked, Plus, Search, Edit,
-  CircleCheck, CircleClose, Upload, Check
+  CircleCheck, CircleClose
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '../../api'
@@ -217,37 +178,6 @@ const keyword = ref('')
 
 const dialogVisible = ref(false)
 const editId = ref<string | undefined>(undefined)
-const juchuuFormRef = ref<any>(null)
-const formSaving = ref(false)
-
-// JuchuuForm の現在ステップをリアクティブに取得
-const formStep = computed(() => juchuuFormRef.value?.step ?? (editId.value ? 'form' : 'upload'))
-
-const dialogTitle = computed(() => {
-  if (editId.value) return '受注編集'
-  if (formStep.value === 'upload') return '新規受注登録 — 注文書アップロード'
-  if (formStep.value === 'ocr-loading') return '新規受注登録 — 解析中...'
-  return '新規受注登録 — 受注情報入力'
-})
-
-async function doUploadAndOcr() {
-  await juchuuFormRef.value?.uploadAndOcr()
-}
-
-function skipUpload() {
-  if (juchuuFormRef.value) {
-    juchuuFormRef.value.step = 'form'
-  }
-}
-
-async function doSave() {
-  formSaving.value = true
-  try {
-    await juchuuFormRef.value?.save()
-  } finally {
-    formSaving.value = false
-  }
-}
 
 async function load() {
   loading.value = true
@@ -366,9 +296,9 @@ onMounted(load)
   font-weight: normal;
   color: #999;
 }
-.dialog-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
+:deep(.juchuu-dialog .el-dialog__body) {
+  padding: 20px 24px;
+  max-height: 72vh;
+  overflow-y: auto;
 }
 </style>
