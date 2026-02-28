@@ -201,21 +201,13 @@
 
     </el-form>
 
-    <!-- フッター -->
-    <div class="hatchuu-form-footer">
-      <el-button @click="emit('cancel')">キャンセル</el-button>
-      <el-button type="primary" :loading="saving" @click="save">
-        <el-icon><Check /></el-icon>
-        保存
-      </el-button>
-    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Check, Link, Plus, Delete } from '@element-plus/icons-vue'
+import { Link, Plus, Delete } from '@element-plus/icons-vue'
 import api from '../../api'
 
 interface DetailRow {
@@ -432,6 +424,8 @@ async function save() {
     saving.value = false
   }
 }
+
+defineExpose({ save, saving })
 </script>
 
 <style scoped>
@@ -483,12 +477,4 @@ async function save() {
   background: #fafafa;
 }
 
-.hatchuu-form-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid #eee;
-}
 </style>

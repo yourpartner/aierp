@@ -275,27 +275,6 @@
       <div class="loading-subtext">AIが注文書の内容を読み取っています。しばらくお待ちください。</div>
     </div>
 
-    <!-- フッターボタン -->
-    <div class="juchuu-form-footer">
-      <el-button @click="emit('cancel')">キャンセル</el-button>
-      <template v-if="step === 'upload'">
-        <el-button plain @click="step = 'form'">スキップして入力へ</el-button>
-        <el-button type="primary" :disabled="!selectedFile" @click="uploadAndOcr">
-          <el-icon><Upload /></el-icon>
-          アップロード＆解析
-        </el-button>
-      </template>
-      <template v-else-if="step === 'ocr-loading'">
-        <el-button type="primary" disabled :loading="true">解析中...</el-button>
-      </template>
-      <template v-else-if="step === 'form'">
-        <el-button type="primary" :loading="saving" @click="save">
-          <el-icon><Check /></el-icon>
-          保存
-        </el-button>
-      </template>
-    </div>
-
   </div>
 </template>
 
@@ -303,7 +282,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  Document, UploadFilled, Paperclip, Delete, Loading, Upload, Check, Plus
+  Document, UploadFilled, Paperclip, Delete, Loading, Plus
 } from '@element-plus/icons-vue'
 import api from '../../api'
 
@@ -575,7 +554,11 @@ async function load() {
   }
 }
 
-defineExpose({ reload: load })
+function skipToForm() {
+  step.value = 'form'
+}
+
+defineExpose({ reload: load, step, selectedFile, uploadAndOcr, save, saving, skipToForm })
 
 onMounted(load)
 </script>
@@ -694,13 +677,4 @@ onMounted(load)
   background: #fafafa;
 }
 
-/* フッターボタン */
-.juchuu-form-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid #eee;
-}
 </style>

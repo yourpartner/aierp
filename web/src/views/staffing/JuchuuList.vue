@@ -139,17 +139,39 @@
     <!-- 受注フォームダイアログ -->
     <el-dialog
       v-model="dialogVisible"
-      :title="editId ? '受注編集' : '新規受注登録'"
-      width="800px"
+      width="860px"
+      :show-close="false"
       :close-on-click-modal="false"
       destroy-on-close
-      class="juchuu-dialog"
+      class="juchuu-form-dialog"
     >
-      <JuchuuForm
-        :juchuu-id="editId || undefined"
-        @saved="onSaved"
-        @cancel="dialogVisible = false"
-      />
+      <template #header></template>
+      <el-card class="juchuu-form-card">
+        <template #header>
+          <div class="juchuu-dialog-header">
+            <span class="juchuu-dialog-title">{{ editId ? '受注編集' : '新規受注登録' }}</span>
+            <div class="juchuu-dialog-actions">
+              <el-button @click="dialogVisible = false">キャンセル</el-button>
+              <template v-if="formRef?.step === 'upload'">
+                <el-button plain @click="formRef?.skipToForm()">スキップして入力へ</el-button>
+                <el-button type="primary" :disabled="!formRef?.selectedFile" @click="formRef?.uploadAndOcr()">アップロード＆解析</el-button>
+              </template>
+              <template v-else-if="formRef?.step === 'ocr-loading'">
+                <el-button type="primary" disabled :loading="true">解析中...</el-button>
+              </template>
+              <template v-else-if="formRef?.step === 'form'">
+                <el-button type="primary" :loading="formRef?.saving" @click="formRef?.save()">保存</el-button>
+              </template>
+            </div>
+          </div>
+        </template>
+        <JuchuuForm
+          ref="formRef"
+          :juchuu-id="editId || undefined"
+          @saved="onSaved"
+          @cancel="dialogVisible = false"
+        />
+      </el-card>
     </el-dialog>
   </div>
 </template>
@@ -178,6 +200,7 @@ const keyword = ref('')
 
 const dialogVisible = ref(false)
 const editId = ref<string | undefined>(undefined)
+const formRef = ref<InstanceType<typeof JuchuuForm> | null>(null)
 
 async function load() {
   loading.value = true
@@ -296,8 +319,45 @@ onMounted(load)
   font-weight: normal;
   color: #999;
 }
-:deep(.juchuu-dialog .el-dialog__body) {
+.juchuu-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 20px 24px;
+  border-bottom: 1px solid var(--color-divider, #ebeef5);
+}
+.juchuu-dialog-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+.juchuu-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+</style>
+
+<style>
+/* 受注弹窗全局样式 - 与案件/会計模块保持一致 */
+.el-dialog.juchuu-form-dialog {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  padding: 0 !important;
+}
+.el-dialog.juchuu-form-dialog .el-dialog__header {
+  display: none !important;
+}
+.el-dialog.juchuu-form-dialog .el-dialog__body {
+  padding: 0 !important;
+  background: transparent !important;
+}
+.juchuu-form-card.el-card .el-card__header {
+  padding: 0 !important;
+}
+.juchuu-form-card.el-card .el-card__body {
+  padding: 20px 24px !important;
   max-height: 72vh;
   overflow-y: auto;
 }

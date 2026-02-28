@@ -156,18 +156,32 @@
     <!-- 発注フォームダイアログ -->
     <el-dialog
       v-model="dialogVisible"
-      :title="editId ? '発注編集' : '新規発注登録'"
-      width="800px"
+      width="860px"
+      :show-close="false"
       :close-on-click-modal="false"
       destroy-on-close
+      class="hatchuu-form-dialog"
     >
-      <HatchuuForm
-        :hatchuu-id="editId"
-        :initial-juchuu-id="currentJuchuuId"
-        :initial-juchuu-no="currentJuchuuNo"
-        @saved="onSaved"
-        @cancel="dialogVisible = false"
-      />
+      <template #header></template>
+      <el-card class="hatchuu-form-card">
+        <template #header>
+          <div class="hatchuu-dialog-header">
+            <span class="hatchuu-dialog-title">{{ editId ? '発注編集' : '新規発注登録' }}</span>
+            <div class="hatchuu-dialog-actions">
+              <el-button @click="dialogVisible = false">キャンセル</el-button>
+              <el-button type="primary" :loading="hFormRef?.saving" @click="hFormRef?.save()">保存</el-button>
+            </div>
+          </div>
+        </template>
+        <HatchuuForm
+          ref="hFormRef"
+          :hatchuu-id="editId"
+          :initial-juchuu-id="currentJuchuuId"
+          :initial-juchuu-no="currentJuchuuNo"
+          @saved="onSaved"
+          @cancel="dialogVisible = false"
+        />
+      </el-card>
     </el-dialog>
 
     <!-- 発注書HTMLプレビューダイアログ -->
@@ -211,6 +225,7 @@ const dialogVisible = ref(false)
 const editId = ref<string | undefined>(undefined)
 const currentJuchuuId = ref<string | undefined>(props.initialJuchuuId || undefined)
 const currentJuchuuNo = ref<string | undefined>(props.initialJuchuuNo || undefined)
+const hFormRef = ref<InstanceType<typeof HatchuuForm> | null>(null)
 
 const pdfDialogVisible = ref(false)
 const pdfHtml = ref('')
@@ -352,6 +367,48 @@ onMounted(load)
 .rate-cell small { font-weight: normal; color: #999; }
 .pdf-preview {
   max-height: 70vh;
+  overflow-y: auto;
+}
+.hatchuu-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--color-divider, #ebeef5);
+}
+.hatchuu-dialog-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+.hatchuu-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+</style>
+
+<style>
+/* 発注弹窗全局样式 - 与案件/会計模块保持一致 */
+.el-dialog.hatchuu-form-dialog {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  padding: 0 !important;
+}
+.el-dialog.hatchuu-form-dialog .el-dialog__header {
+  display: none !important;
+}
+.el-dialog.hatchuu-form-dialog .el-dialog__body {
+  padding: 0 !important;
+  background: transparent !important;
+}
+.hatchuu-form-card.el-card .el-card__header {
+  padding: 0 !important;
+}
+.hatchuu-form-card.el-card .el-card__body {
+  padding: 20px 24px !important;
+  max-height: 72vh;
   overflow-y: auto;
 }
 </style>
