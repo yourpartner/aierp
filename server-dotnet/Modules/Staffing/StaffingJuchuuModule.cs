@@ -497,7 +497,8 @@ public class StaffingJuchuuModule : ModuleBase
                 await ocrCmd.ExecuteNonQueryAsync();
             }
 
-            return Results.Ok(new { blobName, docUrl, parsed });
+            var message = parsed == null ? "OCR returned empty result. Please enter manually or retry with clearer document." : (string?)null;
+            return Results.Ok(new { blobName, docUrl, parsed, message });
         });
 
         // ===== 注文書テキストのみOCR解析（ファイルアップロード済みの再解析）=====
@@ -526,12 +527,12 @@ public class StaffingJuchuuModule : ModuleBase
     {
         using var ms = new MemoryStream();
         await file.CopyToAsync(ms);
-        var base64 = Convert.ToBase64String(ms.ToArray());
-        var contentType = file.ContentType switch
-        {
-            "application/pdf" => "image/png",
-            _ => file.ContentType
-        };
+        var fileBytes = ms.ToArray();
+        var base64 = Convert.ToBase64String(fileBytes);
+        var contentType = file.ContentType;
+        var isPdf = string.Equals(contentType, "application/pdf", StringComparison.OrdinalIgnoreCase)
+            || file.FileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
+        var pdfText = isPdf ? ExtractPdfText(fileBytes, 12000) : null;
 
         var systemPrompt = """
             あなたは日本語の注文書・発注書を解析する専門AIです。
@@ -555,10 +556,11 @@ public class StaffingJuchuuModule : ModuleBase
                   "resourceName": "氏名",
                   "billingRate": 数値（円）,
                   "billingRateType": "monthly|daily|hourly",
-                  "overtimeRateMultiplier": 数値（例: 1.25）,
                   "settlementType": "range|fixed",
                   "settlementLowerH": 数値,
-                  "settlementUpperH": 数値
+                  "settlementUpperH": 数値,
+                  "settlementRate": 数値（精算単価・時給など、なければ null）,
+                  "deductionRate": 数値（控除単価、なければ null）
                 }
               ],
               "rawText": "抽出した全テキスト"
@@ -572,16 +574,23 @@ public class StaffingJuchuuModule : ModuleBase
 
         var userContent = new List<object>
         {
-            new { type = "text", text = "この注文書を解析して、指定されたJSON形式で契約情報を抽出してください。" }
+            new { type = "text", text = "この注文書/発注書を解析して、指定されたJSON形式で契約情報を抽出してください。" }
         };
 
-        if (!string.IsNullOrWhiteSpace(base64))
+        if (isPdf && !string.IsNullOrWhiteSpace(pdfText))
         {
-            var mimeType = contentType.StartsWith("image/") ? contentType : "image/png";
+            userContent.Add(new
+            {
+                type = "text",
+                text = $"以下はPDFから抽出したテキストです。内容を解析してください。\n\n{pdfText}"
+            });
+        }
+        else if (!string.IsNullOrWhiteSpace(base64) && !string.IsNullOrWhiteSpace(contentType) && contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        {
             userContent.Add(new
             {
                 type = "image_url",
-                image_url = new { url = $"data:{mimeType};base64,{base64}", detail = "high" }
+                image_url = new { url = $"data:{contentType};base64,{base64}", detail = "high" }
             });
         }
 
@@ -617,6 +626,32 @@ public class StaffingJuchuuModule : ModuleBase
 
             if (string.IsNullOrWhiteSpace(content)) return null;
             return JsonSerializer.Deserialize<JsonElement>(content);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? ExtractPdfText(byte[] bytes, int maxChars)
+    {
+        try
+        {
+            using var stream = new MemoryStream(bytes);
+            using var document = UglyToad.PdfPig.PdfDocument.Open(stream);
+            var sb = new StringBuilder();
+            foreach (var page in document.GetPages())
+            {
+                var text = page.Text;
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    sb.AppendLine(text);
+                    if (sb.Length >= maxChars) break;
+                }
+            }
+            if (sb.Length == 0) return null;
+            var result = sb.ToString();
+            return result.Length > maxChars ? result[..maxChars] : result;
         }
         catch
         {

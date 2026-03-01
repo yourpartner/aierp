@@ -450,6 +450,8 @@ async function uploadAndOcr() {
     if (parsed) {
       applyOcrData(parsed)
       ocrApplied.value = true
+    } else if (uploadRes.data?.message) {
+      ElMessage.warning(uploadRes.data.message)
     }
 
     form.attachedDocBlobName = uploadRes.data?.blobName || null
