@@ -120,7 +120,6 @@
       v-model="editor.visible" 
       :title="editor.isNew ? (text.tables.agentScenarios.createTitle || '创建场景') : (text.tables.agentScenarios.editTitle || '编辑场景')"
       width="600px"
-      :close-on-click-modal="false"
     >
       <el-form 
         ref="formRef"

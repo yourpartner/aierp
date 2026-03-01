@@ -76,7 +76,6 @@
       :title="editingId ? '請求書編集' : '請求書登録'" 
       width="1100px" 
       destroy-on-close
-      :close-on-click-modal="false"
     >
       <VendorInvoiceForm 
         ref="formRef"

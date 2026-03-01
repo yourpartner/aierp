@@ -101,7 +101,7 @@
     </el-dialog>
 
     <!-- 盘点详情/录入对话框 -->
-    <el-dialog v-model="detailDialog.visible" :title="detailDialog.title" width="90%" top="5vh" :close-on-click-modal="false">
+    <el-dialog v-model="detailDialog.visible" :title="detailDialog.title" width="90%" top="5vh">
       <div v-if="detailDialog.data" class="count-detail">
         <div class="count-header">
           <el-descriptions :column="4" border size="small">

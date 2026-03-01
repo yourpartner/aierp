@@ -66,7 +66,6 @@
         v-model="manualHoursDialog.visible"
         title="工時を手動入力"
         width="500px"
-        :close-on-click-modal="false"
         class="manual-hours-dialog-wrapper"
         append-to-body
       >
@@ -128,7 +127,6 @@
         v-model="addItemDialog.visible"
         title="給与項目を追加"
         width="500px"
-        :close-on-click-modal="false"
         append-to-body
       >
         <el-form label-width="100px">

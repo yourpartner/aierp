@@ -141,16 +141,16 @@
       v-model="dialogVisible"
       width="860px"
       :show-close="false"
-      :close-on-click-modal="false"
       destroy-on-close
+      append-to-body
       class="juchuu-form-dialog"
     >
       <template #header></template>
       <el-card class="juchuu-form-card">
         <template #header>
-          <div class="juchuu-dialog-header">
-            <span class="juchuu-dialog-title">{{ editId ? '受注編集' : '新規受注登録' }}</span>
-            <div class="juchuu-dialog-actions">
+          <div class="page-header">
+            <div class="page-header-title">{{ editId ? '受注編集' : '新規受注登録' }}</div>
+            <div class="page-actions">
               <el-button @click="dialogVisible = false">キャンセル</el-button>
               <template v-if="formRef?.step === 'upload'">
                 <el-button plain @click="formRef?.skipToForm()">スキップして入力へ</el-button>
@@ -319,27 +319,9 @@ onMounted(load)
   font-weight: normal;
   color: #999;
 }
-.juchuu-dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20px 24px;
-  border-bottom: 1px solid var(--color-divider, #ebeef5);
-}
-.juchuu-dialog-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-}
-.juchuu-dialog-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 </style>
 
 <style>
-/* 受注弹窗全局样式 - 与案件/会計模块保持一致 */
 .el-dialog.juchuu-form-dialog {
   background: transparent !important;
   box-shadow: none !important;
@@ -353,12 +335,13 @@ onMounted(load)
   padding: 0 !important;
   background: transparent !important;
 }
-.juchuu-form-card.el-card .el-card__header {
-  padding: 0 !important;
+.el-dialog.juchuu-form-dialog .juchuu-form-card.el-card {
+  border: none !important;
+  box-shadow: none !important;
 }
-.juchuu-form-card.el-card .el-card__body {
-  padding: 20px 24px !important;
+.el-dialog.juchuu-form-dialog .juchuu-form-card.el-card .el-card__body {
   max-height: 72vh;
   overflow-y: auto;
+  padding: 20px !important;
 }
 </style>

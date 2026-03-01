@@ -67,7 +67,6 @@
       :title="detail.isNew ? '新建技能' : `编辑技能 - ${detail.form.name}`"
       width="90%"
       top="3vh"
-      :close-on-click-modal="false"
       destroy-on-close
       class="skill-detail-dialog"
     >
@@ -276,7 +275,6 @@
       v-model="ruleEditor.visible"
       :title="ruleEditor.isNew ? '添加规则' : '编辑规则'"
       width="640px"
-      :close-on-click-modal="false"
       append-to-body
     >
       <el-form label-position="top" class="detail-form">
@@ -324,7 +322,6 @@
       v-model="exampleEditor.visible"
       :title="exampleEditor.isNew ? '添加示例' : '编辑示例'"
       width="640px"
-      :close-on-click-modal="false"
       append-to-body
     >
       <el-form label-position="top" class="detail-form">

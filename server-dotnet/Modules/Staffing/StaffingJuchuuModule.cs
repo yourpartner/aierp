@@ -147,7 +147,8 @@ public class StaffingJuchuuModule : ModuleBase
             await using var detailCmd = conn.CreateCommand();
             detailCmd.CommandText = $@"
                 SELECT d.id, d.resource_id, d.billing_rate, d.billing_rate_type,
-                       d.overtime_rate_multiplier, d.settlement_type, d.settlement_lower_h, d.settlement_upper_h,
+                       d.settlement_type, d.settlement_lower_h, d.settlement_upper_h,
+                       d.settlement_rate, d.deduction_rate,
                        d.notes, d.sort_order,
                        COALESCE(d.resource_name, r.payload->>'display_name') as resource_name,
                        r.payload->>'resource_code' as resource_code,
@@ -168,15 +169,16 @@ public class StaffingJuchuuModule : ModuleBase
                     resourceId = dr.IsDBNull(1) ? null : dr.GetGuid(1).ToString(),
                     billingRate = dr.IsDBNull(2) ? (decimal?)null : dr.GetDecimal(2),
                     billingRateType = dr.IsDBNull(3) ? null : dr.GetString(3),
-                    overtimeRateMultiplier = dr.IsDBNull(4) ? (decimal?)null : dr.GetDecimal(4),
-                    settlementType = dr.IsDBNull(5) ? null : dr.GetString(5),
-                    settlementLowerH = dr.IsDBNull(6) ? (decimal?)null : dr.GetDecimal(6),
-                    settlementUpperH = dr.IsDBNull(7) ? (decimal?)null : dr.GetDecimal(7),
-                    notes = dr.IsDBNull(8) ? null : dr.GetString(8),
-                    sortOrder = dr.IsDBNull(9) ? 0 : dr.GetInt32(9),
-                    resourceName = dr.IsDBNull(10) ? null : dr.GetString(10),
-                    resourceCode = dr.IsDBNull(11) ? null : dr.GetString(11),
-                    resourceType = dr.IsDBNull(12) ? null : dr.GetString(12),
+                    settlementType = dr.IsDBNull(4) ? null : dr.GetString(4),
+                    settlementLowerH = dr.IsDBNull(5) ? (decimal?)null : dr.GetDecimal(5),
+                    settlementUpperH = dr.IsDBNull(6) ? (decimal?)null : dr.GetDecimal(6),
+                    settlementRate = dr.IsDBNull(7) ? (decimal?)null : dr.GetDecimal(7),
+                    deductionRate = dr.IsDBNull(8) ? (decimal?)null : dr.GetDecimal(8),
+                    notes = dr.IsDBNull(9) ? null : dr.GetString(9),
+                    sortOrder = dr.IsDBNull(10) ? 0 : dr.GetInt32(10),
+                    resourceName = dr.IsDBNull(11) ? null : dr.GetString(11),
+                    resourceCode = dr.IsDBNull(12) ? null : dr.GetString(12),
+                    resourceType = dr.IsDBNull(13) ? null : dr.GetString(13),
                 });
             }
 
@@ -270,20 +272,22 @@ public class StaffingJuchuuModule : ModuleBase
                     dc.CommandText = $@"
                         INSERT INTO {detailTable} (
                             company_code, juchuu_id, resource_id, resource_name,
-                            billing_rate, billing_rate_type, overtime_rate_multiplier,
+                            billing_rate, billing_rate_type,
                             settlement_type, settlement_lower_h, settlement_upper_h,
+                            settlement_rate, deduction_rate,
                             notes, sort_order
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)";
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)";
                     dc.Parameters.AddWithValue(cc.ToString());
                     dc.Parameters.AddWithValue(newId);
                     dc.Parameters.AddWithValue(TryParseGuid(detail, "resourceId") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetString(detail, "resourceName") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetDecimal(detail, "billingRate") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetString(detail, "billingRateType") ?? "monthly");
-                    dc.Parameters.AddWithValue(GetDecimal(detail, "overtimeRateMultiplier") ?? (object)1.25m);
                     dc.Parameters.AddWithValue(GetString(detail, "settlementType") ?? "range");
-                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementLowerH") ?? (object)140m);
-                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementUpperH") ?? (object)180m);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementLowerH") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementUpperH") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementRate") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "deductionRate") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetString(detail, "notes") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(sortOrder++);
                     await dc.ExecuteNonQueryAsync();
@@ -361,20 +365,22 @@ public class StaffingJuchuuModule : ModuleBase
                     dc.CommandText = $@"
                         INSERT INTO {detailTable} (
                             company_code, juchuu_id, resource_id, resource_name,
-                            billing_rate, billing_rate_type, overtime_rate_multiplier,
+                            billing_rate, billing_rate_type,
                             settlement_type, settlement_lower_h, settlement_upper_h,
+                            settlement_rate, deduction_rate,
                             notes, sort_order
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)";
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)";
                     dc.Parameters.AddWithValue(cc.ToString());
                     dc.Parameters.AddWithValue(id);
                     dc.Parameters.AddWithValue(TryParseGuid(detail, "resourceId") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetString(detail, "resourceName") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetDecimal(detail, "billingRate") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetString(detail, "billingRateType") ?? "monthly");
-                    dc.Parameters.AddWithValue(GetDecimal(detail, "overtimeRateMultiplier") ?? (object)1.25m);
                     dc.Parameters.AddWithValue(GetString(detail, "settlementType") ?? "range");
-                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementLowerH") ?? (object)140m);
-                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementUpperH") ?? (object)180m);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementLowerH") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementUpperH") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "settlementRate") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetDecimal(detail, "deductionRate") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetString(detail, "notes") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(sortOrder++);
                     await dc.ExecuteNonQueryAsync();

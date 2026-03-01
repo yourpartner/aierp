@@ -88,7 +88,6 @@
         :title="editMode === 'create' ? labels.createTitle : labels.editTitle" 
         width="500px" 
         append-to-body
-        :close-on-click-modal="false"
       >
         <el-form ref="formRef" :model="editForm" :rules="formRules" label-width="100px">
           <el-form-item :label="labels.code" prop="code">

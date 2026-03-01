@@ -1,6 +1,6 @@
 <template>
   <div class="hatchuu-form" v-loading="loading">
-    <el-form :model="form" :rules="rules" ref="formRef" label-width="96px" label-position="right" size="default">
+    <el-form :model="form" :rules="rules" ref="formRef" label-width="96px" label-position="right">
 
       <!-- 受注紐付け -->
       <el-divider content-position="left">受注との紐付け</el-divider>

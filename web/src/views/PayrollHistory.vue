@@ -329,7 +329,7 @@
     </el-drawer>
 
     <!-- 項目追加ダイアログ（編集モード用） -->
-    <el-dialog v-model="addItemDialogVisible" title="給与項目を追加" width="420px" :close-on-click-modal="false" append-to-body>
+    <el-dialog v-model="addItemDialogVisible" title="給与項目を追加" width="420px" append-to-body>
       <el-form label-width="80px">
         <el-form-item label="項目">
           <el-select v-model="addItemForm.itemCode" placeholder="選択" filterable allow-create clearable style="width:100%" @change="onAddItemCodeChange">

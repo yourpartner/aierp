@@ -54,7 +54,7 @@
         <template #title>OCRで読み取った情報を反映しました。内容を確認して保存してください。</template>
       </el-alert>
 
-      <el-form :model="form" :rules="rules" ref="formRef" label-width="96px" label-position="right" size="default">
+      <el-form :model="form" :rules="rules" ref="formRef" label-width="96px" label-position="right">
 
         <!-- 基本情報 -->
         <el-divider content-position="left">基本情報</el-divider>
@@ -154,13 +154,14 @@
           <table class="detail-table" v-if="form.details.length > 0">
             <thead>
               <tr>
-                <th style="width:200px">要員</th>
-                <th style="width:120px">請求単価</th>
-                <th style="width:80px">種別</th>
-                <th style="width:90px">精算方式</th>
-                <th style="width:160px">精算時間（H）</th>
-                <th style="width:80px">残業率</th>
-                <th style="width:40px"></th>
+                <th style="width:180px">要員</th>
+                <th style="width:110px">請求単価</th>
+                <th style="width:70px">種別</th>
+                <th style="width:80px">精算方式</th>
+                <th style="width:140px">精算時間（H）</th>
+                <th style="width:100px">精算単価</th>
+                <th style="width:100px">控除単価</th>
+                <th style="width:36px"></th>
               </tr>
             </thead>
             <tbody>
@@ -223,12 +224,22 @@
                 </td>
                 <td>
                   <el-input-number
-                    v-model="detail.overtimeRateMultiplier"
-                    :precision="2" :step="0.05" :min="1" :max="3"
+                    v-model="detail.settlementRate"
+                    :precision="0" :step="100" :min="0"
                     :controls="false"
                     style="width:100%"
                     size="small"
-                    placeholder="1.25"
+                    placeholder="時間単価"
+                  />
+                </td>
+                <td>
+                  <el-input-number
+                    v-model="detail.deductionRate"
+                    :precision="0" :step="100" :min="0"
+                    :controls="false"
+                    style="width:100%"
+                    size="small"
+                    placeholder="控除単価"
                   />
                 </td>
                 <td>
@@ -293,10 +304,11 @@ interface DetailRow {
   resourceName: string | null
   billingRate: number | null
   billingRateType: string
-  overtimeRateMultiplier: number
   settlementType: string
   settlementLowerH: number
   settlementUpperH: number
+  settlementRate: number | null
+  deductionRate: number | null
   notes: string | null
 }
 
@@ -343,10 +355,11 @@ function newDetailRow(): DetailRow {
     resourceName: null,
     billingRate: null,
     billingRateType: 'monthly',
-    overtimeRateMultiplier: 1.25,
     settlementType: 'range',
     settlementLowerH: 140,
     settlementUpperH: 180,
+    settlementRate: null,
+    deductionRate: null,
     notes: null,
   }
 }
@@ -466,10 +479,11 @@ function applyOcrData(parsed: any) {
       resourceName: r.resourceName ?? null,
       billingRate: r.billingRate ?? null,
       billingRateType: r.billingRateType ?? 'monthly',
-      overtimeRateMultiplier: r.overtimeRateMultiplier ?? 1.25,
       settlementType: r.settlementType ?? 'range',
       settlementLowerH: r.settlementLowerH ?? 140,
       settlementUpperH: r.settlementUpperH ?? 180,
+      settlementRate: r.settlementRate ?? null,
+      deductionRate: r.deductionRate ?? null,
       notes: null,
     }))
   }
@@ -497,10 +511,11 @@ async function save() {
         resourceName: d.resourceName,
         billingRate: d.billingRate,
         billingRateType: d.billingRateType,
-        overtimeRateMultiplier: d.overtimeRateMultiplier,
         settlementType: d.settlementType,
         settlementLowerH: d.settlementLowerH,
         settlementUpperH: d.settlementUpperH,
+        settlementRate: d.settlementRate,
+        deductionRate: d.deductionRate,
         notes: d.notes,
       })),
     }
@@ -542,10 +557,11 @@ async function load() {
         resourceName: d.resourceName ?? null,
         billingRate: d.billingRate ?? null,
         billingRateType: d.billingRateType ?? 'monthly',
-        overtimeRateMultiplier: d.overtimeRateMultiplier ?? 1.25,
         settlementType: d.settlementType ?? 'range',
         settlementLowerH: d.settlementLowerH ?? 140,
         settlementUpperH: d.settlementUpperH ?? 180,
+        settlementRate: d.settlementRate ?? null,
+        deductionRate: d.deductionRate ?? null,
         notes: d.notes ?? null,
       })),
     })
