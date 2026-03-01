@@ -65,6 +65,7 @@
                 v-model="form.clientPartnerId"
                 filterable remote clearable
                 :remote-method="searchClients"
+                @focus="loadClientsDefault"
                 placeholder="顧客を選択"
                 style="width:100%"
               >
@@ -379,9 +380,45 @@ function onFileChange(uploadFile: any) {
 
 // ---- 顧客検索 ----
 async function searchClients(q: string) {
-  if (!q) return
-  const res = await api.get('/businesspartners', { params: { keyword: q, limit: 20 } })
+  const params: any = { limit: 20 }
+  if (q) params.keyword = q
+  const res = await api.get('/businesspartners', { params })
   clientOptions.value = (res.data.data || []).map((bp: any) => ({ value: bp.id, label: bp.name || bp.partnerCode }))
+}
+
+async function loadClientsDefault() {
+  if (clientOptions.value.length > 0) return
+  await searchClients('')
+}
+
+function normalizeName(input?: string | null) {
+  if (!input) return ''
+  return input
+    .replace(/\s+/g, '')
+    .replace(/[（）()]/g, '')
+    .replace(/^株式会社|株式会社$/g, '')
+    .toLowerCase()
+}
+
+async function matchClientFromOcr(parsed: any) {
+  const candidateName = (parsed?.clientName || '').trim()
+  if (!candidateName) return
+
+  const res = await api.get('/businesspartners', { params: { keyword: candidateName, limit: 20 } })
+  const options = (res.data.data || []).map((bp: any) => ({
+    value: bp.id,
+    label: bp.name || bp.partnerCode
+  }))
+  clientOptions.value = options
+
+  if (options.length === 0) return
+
+  const target = normalizeName(candidateName)
+  const best =
+    options.find((o: any) => normalizeName(o.label) === target) ||
+    options.find((o: any) => normalizeName(o.label).includes(target) || target.includes(normalizeName(o.label)))
+
+  if (best) form.clientPartnerId = best.value
 }
 
 async function loadResources(q?: string) {
@@ -449,6 +486,7 @@ async function uploadAndOcr() {
 
     if (parsed) {
       applyOcrData(parsed)
+      await matchClientFromOcr(parsed)
       ocrApplied.value = true
     } else if (uploadRes.data?.message) {
       ElMessage.warning(uploadRes.data.message)
