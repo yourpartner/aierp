@@ -179,6 +179,11 @@ p, h1, h2, h3, h4, h5, h6 {
   padding: 20px 24px;
 }
 
+/* 降低全局弹窗遮罩灰度（约为默认的一半） */
+.el-overlay {
+  background-color: rgba(0, 0, 0, 0.25) !important;
+}
+
 /* 凭证详情弹窗：移除 dialog 外层样式，让 el-card 成为唯一视觉容器 */
 .el-dialog.voucher-detail-dialog {
   background: transparent !important;

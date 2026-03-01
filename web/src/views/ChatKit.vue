@@ -5486,9 +5486,10 @@ function onChatDragLeave(){
 }
 
 .company-name-sub {
-  font-size: 11px;
+  font-size: 14px;
   color: #333;
   margin-top: 2px;
+  font-weight: var(--font-weight-semibold);
 }
 
 .user-chip {
