@@ -57,20 +57,30 @@ async function login(){
       store.setItem('company_code', form.companyCode)
       api.defaults.headers.common['Authorization'] = `Bearer ${token}`
       api.defaults.headers.common['x-company-code'] = form.companyCode
-      // 保存用户信息和权限
-      const name = r.data?.name
-      const roles = r.data?.roles
-      if (name) sessionStorage.setItem('currentUserName', name)
-      sessionStorage.setItem('currentCompany', form.companyCode)
-      // 解析JWT获取caps
+      // JWT を解析してユーザー情報・権限を取得し localStorage に保存
+      // （sessionStorage はタブ/リフレッシュで消えるため localStorage を使用）
       try {
-        const [, payload] = token.split('.')
-        const base64 = payload.replace(/-/g,'+').replace(/_/g,'/')
+        const [, jwtPayload] = token.split('.')
+        const base64 = jwtPayload.replace(/-/g,'+').replace(/_/g,'/')
         const pad = '='.repeat((4 - (base64.length % 4)) % 4)
         const decoded = JSON.parse(atob(base64 + pad))
+        const resolvedName = decoded.name || r.data?.name || ''
+        const resolvedCompany = decoded.companyCode || form.companyCode
+        if (resolvedName) store.setItem('currentUserName', resolvedName)
+        store.setItem('currentCompany', resolvedCompany)
+        if (decoded.caps) store.setItem('userCaps', decoded.caps)
+        if (decoded.roles) store.setItem('userRoles', decoded.roles)
+        // sessionStorage にも書いておく（同一タブ内での即時反映用）
+        if (resolvedName) sessionStorage.setItem('currentUserName', resolvedName)
+        sessionStorage.setItem('currentCompany', resolvedCompany)
         if (decoded.caps) sessionStorage.setItem('userCaps', decoded.caps)
         if (decoded.roles) sessionStorage.setItem('userRoles', decoded.roles)
-      } catch {}
+      } catch {
+        // JWT 解析失敗時は従来通り
+        const name = r.data?.name
+        if (name) sessionStorage.setItem('currentUserName', name)
+        sessionStorage.setItem('currentCompany', form.companyCode)
+      }
       // 通知 App.vue 重新加载公司名称
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('company-settings-updated', { detail: {} }))

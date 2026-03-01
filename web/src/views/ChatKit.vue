@@ -3489,8 +3489,8 @@ const langValue = computed({
 })
 
 const profile = reactive({
-  name: sessionStorage.getItem('currentUserName') || 'Admin User',
-  company: sessionStorage.getItem('currentCompany') || 'JP01',
+  name: sessionStorage.getItem('currentUserName') || '',
+  company: sessionStorage.getItem('currentCompany') || '',
   caps: (sessionStorage.getItem('userCaps') || '').split(',').filter(Boolean)
 })
 
@@ -3783,11 +3783,34 @@ const profileInitials = computed(() => {
   return parts.map(p => p.charAt(0).toUpperCase()).join('').slice(0, 2)
 })
 
-function syncProfileFromStorage(){
-  const storedName = sessionStorage.getItem('currentUserName')
+async function syncProfileFromStorage(){
+  // sessionStorage → localStorage の順で読む（リフレッシュ後は localStorage が残る）
+  const storedName = sessionStorage.getItem('currentUserName') || localStorage.getItem('currentUserName')
   if (storedName) profile.name = storedName
-  const storedCompany = sessionStorage.getItem('currentCompany')
+  const storedCompany = sessionStorage.getItem('currentCompany') || localStorage.getItem('currentCompany')
   if (storedCompany) profile.company = storedCompany
+  const storedCaps = sessionStorage.getItem('userCaps') || localStorage.getItem('userCaps')
+  if (storedCaps) profile.caps = storedCaps.split(',').filter(Boolean)
+  // それでも空なら /auth/me で確実に補完
+  if (!profile.name || !profile.company) {
+    try {
+      const me = await api.get('/auth/me')
+      if (me.data?.name) {
+        profile.name = me.data.name
+        localStorage.setItem('currentUserName', me.data.name)
+        sessionStorage.setItem('currentUserName', me.data.name)
+      }
+      if (me.data?.companyCode) {
+        profile.company = me.data.companyCode
+        localStorage.setItem('currentCompany', me.data.companyCode)
+        sessionStorage.setItem('currentCompany', me.data.companyCode)
+      }
+      if (me.data?.caps) {
+        localStorage.setItem('userCaps', me.data.caps)
+        sessionStorage.setItem('userCaps', me.data.caps)
+      }
+    } catch { /* 未ログイン状態などは無視 */ }
+  }
 }
 
 function handleProfileStorage(event: StorageEvent){
@@ -4375,7 +4398,7 @@ function scheduleApprovalReload(){
 }
 
 onMounted(async () => {
-  syncProfileFromStorage()
+  await syncProfileFromStorage()
   window.addEventListener('storage', handleProfileStorage)
   loadRecent()
   loadAccessibleMenus() // 加载可访问的菜单列表
@@ -4744,14 +4767,10 @@ async function submitAttachmentTask(messageText: string){
 }
 
 function handleLogout() {
-  // Clear session data
-  sessionStorage.removeItem('jwt')
-  sessionStorage.removeItem('currentUserName')
-  sessionStorage.removeItem('currentCompanyCode')
-  sessionStorage.removeItem('currentUserRoles')
-  sessionStorage.removeItem('currentUserCaps')
-  localStorage.removeItem('jwt')
-  // Redirect to login
+  const keys = ['auth_token', 'company_code', 'currentUserName', 'currentCompany', 'userCaps', 'userRoles']
+  keys.forEach(k => { localStorage.removeItem(k); sessionStorage.removeItem(k) })
+  delete api.defaults.headers.common['Authorization']
+  delete api.defaults.headers.common['x-company-code']
   router.push('/login')
 }
 
