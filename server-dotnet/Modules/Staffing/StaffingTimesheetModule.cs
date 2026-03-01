@@ -52,6 +52,8 @@ public class StaffingTimesheetModule : ModuleBase
             var tsTable = Crud.TableFor("staffing_timesheet_summary");
             var cTable = Crud.TableFor("staffing_contract");
             var rTable = Crud.TableFor("resource");
+            const string jTable = "stf_juchuu";
+            const string jdTable = "stf_juchuu_detail";
             await using var conn = await ds.OpenConnectionAsync();
             await using var cmd = conn.CreateCommand();
 
@@ -68,17 +70,24 @@ public class StaffingTimesheetModule : ModuleBase
                        ts.total_billing_amount, ts.total_cost_amount,
                        ts.status,
                        fn_jsonb_timestamptz(ts.payload, 'confirmed_at') as confirmed_at,
-                       c.contract_no, c.billing_rate,
-                       COALESCE(c.payload->>'billing_rate_type','monthly') as billing_rate_type,
-                       COALESCE(c.payload->>'settlement_type','range') as settlement_type,
-                       fn_jsonb_numeric(c.payload, 'settlement_lower_hours') as settlement_lower_hours,
-                       fn_jsonb_numeric(c.payload, 'settlement_upper_hours') as settlement_upper_hours,
-                       r.resource_code, r.display_name as resource_name,
-                       bp.payload->>'name' as client_name
+                       fn_jsonb_uuid(ts.payload, 'juchuu_detail_id') as juchuu_detail_id,
+                       COALESCE(c.contract_no, ts.payload->>'juchuu_no') as contract_no,
+                       COALESCE(c.billing_rate, fn_jsonb_numeric(ts.payload, 'billing_rate')) as billing_rate,
+                       COALESCE(c.payload->>'billing_rate_type', ts.payload->>'billing_rate_type', 'monthly') as billing_rate_type,
+                       COALESCE(c.payload->>'settlement_type', ts.payload->>'settlement_type', 'range') as settlement_type,
+                       COALESCE(fn_jsonb_numeric(c.payload, 'settlement_lower_hours'), fn_jsonb_numeric(ts.payload, 'settlement_lower_hours')) as settlement_lower_hours,
+                       COALESCE(fn_jsonb_numeric(c.payload, 'settlement_upper_hours'), fn_jsonb_numeric(ts.payload, 'settlement_upper_hours')) as settlement_upper_hours,
+                       r.resource_code,
+                       COALESCE(r.display_name, jd.resource_name, ts.payload->>'resource_name') as resource_name,
+                       COALESCE(bp.payload->>'name', jbp.payload->>'name', ts.payload->>'client_name') as client_name,
+                       COALESCE(ts.payload->>'resource_link_status', CASE WHEN ts.resource_id IS NULL THEN 'unresolved' ELSE 'resolved' END) as resource_link_status
                 FROM {tsTable} ts
-                JOIN {cTable} c ON ts.contract_id = c.id
+                LEFT JOIN {cTable} c ON ts.contract_id = c.id
                 LEFT JOIN {rTable} r ON ts.resource_id = r.id
                 LEFT JOIN businesspartners bp ON c.client_partner_id = bp.id
+                LEFT JOIN {jdTable} jd ON fn_jsonb_uuid(ts.payload, 'juchuu_detail_id') = jd.id
+                LEFT JOIN {jTable} j ON COALESCE(fn_jsonb_uuid(ts.payload, 'juchuu_id'), jd.juchuu_id) = j.id
+                LEFT JOIN businesspartners jbp ON j.client_partner_id = jbp.id
                 WHERE ts.company_code = $1";
 
             cmd.Parameters.AddWithValue(cc.ToString());
@@ -115,7 +124,7 @@ public class StaffingTimesheetModule : ModuleBase
                 results.Add(new
                 {
                     id = reader.GetGuid(0),
-                    contractId = reader.GetGuid(1),
+                    contractId = reader.IsDBNull(1) ? null : (Guid?)reader.GetGuid(1),
                     resourceId = reader.IsDBNull(2) ? null : (Guid?)reader.GetGuid(2),
                     yearMonth = reader.GetString(3),
                     scheduledHours = reader.IsDBNull(4) ? null : (decimal?)reader.GetDecimal(4),
@@ -132,15 +141,17 @@ public class StaffingTimesheetModule : ModuleBase
                     totalCostAmount = reader.IsDBNull(15) ? null : (decimal?)reader.GetDecimal(15),
                     status = reader.GetString(16),
                     confirmedAt = reader.IsDBNull(17) ? null : (DateTime?)reader.GetDateTime(17),
-                    contractNo = reader.GetString(18),
-                    billingRate = reader.GetDecimal(19),
-                    billingRateType = reader.IsDBNull(20) ? "monthly" : reader.GetString(20),
-                    settlementType = reader.IsDBNull(21) ? "range" : reader.GetString(21),
-                    settlementLowerHours = reader.IsDBNull(22) ? null : (decimal?)reader.GetDecimal(22),
-                    settlementUpperHours = reader.IsDBNull(23) ? null : (decimal?)reader.GetDecimal(23),
-                    resourceCode = reader.IsDBNull(24) ? null : reader.GetString(24),
-                    resourceName = reader.IsDBNull(25) ? null : reader.GetString(25),
-                    clientName = reader.IsDBNull(26) ? null : reader.GetString(26)
+                    juchuuDetailId = reader.IsDBNull(18) ? null : (Guid?)reader.GetGuid(18),
+                    contractNo = reader.IsDBNull(19) ? null : reader.GetString(19),
+                    billingRate = reader.IsDBNull(20) ? 0 : reader.GetDecimal(20),
+                    billingRateType = reader.IsDBNull(21) ? "monthly" : reader.GetString(21),
+                    settlementType = reader.IsDBNull(22) ? "range" : reader.GetString(22),
+                    settlementLowerHours = reader.IsDBNull(23) ? null : (decimal?)reader.GetDecimal(23),
+                    settlementUpperHours = reader.IsDBNull(24) ? null : (decimal?)reader.GetDecimal(24),
+                    resourceCode = reader.IsDBNull(25) ? null : reader.GetString(25),
+                    resourceName = reader.IsDBNull(26) ? null : reader.GetString(26),
+                    clientName = reader.IsDBNull(27) ? null : reader.GetString(27),
+                    resourceLinkStatus = reader.IsDBNull(28) ? "resolved" : reader.GetString(28)
                 });
             }
 
@@ -204,27 +215,24 @@ public class StaffingTimesheetModule : ModuleBase
             var endDate = startDate.AddMonths(1).AddDays(-1);
 
             var tsTable = Crud.TableFor("staffing_timesheet_summary");
-            var cTable = Crud.TableFor("staffing_contract");
             await using var conn = await ds.OpenConnectionAsync();
 
-            // 対象期間中に有効な契約を取得
-            var contractsSql = $@"
-                SELECT c.id, c.resource_id, c.billing_rate,
-                       COALESCE(c.payload->>'billing_rate_type','monthly') as billing_rate_type,
-                       c.cost_rate,
-                       fn_jsonb_numeric(c.payload,'monthly_work_hours') as monthly_work_hours,
-                       COALESCE(c.payload->>'settlement_type','range') as settlement_type,
-                       fn_jsonb_numeric(c.payload,'settlement_lower_hours') as settlement_lower_hours,
-                       fn_jsonb_numeric(c.payload,'settlement_upper_hours') as settlement_upper_hours,
-                       COALESCE(fn_jsonb_numeric(c.payload,'overtime_rate_multiplier'), 1.25) as overtime_rate_multiplier
-                FROM {cTable} c
-                WHERE c.company_code = $1 
-                  AND c.status = 'active'
-                  AND c.start_date <= $2
-                  AND (c.end_date IS NULL OR c.end_date >= $3)";
-
+            // 対象期間中に有効な受注明細を取得（staffing専用）
             await using var contractCmd = conn.CreateCommand();
-            contractCmd.CommandText = contractsSql;
+            contractCmd.CommandText = @"
+                SELECT d.id, d.resource_id, d.resource_name,
+                       d.billing_rate, d.billing_rate_type,
+                       d.settlement_type, d.settlement_lower_h, d.settlement_upper_h,
+                       d.settlement_rate, d.deduction_rate,
+                       j.id, j.juchuu_no, j.client_partner_id, j.monthly_work_hours
+                FROM stf_juchuu_detail d
+                JOIN stf_juchuu j ON d.juchuu_id = j.id
+                WHERE d.company_code = $1
+                  AND j.company_code = $1
+                  AND j.status = 'active'
+                  AND j.start_date <= $2
+                  AND (j.end_date IS NULL OR j.end_date >= $3)
+                ORDER BY j.juchuu_no, d.sort_order, d.created_at";
             contractCmd.Parameters.AddWithValue(cc.ToString());
             contractCmd.Parameters.AddWithValue(endDate);
             contractCmd.Parameters.AddWithValue(startDate);
@@ -233,34 +241,43 @@ public class StaffingTimesheetModule : ModuleBase
             var skippedCount = 0;
 
             await using var contractReader = await contractCmd.ExecuteReaderAsync();
-            var contracts = new List<(Guid id, Guid? resourceId, decimal billingRate, string rateType, decimal? costRate, 
-                decimal? monthlyHours, string settlementType, decimal? lowerHours, decimal? upperHours, decimal overtimeMultiplier)>();
+            var details = new List<(Guid detailId, Guid? resourceId, string? resourceName, decimal? billingRate, string? rateType,
+                string? settlementType, decimal? lowerHours, decimal? upperHours, decimal? settlementRate, decimal? deductionRate,
+                Guid juchuuId, string? juchuuNo, Guid? clientPartnerId, decimal? monthlyHours)>();
 
             while (await contractReader.ReadAsync())
             {
-                contracts.Add((
+                details.Add((
                     contractReader.GetGuid(0),
                     contractReader.IsDBNull(1) ? null : contractReader.GetGuid(1),
-                    contractReader.GetDecimal(2),
-                    contractReader.IsDBNull(3) ? "monthly" : contractReader.GetString(3),
-                    contractReader.IsDBNull(4) ? null : contractReader.GetDecimal(4),
-                    contractReader.IsDBNull(5) ? null : contractReader.GetDecimal(5),
-                    contractReader.IsDBNull(6) ? "range" : contractReader.GetString(6),
+                    contractReader.IsDBNull(2) ? null : contractReader.GetString(2),
+                    contractReader.IsDBNull(3) ? null : contractReader.GetDecimal(3),
+                    contractReader.IsDBNull(4) ? "monthly" : contractReader.GetString(4),
+                    contractReader.IsDBNull(5) ? "range" : contractReader.GetString(5),
+                    contractReader.IsDBNull(6) ? null : contractReader.GetDecimal(6),
                     contractReader.IsDBNull(7) ? null : contractReader.GetDecimal(7),
                     contractReader.IsDBNull(8) ? null : contractReader.GetDecimal(8),
-                    contractReader.IsDBNull(9) ? 1.25m : contractReader.GetDecimal(9)
+                    contractReader.IsDBNull(9) ? null : contractReader.GetDecimal(9),
+                    contractReader.GetGuid(10),
+                    contractReader.IsDBNull(11) ? null : contractReader.GetString(11),
+                    contractReader.IsDBNull(12) ? null : contractReader.GetGuid(12),
+                    contractReader.IsDBNull(13) ? null : contractReader.GetDecimal(13)
                 ));
             }
             await contractReader.CloseAsync();
 
-            foreach (var contract in contracts)
+            foreach (var d in details)
             {
                 // 既存チェック
                 await using var checkCmd = conn.CreateCommand();
-                checkCmd.CommandText = $"SELECT id FROM {tsTable} WHERE company_code = $1 AND contract_id = $2 AND year_month = $3 LIMIT 1";
+                checkCmd.CommandText = $@"SELECT id FROM {tsTable}
+                                          WHERE company_code = $1
+                                            AND year_month = $2
+                                            AND fn_jsonb_uuid(payload, 'juchuu_detail_id') = $3
+                                          LIMIT 1";
                 checkCmd.Parameters.AddWithValue(cc.ToString());
-                checkCmd.Parameters.AddWithValue(contract.id);
                 checkCmd.Parameters.AddWithValue(yearMonth);
+                checkCmd.Parameters.AddWithValue(d.detailId);
                 var existing = await checkCmd.ExecuteScalarAsync();
                 if (existing != null)
                 {
@@ -269,17 +286,31 @@ public class StaffingTimesheetModule : ModuleBase
                 }
 
                 // デフォルト時間計算（月間所定時間 or 160時間）
-                var scheduledHours = contract.monthlyHours ?? 160m;
-                var baseAmount = contract.rateType == "monthly" ? contract.billingRate : contract.billingRate * scheduledHours;
-                var costAmount = contract.costRate.HasValue
-                    ? (contract.rateType == "monthly" ? contract.costRate.Value : contract.costRate.Value * scheduledHours)
-                    : (decimal?)null;
+                var scheduledHours = d.monthlyHours ?? 160m;
+                var billingRate = d.billingRate ?? 0m;
+                var rateType = string.IsNullOrWhiteSpace(d.rateType) ? "monthly" : d.rateType!;
+                var baseAmount = rateType == "monthly" ? billingRate : billingRate * scheduledHours;
+                var linkStatus = d.resourceId.HasValue ? "resolved" : "unresolved";
 
                 var payload = new JsonObject
                 {
-                    ["contract_id"] = contract.id.ToString(),
-                    ["resource_id"] = contract.resourceId?.ToString(),
+                    ["contract_id"] = null,
+                    ["resource_id"] = d.resourceId?.ToString(),
+                    ["resource_name"] = d.resourceName,
+                    ["resource_link_status"] = linkStatus,
+                    ["juchuu_id"] = d.juchuuId.ToString(),
+                    ["juchuu_no"] = d.juchuuNo,
+                    ["juchuu_detail_id"] = d.detailId.ToString(),
+                    ["client_partner_id"] = d.clientPartnerId?.ToString(),
                     ["year_month"] = yearMonth,
+                    ["billing_rate"] = billingRate,
+                    ["billing_rate_type"] = rateType,
+                    ["settlement_type"] = d.settlementType ?? "range",
+                    ["settlement_lower_hours"] = d.lowerHours,
+                    ["settlement_upper_hours"] = d.upperHours,
+                    ["settlement_rate"] = d.settlementRate,
+                    ["deduction_rate"] = d.deductionRate,
+                    ["monthly_work_hours"] = scheduledHours,
                     ["scheduled_hours"] = scheduledHours,
                     ["actual_hours"] = scheduledHours,
                     ["billable_hours"] = scheduledHours,
@@ -288,7 +319,7 @@ public class StaffingTimesheetModule : ModuleBase
                     ["overtime_amount"] = 0,
                     ["adjustment_amount"] = 0,
                     ["total_billing_amount"] = baseAmount,
-                    ["total_cost_amount"] = costAmount,
+                    ["total_cost_amount"] = null,
                     ["status"] = "open"
                 };
 
@@ -324,24 +355,25 @@ public class StaffingTimesheetModule : ModuleBase
             var cTable = Crud.TableFor("staffing_contract");
             await using var conn = await ds.OpenConnectionAsync();
 
-            // 契約情報取得（精算計算用）
+            // 計算情報取得（staffing契約があれば優先、無ければpayload）
             await using var contractCmd = conn.CreateCommand();
             contractCmd.CommandText = $@"
-                SELECT c.billing_rate,
-                       COALESCE(c.payload->>'billing_rate_type','monthly') as billing_rate_type,
-                       COALESCE(c.cost_rate, 0) as cost_rate,
-                       COALESCE(c.payload->>'settlement_type','range') as settlement_type,
-                       fn_jsonb_numeric(c.payload,'settlement_lower_hours') as settlement_lower_hours,
-                       fn_jsonb_numeric(c.payload,'settlement_upper_hours') as settlement_upper_hours,
-                       COALESCE(fn_jsonb_numeric(c.payload,'overtime_rate_multiplier'), 1.25) as overtime_rate_multiplier,
-                       COALESCE(fn_jsonb_numeric(c.payload,'monthly_work_hours'), 160) as monthly_work_hours
+                SELECT COALESCE(c.billing_rate, fn_jsonb_numeric(ts.payload,'billing_rate'), 0) as billing_rate,
+                       COALESCE(c.payload->>'billing_rate_type', ts.payload->>'billing_rate_type', 'monthly') as billing_rate_type,
+                       COALESCE(c.cost_rate, fn_jsonb_numeric(ts.payload,'cost_rate'), 0) as cost_rate,
+                       COALESCE(c.payload->>'settlement_type', ts.payload->>'settlement_type', 'range') as settlement_type,
+                       COALESCE(fn_jsonb_numeric(c.payload,'settlement_lower_hours'), fn_jsonb_numeric(ts.payload,'settlement_lower_hours')) as settlement_lower_hours,
+                       COALESCE(fn_jsonb_numeric(c.payload,'settlement_upper_hours'), fn_jsonb_numeric(ts.payload,'settlement_upper_hours')) as settlement_upper_hours,
+                       COALESCE(fn_jsonb_numeric(ts.payload,'settlement_rate'), 0) as settlement_rate,
+                       COALESCE(fn_jsonb_numeric(ts.payload,'deduction_rate'), 0) as deduction_rate,
+                       COALESCE(fn_jsonb_numeric(c.payload,'monthly_work_hours'), fn_jsonb_numeric(ts.payload,'monthly_work_hours'), 160) as monthly_work_hours
                 FROM {tsTable} ts
-                JOIN {cTable} c ON ts.contract_id = c.id
+                LEFT JOIN {cTable} c ON ts.contract_id = c.id
                 WHERE ts.id = $1 AND ts.company_code = $2";
             contractCmd.Parameters.AddWithValue(id);
             contractCmd.Parameters.AddWithValue(cc.ToString());
 
-            decimal billingRate = 0, costRate = 0, overtimeMultiplier = 1.25m, monthlyHours = 160;
+            decimal billingRate = 0, costRate = 0, monthlyHours = 160, settlementRate = 0, deductionRate = 0;
             string rateType = "monthly", settlementType = "range";
             decimal? lowerHours = null, upperHours = null;
 
@@ -354,8 +386,9 @@ public class StaffingTimesheetModule : ModuleBase
                 settlementType = cReader.IsDBNull(3) ? "range" : cReader.GetString(3);
                 lowerHours = cReader.IsDBNull(4) ? null : cReader.GetDecimal(4);
                 upperHours = cReader.IsDBNull(5) ? null : cReader.GetDecimal(5);
-                overtimeMultiplier = cReader.IsDBNull(6) ? 1.25m : cReader.GetDecimal(6);
-                monthlyHours = cReader.IsDBNull(7) ? 160 : cReader.GetDecimal(7);
+                settlementRate = cReader.IsDBNull(6) ? 0 : cReader.GetDecimal(6);
+                deductionRate = cReader.IsDBNull(7) ? 0 : cReader.GetDecimal(7);
+                monthlyHours = cReader.IsDBNull(8) ? 160 : cReader.GetDecimal(8);
             }
             else
             {
@@ -400,27 +433,31 @@ public class StaffingTimesheetModule : ModuleBase
                 if (settlementType == "range" && lowerHours.HasValue && upperHours.HasValue && monthlyHours > 0)
                 {
                     var hourlyRate = billingRate / monthlyHours;
+                    var settleUnitRate = settlementRate > 0 ? settlementRate : hourlyRate;
+                    var deducUnitRate = deductionRate > 0 ? deductionRate : hourlyRate;
                     if (deductionHours > 0)
                     {
-                        baseAmount -= hourlyRate * deductionHours;
+                        baseAmount -= deducUnitRate * deductionHours;
                     }
                     if (excessHours > 0)
                     {
-                        overtimeAmount = hourlyRate * excessHours * overtimeMultiplier;
+                        overtimeAmount = settleUnitRate * excessHours;
                     }
                 }
                 // 残業は別途計算
                 if (overtimeHours > 0 && monthlyHours > 0)
                 {
                     var hourlyRate = billingRate / monthlyHours;
-                    overtimeAmount += hourlyRate * overtimeHours * overtimeMultiplier;
+                    var settleUnitRate = settlementRate > 0 ? settlementRate : hourlyRate;
+                    overtimeAmount += settleUnitRate * overtimeHours;
                 }
             }
             else
             {
                 // 時給/日給の場合
                 baseAmount = billingRate * settlementHours;
-                overtimeAmount = billingRate * overtimeHours * overtimeMultiplier;
+                var settleUnitRate = settlementRate > 0 ? settlementRate : billingRate;
+                overtimeAmount = settleUnitRate * overtimeHours;
             }
 
             var totalBillingAmount = baseAmount + overtimeAmount + adjustmentAmount;
@@ -460,6 +497,50 @@ public class StaffingTimesheetModule : ModuleBase
             var result = await upd.ExecuteScalarAsync();
             if (result == null) return Results.NotFound();
             return Results.Ok(new { id, updated = true, totalBillingAmount, totalCostAmount });
+        }).RequireAuthorization();
+
+        // 未解決リソースを主データにバインド（staffing専用）
+        app.MapPost("/staffing/timesheets/{id:guid}/bind-resource", async (Guid id, HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            using var doc = await JsonDocument.ParseAsync(req.Body);
+            var root = doc.RootElement;
+            var resourceId = TryParseGuid(root, "resourceId");
+            if (!resourceId.HasValue) return Results.BadRequest(new { error = "resourceId is required" });
+
+            await using var conn = await ds.OpenConnectionAsync();
+
+            // resourceが存在するか検証
+            await using (var check = conn.CreateCommand())
+            {
+                check.CommandText = $"SELECT 1 FROM {Crud.TableFor("resource")} WHERE id=$1 AND company_code=$2 LIMIT 1";
+                check.Parameters.AddWithValue(resourceId.Value);
+                check.Parameters.AddWithValue(cc.ToString());
+                var exists = await check.ExecuteScalarAsync();
+                if (exists == null) return Results.BadRequest(new { error = "resource not found" });
+            }
+
+            // payloadのresource_id/resource_link_statusを更新
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = $@"
+                UPDATE {Crud.TableFor("staffing_timesheet_summary")}
+                SET payload = payload
+                    || jsonb_build_object(
+                        'resource_id', $3::text,
+                        'resource_link_status', 'resolved'
+                    ),
+                    updated_at = now()
+                WHERE id = $1 AND company_code = $2
+                RETURNING id";
+            cmd.Parameters.AddWithValue(id);
+            cmd.Parameters.AddWithValue(cc.ToString());
+            cmd.Parameters.AddWithValue(resourceId.Value.ToString());
+
+            var result = await cmd.ExecuteScalarAsync();
+            if (result == null) return Results.NotFound();
+            return Results.Ok(new { id, bound = true, resourceId });
         }).RequireAuthorization();
 
         // 勤怠サマリー確定
@@ -533,5 +614,8 @@ public class StaffingTimesheetModule : ModuleBase
             return Results.Ok(new { confirmed = count, yearMonth });
         }).RequireAuthorization();
     }
+
+    private static Guid? TryParseGuid(JsonElement el, string key) =>
+        el.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String && Guid.TryParse(v.GetString(), out var g) ? g : (Guid?)null;
 }
 

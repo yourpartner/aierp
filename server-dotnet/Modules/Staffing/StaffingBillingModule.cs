@@ -267,11 +267,11 @@ public class StaffingBillingModule : ModuleBase
 
             // 確定済み勤怠サマリーを顧客別に集計
             var summarySql = $@"
-                SELECT c.client_partner_id, 
+                SELECT COALESCE(c.client_partner_id, fn_jsonb_uuid(ts.payload, 'client_partner_id')) as client_partner_id, 
                        array_agg(ts.id) as summary_ids,
                        COALESCE(SUM(ts.total_billing_amount),0) as total_amount
                 FROM {tsTable} ts
-                JOIN {cTable} c ON ts.contract_id = c.id
+                LEFT JOIN {cTable} c ON ts.contract_id = c.id
                 WHERE ts.company_code = $1 
                   AND ts.year_month = $2 
                   AND ts.status = 'confirmed'
@@ -279,7 +279,8 @@ public class StaffingBillingModule : ModuleBase
                       SELECT 1 FROM {lineTable} il 
                       WHERE il.company_code = ts.company_code AND il.timesheet_summary_id = ts.id
                   )
-                GROUP BY c.client_partner_id";
+                  AND COALESCE(c.client_partner_id, fn_jsonb_uuid(ts.payload, 'client_partner_id')) IS NOT NULL
+                GROUP BY COALESCE(c.client_partner_id, fn_jsonb_uuid(ts.payload, 'client_partner_id'))";
 
             await using var summaryCmd = conn.CreateCommand();
             summaryCmd.CommandText = summarySql;
@@ -357,11 +358,11 @@ public class StaffingBillingModule : ModuleBase
                                COALESCE(ts.overtime_hours, 0) as overtime_hours,
                                COALESCE(fn_jsonb_numeric(ts.payload,'overtime_amount'), 0) as overtime_amount,
                                COALESCE(fn_jsonb_numeric(ts.payload,'adjustment_amount'), 0) as adjustment_amount,
-                               c.billing_rate,
-                               COALESCE(c.payload->>'billing_rate_type','monthly') as billing_rate_type,
-                               r.display_name
+                               COALESCE(c.billing_rate, fn_jsonb_numeric(ts.payload,'billing_rate'), 0) as billing_rate,
+                               COALESCE(c.payload->>'billing_rate_type', ts.payload->>'billing_rate_type', 'monthly') as billing_rate_type,
+                               COALESCE(r.display_name, ts.payload->>'resource_name', '（未紐付け要員）') as resource_name
                         FROM {tsTable} ts
-                        JOIN {cTable} c ON ts.contract_id = c.id
+                        LEFT JOIN {cTable} c ON ts.contract_id = c.id
                         LEFT JOIN {rTable} r ON ts.resource_id = r.id
                         WHERE ts.id = $1 AND ts.company_code = $2";
                     tsCmd.Parameters.AddWithValue(summaryId);
@@ -370,7 +371,7 @@ public class StaffingBillingModule : ModuleBase
                     await using var tsReader = await tsCmd.ExecuteReaderAsync();
                     if (await tsReader.ReadAsync())
                     {
-                        var contractId = tsReader.GetGuid(0);
+                        var contractId = tsReader.IsDBNull(0) ? (Guid?)null : tsReader.GetGuid(0);
                         var resourceId = tsReader.IsDBNull(1) ? (Guid?)null : tsReader.GetGuid(1);
                         var settlementHours = tsReader.IsDBNull(2) ? 0 : tsReader.GetDecimal(2);
                         var lineAmount = tsReader.IsDBNull(3) ? 0 : tsReader.GetDecimal(3);
@@ -396,7 +397,7 @@ public class StaffingBillingModule : ModuleBase
                         {
                             ["invoice_id"] = invoiceId.ToString(),
                             ["line_no"] = lineNo,
-                            ["contract_id"] = contractId.ToString(),
+                            ["contract_id"] = contractId?.ToString(),
                             ["resource_id"] = resourceId?.ToString(),
                             ["timesheet_summary_id"] = summaryId.ToString(),
                             ["description"] = description,

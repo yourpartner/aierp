@@ -67,6 +67,7 @@
             <div v-if="row.resourceName">
               <div class="resource-name">{{ row.resourceName }}</div>
               <div class="resource-code">{{ row.resourceCode }}</div>
+              <el-tag v-if="row.resourceLinkStatus === 'unresolved'" type="warning" size="small">未紐付け</el-tag>
             </div>
             <span v-else>-</span>
           </template>
@@ -134,6 +135,7 @@
 
         <el-table-column label="操作" width="150" fixed="right" align="center">
           <template #default="{ row }">
+            <el-button link type="warning" @click="openBindDialog(row)" v-if="row.resourceLinkStatus === 'unresolved'">要員紐付け</el-button>
             <el-button link type="primary" @click="onEdit(row)" v-if="row.status === 'open'">編集</el-button>
             <el-button link type="success" @click="confirmOne(row)" v-if="row.status === 'open'">確定</el-button>
             <el-button link type="info" @click="onEdit(row)" v-if="row.status !== 'open'">詳細</el-button>
@@ -292,6 +294,35 @@
         <el-button type="primary" @click="generate" :loading="generating">生成</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="bindDialogVisible" title="要員主データ紐付け" width="520px">
+      <el-form label-width="120px">
+        <el-form-item label="受注明細行">
+          <el-input :model-value="bindTarget.juchuuDetailId || '-'" disabled />
+        </el-form-item>
+        <el-form-item label="現在の要員名">
+          <el-input :model-value="bindTarget.resourceName || '-'" disabled />
+        </el-form-item>
+        <el-form-item label="紐付け先要員">
+          <el-select
+            v-model="bindResourceId"
+            filterable
+            remote
+            clearable
+            :remote-method="searchResourceOptions"
+            @focus="searchResourceOptions('')"
+            placeholder="既存要員を検索して選択"
+            style="width:100%"
+          >
+            <el-option v-for="opt in resourceOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="bindDialogVisible = false">キャンセル</el-button>
+        <el-button type="primary" @click="bindResource" :loading="binding">紐付け保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -303,8 +334,10 @@ import api from '../../api'
 
 interface SummaryRow {
   id: string
-  contractId: string
+  contractId?: string
   resourceId?: string
+  juchuuDetailId?: string
+  resourceLinkStatus?: string
   yearMonth: string
   scheduledHours?: number
   actualHours?: number
@@ -344,6 +377,15 @@ const saving = ref(false)
 const generateDialogVisible = ref(false)
 const generateMonth = ref(new Date().toISOString().substring(0, 7))
 const generating = ref(false)
+const bindDialogVisible = ref(false)
+const binding = ref(false)
+const bindResourceId = ref<string | null>(null)
+const resourceOptions = ref<Array<{ value: string; label: string }>>([])
+const bindTarget = reactive<{ id: string; resourceName: string; juchuuDetailId: string }>({
+  id: '',
+  resourceName: '',
+  juchuuDetailId: ''
+})
 
 const form = reactive({
   id: '',
@@ -485,6 +527,42 @@ const generate = async () => {
     ElMessage.error(e.response?.data?.error || '生成失敗')
   } finally {
     generating.value = false
+  }
+}
+
+const openBindDialog = (row: SummaryRow) => {
+  bindTarget.id = row.id
+  bindTarget.resourceName = row.resourceName || ''
+  bindTarget.juchuuDetailId = row.juchuuDetailId || ''
+  bindResourceId.value = null
+  bindDialogVisible.value = true
+}
+
+const searchResourceOptions = async (keyword: string) => {
+  const params: Record<string, any> = { limit: 20 }
+  if (keyword) params.keyword = keyword
+  const res = await api.get('/staffing/resources', { params })
+  resourceOptions.value = (res.data.data || []).map((r: any) => ({
+    value: r.id,
+    label: `${r.displayName || r.resourceCode} (${r.resourceCode})`
+  }))
+}
+
+const bindResource = async () => {
+  if (!bindResourceId.value) {
+    ElMessage.warning('紐付け先要員を選択してください')
+    return
+  }
+  binding.value = true
+  try {
+    await api.post(`/staffing/timesheets/${bindTarget.id}/bind-resource`, { resourceId: bindResourceId.value })
+    ElMessage.success('要員主データと紐付けました')
+    bindDialogVisible.value = false
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || e.message || '紐付け失敗')
+  } finally {
+    binding.value = false
   }
 }
 
