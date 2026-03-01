@@ -54,7 +54,7 @@
         <template #title>OCRで読み取った情報を反映しました。内容を確認して保存してください。</template>
       </el-alert>
 
-      <el-form :model="form" :rules="rules" ref="formRef" label-width="130px" label-position="right" size="default">
+      <el-form :model="form" :rules="rules" ref="formRef" label-width="96px" label-position="right" size="default">
 
         <!-- 基本情報 -->
         <el-divider content-position="left">基本情報</el-divider>
@@ -167,15 +167,17 @@
               <tr v-for="(detail, idx) in form.details" :key="idx">
                 <td>
                   <el-select
-                    v-model="detail.resourceId"
-                    filterable remote clearable
-                    :remote-method="(q: string) => searchResources(q, idx)"
-                    placeholder="要員を選択"
+                    :model-value="detail.resourceId || detail.resourceName || ''"
+                    filterable remote clearable allow-create default-first-option
+                    :remote-method="loadResources"
+                    placeholder="要員を選択 / 氏名入力"
                     style="width:100%"
                     size="small"
+                    @change="(val: string) => onResourceChange(val, detail)"
+                    @focus="!resourceLoaded && loadResources()"
                   >
                     <el-option
-                      v-for="opt in getResourceOptions(idx)"
+                      v-for="opt in allResourceOptions"
                       :key="opt.value" :label="opt.label" :value="opt.value"
                     />
                   </el-select>
@@ -288,6 +290,7 @@ import api from '../../api'
 
 interface DetailRow {
   resourceId: string | null
+  resourceName: string | null
   billingRate: number | null
   billingRateType: string
   overtimeRateMultiplier: number
@@ -311,12 +314,8 @@ const selectedFile = ref<any>(null)
 const ocrApplied = ref(false)
 
 const clientOptions = ref<any[]>([])
-// 要員オプションは行ごとに管理
-const resourceOptionsMap = ref<Record<number, any[]>>({})
-
-function getResourceOptions(idx: number): any[] {
-  return resourceOptionsMap.value[idx] || []
-}
+const allResourceOptions = ref<any[]>([])
+const resourceLoaded = ref(false)
 
 const form = reactive({
   clientPartnerId: null as string | null,
@@ -341,6 +340,7 @@ const rules = {
 function newDetailRow(): DetailRow {
   return {
     resourceId: null,
+    resourceName: null,
     billingRate: null,
     billingRateType: 'monthly',
     overtimeRateMultiplier: 1.25,
@@ -357,14 +357,6 @@ function addDetail() {
 
 function removeDetail(idx: number) {
   form.details.splice(idx, 1)
-  // インデックス再整理
-  const newMap: Record<number, any[]> = {}
-  Object.keys(resourceOptionsMap.value).forEach(k => {
-    const n = parseInt(k)
-    if (n < idx) newMap[n] = resourceOptionsMap.value[n]
-    else if (n > idx) newMap[n - 1] = resourceOptionsMap.value[n]
-  })
-  resourceOptionsMap.value = newMap
 }
 
 // ---- ファイル選択 ----
@@ -379,14 +371,33 @@ async function searchClients(q: string) {
   clientOptions.value = (res.data.data || []).map((bp: any) => ({ value: bp.id, label: bp.name || bp.partnerCode }))
 }
 
-// ---- 要員検索（行ごと） ----
-async function searchResources(q: string, rowIdx: number) {
-  if (!q) return
-  const res = await api.get('/staffing/resources', { params: { keyword: q, limit: 20 } })
-  resourceOptionsMap.value[rowIdx] = (res.data.data || []).map((r: any) => ({
+async function loadResources(q?: string) {
+  const params: any = { limit: 100 }
+  if (q) params.keyword = q
+  const res = await api.get('/staffing/resources', { params })
+  allResourceOptions.value = (res.data.data || []).map((r: any) => ({
     value: r.id,
     label: `${r.displayName || r.resourceCode} (${r.resourceCode})`
   }))
+  resourceLoaded.value = true
+}
+
+function isUuid(s: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+}
+
+function onResourceChange(val: string | null, detail: DetailRow) {
+  if (!val) {
+    detail.resourceId = null
+    detail.resourceName = null
+  } else if (isUuid(val)) {
+    detail.resourceId = val
+    const opt = allResourceOptions.value.find(o => o.value === val)
+    detail.resourceName = opt ? opt.label.replace(/\s*\([^)]*\)\s*$/, '') : null
+  } else {
+    detail.resourceId = null
+    detail.resourceName = val
+  }
 }
 
 // ---- 注文書表示 ----
@@ -451,14 +462,15 @@ function applyOcrData(parsed: any) {
   // リソース明細の適用
   if (Array.isArray(parsed.resources) && parsed.resources.length > 0) {
     form.details = parsed.resources.map((r: any) => ({
-      resourceId: null,  // OCRはリソースIDを知らないのでnull
+      resourceId: null,
+      resourceName: r.resourceName ?? null,
       billingRate: r.billingRate ?? null,
       billingRateType: r.billingRateType ?? 'monthly',
       overtimeRateMultiplier: r.overtimeRateMultiplier ?? 1.25,
       settlementType: r.settlementType ?? 'range',
       settlementLowerH: r.settlementLowerH ?? 140,
       settlementUpperH: r.settlementUpperH ?? 180,
-      notes: r.resourceName ?? null,  // OCRで読み取った氏名をnotesに一時記録
+      notes: null,
     }))
   }
 }
@@ -482,6 +494,7 @@ async function save() {
       notes: form.notes,
       details: form.details.map(d => ({
         resourceId: d.resourceId,
+        resourceName: d.resourceName,
         billingRate: d.billingRate,
         billingRateType: d.billingRateType,
         overtimeRateMultiplier: d.overtimeRateMultiplier,
@@ -526,6 +539,7 @@ async function load() {
       attachedDocBlobName: data.attachedDocBlobName,
       details: (data.details || []).map((d: any): DetailRow => ({
         resourceId: d.resourceId ?? null,
+        resourceName: d.resourceName ?? null,
         billingRate: d.billingRate ?? null,
         billingRateType: d.billingRateType ?? 'monthly',
         overtimeRateMultiplier: d.overtimeRateMultiplier ?? 1.25,
@@ -538,15 +552,19 @@ async function load() {
     if (data.clientPartnerId && data.clientName) {
       clientOptions.value = [{ value: data.clientPartnerId, label: data.clientName }]
     }
-    // 各明細行の要員オプションを設定
-    ;(data.details || []).forEach((d: any, i: number) => {
+    // 既存の要員をオプションに追加（resourceIdがある行）
+    const existingOpts: any[] = []
+    ;(data.details || []).forEach((d: any) => {
       if (d.resourceId && d.resourceName) {
-        resourceOptionsMap.value[i] = [{
+        existingOpts.push({
           value: d.resourceId,
           label: `${d.resourceName}${d.resourceCode ? ' (' + d.resourceCode + ')' : ''}`
-        }]
+        })
       }
     })
+    if (existingOpts.length > 0) {
+      allResourceOptions.value = existingOpts
+    }
   } catch (e: any) {
     ElMessage.error(`読み込みエラー: ${e.message}`)
   } finally {
@@ -567,6 +585,7 @@ onMounted(load)
 .juchuu-form {
   min-height: 200px;
 }
+
 
 /* Step 1: Upload */
 .step-upload {

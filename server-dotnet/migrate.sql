@@ -2912,3 +2912,7 @@ CREATE TABLE IF NOT EXISTS agent_skill_tests (
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_skill_tests_skill ON agent_skill_tests(skill_id);
+
+-- 受注/発注明細: resource_name 列追加（手入力の要員名を保持）
+ALTER TABLE stf_juchuu_detail  ADD COLUMN IF NOT EXISTS resource_name TEXT;
+ALTER TABLE stf_hatchuu_detail ADD COLUMN IF NOT EXISTS resource_name TEXT;

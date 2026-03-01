@@ -1,6 +1,6 @@
 <template>
   <div class="hatchuu-form" v-loading="loading">
-    <el-form :model="form" :rules="rules" ref="formRef" label-width="150px" size="default">
+    <el-form :model="form" :rules="rules" ref="formRef" label-width="96px" label-position="right" size="default">
 
       <!-- 受注紐付け -->
       <el-divider content-position="left">受注との紐付け</el-divider>
@@ -128,15 +128,17 @@
             <tr v-for="(detail, idx) in form.details" :key="idx">
               <td>
                 <el-select
-                  v-model="detail.resourceId"
-                  filterable remote clearable
-                  :remote-method="(q: string) => searchResources(q, idx)"
-                  placeholder="要員を選択"
+                  :model-value="detail.resourceId || detail.resourceName || ''"
+                  filterable remote clearable allow-create default-first-option
+                  :remote-method="loadResources"
+                  placeholder="要員を選択 / 氏名入力"
                   style="width:100%"
                   size="small"
+                  @change="(val: string) => onResourceChange(val, detail)"
+                  @focus="!resourceLoaded && loadResources()"
                 >
                   <el-option
-                    v-for="opt in getResourceOptions(idx)"
+                    v-for="opt in allResourceOptions"
                     :key="opt.value" :label="opt.label" :value="opt.value"
                   />
                 </el-select>
@@ -212,6 +214,7 @@ import api from '../../api'
 
 interface DetailRow {
   resourceId: string | null
+  resourceName: string | null
   costRate: number | null
   costRateType: string
   settlementType: string
@@ -233,12 +236,9 @@ const formRef = ref<any>(null)
 
 const juchuuOptions = ref<any[]>([])
 const supplierOptions = ref<any[]>([])
-const resourceOptionsMap = ref<Record<number, any[]>>({})
+const allResourceOptions = ref<any[]>([])
+const resourceLoaded = ref(false)
 const linkedJuchuuInfo = ref<any>(null)
-
-function getResourceOptions(idx: number): any[] {
-  return resourceOptionsMap.value[idx] || []
-}
 
 const form = reactive({
   juchuuId: props.initialJuchuuId || null as string | null,
@@ -263,6 +263,7 @@ const rules = {
 function newDetailRow(): DetailRow {
   return {
     resourceId: null,
+    resourceName: null,
     costRate: null,
     costRateType: 'monthly',
     settlementType: 'range',
@@ -278,13 +279,6 @@ function addDetail() {
 
 function removeDetail(idx: number) {
   form.details.splice(idx, 1)
-  const newMap: Record<number, any[]> = {}
-  Object.keys(resourceOptionsMap.value).forEach(k => {
-    const n = parseInt(k)
-    if (n < idx) newMap[n] = resourceOptionsMap.value[n]
-    else if (n > idx) newMap[n - 1] = resourceOptionsMap.value[n]
-  })
-  resourceOptionsMap.value = newMap
 }
 
 onMounted(() => {
@@ -318,13 +312,33 @@ async function loadJuchuuInfo(juchuuId: string | null) {
 
 watch(() => form.juchuuId, (val) => loadJuchuuInfo(val))
 
-async function searchResources(q: string, rowIdx: number) {
-  if (!q) return
-  const res = await api.get('/staffing/resources', { params: { keyword: q, limit: 20 } })
-  resourceOptionsMap.value[rowIdx] = (res.data.data || []).map((r: any) => ({
+async function loadResources(q?: string) {
+  const params: any = { limit: 100 }
+  if (q) params.keyword = q
+  const res = await api.get('/staffing/resources', { params })
+  allResourceOptions.value = (res.data.data || []).map((r: any) => ({
     value: r.id,
     label: `${r.displayName || r.resourceCode} (${r.resourceCode})`
   }))
+  resourceLoaded.value = true
+}
+
+function isUuid(s: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+}
+
+function onResourceChange(val: string | null, detail: DetailRow) {
+  if (!val) {
+    detail.resourceId = null
+    detail.resourceName = null
+  } else if (isUuid(val)) {
+    detail.resourceId = val
+    const opt = allResourceOptions.value.find(o => o.value === val)
+    detail.resourceName = opt ? opt.label.replace(/\s*\([^)]*\)\s*$/, '') : null
+  } else {
+    detail.resourceId = null
+    detail.resourceName = val
+  }
 }
 
 async function searchSuppliers(q: string) {
@@ -354,6 +368,7 @@ async function load() {
       notes: data.notes,
       details: (data.details || []).map((d: any): DetailRow => ({
         resourceId: d.resourceId ?? null,
+        resourceName: d.resourceName ?? null,
         costRate: d.costRate ?? null,
         costRateType: d.costRateType ?? 'monthly',
         settlementType: d.settlementType ?? 'range',
@@ -369,15 +384,18 @@ async function load() {
     if (data.supplierPartnerId && data.supplierName) {
       supplierOptions.value = [{ value: data.supplierPartnerId, label: data.supplierName }]
     }
-    // 各明細行の要員オプションを設定
-    ;(data.details || []).forEach((d: any, i: number) => {
+    const existingOpts: any[] = []
+    ;(data.details || []).forEach((d: any) => {
       if (d.resourceId && d.resourceName) {
-        resourceOptionsMap.value[i] = [{
+        existingOpts.push({
           value: d.resourceId,
           label: `${d.resourceName}${d.resourceCode ? ' (' + d.resourceCode + ')' : ''}`
-        }]
+        })
       }
     })
+    if (existingOpts.length > 0) {
+      allResourceOptions.value = existingOpts
+    }
   } catch (e: any) {
     ElMessage.error(`読み込みエラー: ${e.message}`)
   } finally {
@@ -404,6 +422,7 @@ async function save() {
       notes: form.notes,
       details: form.details.map(d => ({
         resourceId: d.resourceId,
+        resourceName: d.resourceName,
         costRate: d.costRate,
         costRateType: d.costRateType,
         settlementType: d.settlementType,
@@ -430,8 +449,9 @@ defineExpose({ save, saving })
 
 <style scoped>
 .hatchuu-form {
-  padding: 0 4px;
+  padding: 0;
 }
+
 .linked-info {
   margin-top: 4px;
   color: #409eff;

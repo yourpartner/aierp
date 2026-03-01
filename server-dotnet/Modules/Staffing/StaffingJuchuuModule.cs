@@ -80,7 +80,7 @@ public class StaffingJuchuuModule : ModuleBase
                        bp.payload->>'name' as client_name,
                        p.payload->>'project_name' as project_name,
                        (SELECT COUNT(*) FROM {detailTable} d WHERE d.juchuu_id = j.id) as resource_count,
-                       (SELECT string_agg(r2.payload->>'display_name', ', ' ORDER BY d2.sort_order)
+                       (SELECT string_agg(COALESCE(d2.resource_name, r2.payload->>'display_name'), ', ' ORDER BY d2.sort_order)
                         FROM {detailTable} d2
                         LEFT JOIN stf_resources r2 ON d2.resource_id = r2.id
                         WHERE d2.juchuu_id = j.id) as resource_names
@@ -149,7 +149,7 @@ public class StaffingJuchuuModule : ModuleBase
                 SELECT d.id, d.resource_id, d.billing_rate, d.billing_rate_type,
                        d.overtime_rate_multiplier, d.settlement_type, d.settlement_lower_h, d.settlement_upper_h,
                        d.notes, d.sort_order,
-                       r.payload->>'display_name' as resource_name,
+                       COALESCE(d.resource_name, r.payload->>'display_name') as resource_name,
                        r.payload->>'resource_code' as resource_code,
                        r.resource_type
                 FROM {detailTable} d
@@ -269,14 +269,15 @@ public class StaffingJuchuuModule : ModuleBase
                     dc.Transaction = tx;
                     dc.CommandText = $@"
                         INSERT INTO {detailTable} (
-                            company_code, juchuu_id, resource_id,
+                            company_code, juchuu_id, resource_id, resource_name,
                             billing_rate, billing_rate_type, overtime_rate_multiplier,
                             settlement_type, settlement_lower_h, settlement_upper_h,
                             notes, sort_order
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)";
                     dc.Parameters.AddWithValue(cc.ToString());
                     dc.Parameters.AddWithValue(newId);
                     dc.Parameters.AddWithValue(TryParseGuid(detail, "resourceId") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetString(detail, "resourceName") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetDecimal(detail, "billingRate") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetString(detail, "billingRateType") ?? "monthly");
                     dc.Parameters.AddWithValue(GetDecimal(detail, "overtimeRateMultiplier") ?? (object)1.25m);
@@ -359,14 +360,15 @@ public class StaffingJuchuuModule : ModuleBase
                     dc.Transaction = tx;
                     dc.CommandText = $@"
                         INSERT INTO {detailTable} (
-                            company_code, juchuu_id, resource_id,
+                            company_code, juchuu_id, resource_id, resource_name,
                             billing_rate, billing_rate_type, overtime_rate_multiplier,
                             settlement_type, settlement_lower_h, settlement_upper_h,
                             notes, sort_order
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)";
                     dc.Parameters.AddWithValue(cc.ToString());
                     dc.Parameters.AddWithValue(id);
                     dc.Parameters.AddWithValue(TryParseGuid(detail, "resourceId") ?? (object)DBNull.Value);
+                    dc.Parameters.AddWithValue(GetString(detail, "resourceName") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetDecimal(detail, "billingRate") ?? (object)DBNull.Value);
                     dc.Parameters.AddWithValue(GetString(detail, "billingRateType") ?? "monthly");
                     dc.Parameters.AddWithValue(GetDecimal(detail, "overtimeRateMultiplier") ?? (object)1.25m);
@@ -412,7 +414,7 @@ public class StaffingJuchuuModule : ModuleBase
                        h.doc_generated_url,
                        bp.payload->>'name' as supplier_name,
                        (SELECT COUNT(*) FROM stf_hatchuu_detail hd WHERE hd.hatchuu_id = h.id) as resource_count,
-                       (SELECT string_agg(r2.payload->>'display_name', ', ' ORDER BY hd2.sort_order)
+                       (SELECT string_agg(COALESCE(hd2.resource_name, r2.payload->>'display_name'), ', ' ORDER BY hd2.sort_order)
                         FROM stf_hatchuu_detail hd2
                         LEFT JOIN stf_resources r2 ON hd2.resource_id = r2.id
                         WHERE hd2.hatchuu_id = h.id) as resource_names
