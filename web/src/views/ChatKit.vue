@@ -39,6 +39,7 @@
           <el-menu class="menu">
             <el-menu-item index="sim-payslip" @click="$router.push('/simulator?scenario=payslip')">工资明细场景</el-menu-item>
             <el-menu-item index="sim-cert" @click="$router.push('/simulator?scenario=cert')">证明书申请场景</el-menu-item>
+            <el-menu-item index="sim-expense" @click="$router.push('/simulator?scenario=expense')">经费报销场景</el-menu-item>
           </el-menu>
         </div>
       </div>

@@ -27,7 +27,7 @@
         <div class="message-content" v-if="msg.type === 'received'">
           <div class="name">会社公式アカウント</div>
           
-          <div class="bubble" v-if="!msg.isCard && !msg.isFile">{{ msg.text }}</div>
+          <div class="bubble" v-if="!msg.isCard && !msg.isFile && !msg.isImage">{{ msg.text }}</div>
           
           <!-- 动态生成的卡片消息 -->
           <div class="bubble card-bubble" v-if="msg.isCard">
@@ -53,8 +53,18 @@
               <div class="file-size">{{ msg.fileData?.size }}</div>
             </div>
           </div>
+
+          <!-- 动态生成的图片消息 -->
+          <div class="bubble image-bubble" v-if="msg.isImage">
+            <img :src="msg.imageUrl" alt="image" />
+          </div>
         </div>
-        <div class="bubble" v-else>{{ msg.text }}</div>
+        <template v-else>
+          <div class="bubble" v-if="!msg.isImage">{{ msg.text }}</div>
+          <div class="bubble image-bubble" v-if="msg.isImage">
+            <img :src="msg.imageUrl" alt="image" />
+          </div>
+        </template>
       </div>
     </div>
     
@@ -124,6 +134,8 @@ interface Message {
     size: string;
     type: string;
   };
+  isImage?: boolean;
+  imageUrl?: string;
 }
 
 const messages = ref<Message[]>([])
@@ -168,6 +180,18 @@ const initScenario = () => {
       isFile: true,
       fileData: { name: '在職証明書_20260302.pdf', size: '156 KB', type: 'pdf' }
     })
+  } else if (scenario === 'expense') {
+    // 经费报销场景
+    messages.value.push({ type: 'sent', text: '先月の交通費の精算をお願いします。領収書を添付します。' })
+    const receiptImage = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent('<svg width="160" height="200" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#f4f4f4"/><rect x="10" y="10" width="140" height="180" fill="#ffffff" stroke="#dddddd"/><text x="80" y="40" font-family="sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#333">領収書</text><line x1="20" y1="55" x2="140" y2="55" stroke="#333" stroke-width="1" stroke-dasharray="4 2"/><text x="20" y="80" font-family="sans-serif" font-size="12" fill="#666">2026年3月1日</text><text x="20" y="100" font-family="sans-serif" font-size="12" fill="#666">タクシー代</text><text x="140" y="140" font-family="sans-serif" font-size="18" font-weight="bold" text-anchor="end" fill="#111">¥ 3,500</text><line x1="20" y1="155" x2="140" y2="155" stroke="#333" stroke-width="1"/></svg>');
+    messages.value.push({
+      type: 'sent',
+      text: '',
+      isImage: true,
+      imageUrl: receiptImage
+    })
+    messages.value.push({ type: 'received', text: '経費精算の申請を受け付けました。管理者の承認をお待ちください。' })
+    messages.value.push({ type: 'received', text: '【承認・支払完了のお知らせ】\n申請された経費（¥ 3,500）の承認が完了しました。指定の口座へ振り込みの手続きを行いましたので、ご確認ください。' })
   }
   scrollToBottom()
 }
@@ -445,6 +469,20 @@ const handleAction = (action: string) => {
 .file-size {
   font-size: 12px;
   color: #888;
+}
+
+/* 图片消息样式 */
+.bubble.image-bubble {
+  padding: 0;
+  background-color: transparent !important;
+  border: none;
+}
+
+.bubble.image-bubble img {
+  max-width: 160px;
+  display: block;
+  border-radius: 12px;
+  border: 1px solid #e5e5e5;
 }
 
 .card-title {
