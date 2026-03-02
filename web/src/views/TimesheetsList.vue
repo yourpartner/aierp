@@ -443,35 +443,42 @@ function buildExportRows(details: any[]) {
 
 async function downloadExcel(row: any) {
   try {
-    const details = detailVisible.value && detailRows.value.length ? detailRows.value : await loadTimesheetDetail(row)
-    const empName = row.employeeName || '自分'
     const month = row.month || ''
+    const resourceId = row.employeeCode || row.resourceId || ''
+    if (!month || !resourceId) {
+      ElMessage.error('月または従業員コードが見つかりません')
+      return
+    }
 
-    const exportData = buildExportRows(details)
-    const workDays = details.filter(d => d.hours > 0).length
-    const totalHours = details.reduce((s, d) => s + (d.hours || 0), 0)
-    const totalOvertime = details.reduce((s, d) => s + (d.overtime || 0), 0)
-
-    exportData.push({} as any)
-    exportData.push({
-      '日付': '合計',
-      '曜日': '',
-      '開始': '',
-      '終了': '',
-      '休憩(分)': '',
-      '勤務時間(H)': Number(totalHours.toFixed(2)),
-      '残業時間(H)': Number(totalOvertime.toFixed(2)),
-      '作業内容': `勤務日数: ${workDays}日`
+    const resp = await api.get('/staffing/timesheets/export', { 
+      params: { month, resourceId },
+      responseType: 'blob' 
     })
-
-    const ws = XLSX.utils.json_to_sheet(exportData)
-    const colWidths = [12, 6, 8, 8, 10, 14, 14, 30]
-    ws['!cols'] = colWidths.map(w => ({ wch: w }))
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, `${month} 勤怠`)
-    XLSX.writeFile(wb, `勤怠_${empName}_${month}.xlsx`)
+    
+    const blob = new Blob([resp.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    
+    // 尝试从 header 中获取文件名，如果没有则使用默认名
+    let fileName = `作業報告書_${row.employeeName || '自分'}_${month}.xlsx`
+    const disposition = resp.headers['content-disposition']
+    if (disposition && disposition.indexOf('attachment') !== -1) {
+      const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/
+      const matches = filenameRegex.exec(disposition)
+      if (matches != null && matches[1]) {
+        fileName = decodeURIComponent(matches[1].replace(/['"]/g, ''))
+      }
+    }
+    
+    a.download = fileName
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
   } catch (e) {
     console.error('Excel download failed:', e)
+    ElMessage.error('Excelのダウンロードに失敗しました')
   }
 }
 
@@ -480,56 +487,83 @@ async function downloadPdf(row: any) {
     const details = detailVisible.value && detailRows.value.length ? detailRows.value : await loadTimesheetDetail(row)
     const empName = row.employeeName || '自分'
     const month = row.month || ''
+    const monthStr = month.replace('-', '年') + '月'
 
-    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+    let companyName = sessionStorage.getItem('currentCompany') || ''
+    try {
+      const resp = await api.post('/objects/company_setting/search', {
+        page: 1, pageSize: 1, where: [], orderBy: [{ field: 'created_at', dir: 'DESC' }]
+      })
+      if (resp.data?.data?.[0]?.payload?.companyName) {
+        companyName = resp.data.data[0].payload.companyName
+      }
+    } catch {}
 
-    doc.setFontSize(16)
-    doc.text(`勤怠表 - ${month}`, 14, 18)
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+
+    // Title (Centered)
+    doc.setFontSize(18)
+    const title = `${monthStr} 作業報告書`
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const titleWidth = doc.getTextWidth(title)
+    doc.text(title, (pageWidth - titleWidth) / 2, 20)
+
+    // Company and Employee (Right aligned)
     doc.setFontSize(11)
-    doc.text(`従業員: ${empName}`, 14, 26)
+    const companyText = `会社名: ${companyName}`
+    const empText = `担当者: ${empName}`
+    const rightMargin = 14
+    
+    doc.text(companyText, pageWidth - rightMargin - doc.getTextWidth(companyText), 30)
+    doc.text(empText, pageWidth - rightMargin - doc.getTextWidth(empText), 36)
 
-    const head = [['日付', '曜日', '開始', '終了', '休憩(分)', '勤務時間(H)', '残業時間(H)', '作業内容']]
+    const head = [['期日', '曜日', '開始時間', '終了時間', '休憩時間', '実績時間', '作業内容']]
     const body = details.map(r => [
       r.date,
       r.weekday,
       r.startTime || '',
       r.endTime || '',
-      r.lunchMinutes || '',
+      r.lunchMinutes ? `${r.lunchMinutes}分` : '',
       r.hours ? r.hours.toFixed(2) : '',
-      r.overtime ? r.overtime.toFixed(2) : '',
       r.task || ''
     ])
 
-    const workDays = details.filter(d => d.hours > 0).length
     const totalHours = details.reduce((s, d) => s + (d.hours || 0), 0)
-    const totalOvertime = details.reduce((s, d) => s + (d.overtime || 0), 0)
-    body.push(['合計', '', '', '', '', totalHours.toFixed(2), totalOvertime.toFixed(2), `勤務日数: ${workDays}日`])
+    body.push(['合計', '', '', '', '', totalHours.toFixed(2), ''])
 
     autoTable(doc, {
-      startY: 32,
+      startY: 42,
       head,
       body,
-      styles: { fontSize: 8, cellPadding: 2 },
-      headStyles: { fillColor: [64, 158, 255], textColor: 255, fontStyle: 'bold' },
+      theme: 'grid',
+      styles: { fontSize: 9, cellPadding: 3, lineColor: [220, 220, 220] },
+      headStyles: { fillColor: [235, 245, 235], textColor: [51, 51, 51], fontStyle: 'bold', halign: 'center' },
       columnStyles: {
-        0: { cellWidth: 24 },
+        0: { cellWidth: 22, halign: 'center' },
         1: { cellWidth: 14, halign: 'center' },
-        2: { cellWidth: 18, halign: 'center' },
-        3: { cellWidth: 18, halign: 'center' },
-        4: { cellWidth: 18, halign: 'center' },
-        5: { cellWidth: 24, halign: 'right' },
-        6: { cellWidth: 24, halign: 'right' },
-        7: { cellWidth: 'auto' }
+        2: { cellWidth: 20, halign: 'center' },
+        3: { cellWidth: 20, halign: 'center' },
+        4: { cellWidth: 20, halign: 'center' },
+        5: { cellWidth: 20, halign: 'center' },
+        6: { cellWidth: 'auto' }
       },
       didParseCell(data: any) {
+        // Highlight weekends
+        if (data.section === 'body' && data.column.index === 1) {
+          const weekday = data.cell.raw
+          if (weekday === '土' || weekday === '土曜日') data.cell.styles.textColor = [0, 0, 255]
+          if (weekday === '日' || weekday === '日曜日') data.cell.styles.textColor = [255, 0, 0]
+        }
+        // Style total row
         if (data.section === 'body' && data.row.index === body.length - 1) {
           data.cell.styles.fontStyle = 'bold'
           data.cell.styles.fillColor = [245, 247, 250]
+          if (data.column.index === 0) data.cell.styles.halign = 'center'
         }
       }
     })
 
-    doc.save(`勤怠_${empName}_${month}.pdf`)
+    doc.save(`作業報告書_${empName}_${month}.pdf`)
   } catch (e) {
     console.error('PDF download failed:', e)
   }

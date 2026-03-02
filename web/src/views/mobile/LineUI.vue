@@ -156,7 +156,7 @@ const handleAction = (action: string) => {
     case 'payslip_history': 
       actionText = '過去の明細を確認'; 
       replyText = '給与明細履歴ページを開いています...';
-      targetView = 'payslip';
+      targetView = 'payslip_history';
       break;
     case 'timesheet': 
       actionText = '勤怠を入力'; 

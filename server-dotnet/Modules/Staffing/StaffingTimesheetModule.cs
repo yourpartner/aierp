@@ -30,6 +30,165 @@ public class StaffingTimesheetModule : ModuleBase
 
     public override void MapEndpoints(WebApplication app)
     {
+        // GET /staffing/timesheets/export
+        app.MapGet("/staffing/timesheets/export", async (HttpRequest req, NpgsqlDataSource ds, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+                
+            var companyCode = cc.ToString();
+            var month = req.Query["month"].ToString();
+            var resourceId = req.Query["resourceId"].ToString();
+            
+            if (string.IsNullOrWhiteSpace(month) || string.IsNullOrWhiteSpace(resourceId))
+                return Results.BadRequest(new { error = "Missing month or resourceId" });
+
+            await using var conn = await ds.OpenConnectionAsync(ct);
+            
+            // 1. 获取员工信息和公司名称
+            string empName = "担当者";
+            await using (var cmdEmp = conn.CreateCommand())
+            {
+                cmdEmp.CommandText = "SELECT employee_name FROM employees WHERE company_code = $1 AND employee_code = $2";
+                cmdEmp.Parameters.AddWithValue(companyCode);
+                cmdEmp.Parameters.AddWithValue(resourceId);
+                var name = await cmdEmp.ExecuteScalarAsync(ct);
+                if (name != null) empName = name.ToString()!;
+            }
+
+            string companyName = "会社名";
+            await using (var cmdComp = conn.CreateCommand())
+            {
+                cmdComp.CommandText = "SELECT payload->>'companyName' FROM objects WHERE company_code = $1 AND object_type = 'company_setting' LIMIT 1";
+                cmdComp.Parameters.AddWithValue(companyCode);
+                var cName = await cmdComp.ExecuteScalarAsync(ct);
+                if (cName != null) companyName = cName.ToString()!;
+            }
+
+            // 2. 获取考勤数据
+            var details = new List<(string Date, string Weekday, string Start, string End, int Lunch, decimal Hours, decimal Overtime, string Task)>();
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = @"
+                    SELECT entry_date, start_time, end_time, break_minutes, regular_hours, overtime_hours, task_description
+                    FROM staffing_timesheet_entries
+                    WHERE company_code = $1 AND resource_id = $2 AND to_char(entry_date, 'YYYY-MM') = $3
+                    ORDER BY entry_date ASC";
+                cmd.Parameters.AddWithValue(companyCode);
+                cmd.Parameters.AddWithValue(resourceId);
+                cmd.Parameters.AddWithValue(month);
+                
+                await using var reader = await cmd.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    var date = reader.GetDateTime(0);
+                    var start = reader.IsDBNull(1) ? "" : reader.GetTimeSpan(1).ToString(@"hh\:mm");
+                    var end = reader.IsDBNull(2) ? "" : reader.GetTimeSpan(2).ToString(@"hh\:mm");
+                    var lunch = reader.IsDBNull(3) ? 0 : reader.GetInt32(3);
+                    var hours = reader.IsDBNull(4) ? 0m : reader.GetDecimal(4);
+                    var overtime = reader.IsDBNull(5) ? 0m : reader.GetDecimal(5);
+                    var task = reader.IsDBNull(6) ? "" : reader.GetString(6);
+                    
+                    var weekday = date.ToString("ddd") + "曜日";
+                    details.Add((date.ToString("d"), weekday, start, end, lunch, hours, overtime, task));
+                }
+            }
+
+            // 3. 使用 ClosedXML 生成带样式的 Excel
+            using var wb = new XLWorkbook();
+            var ws = wb.Worksheets.Add($"{month} 勤怠");
+            
+            var monthStr = month.Replace("-", "年") + "月";
+            
+            // Title
+            var titleCell = ws.Cell(2, 1);
+            titleCell.Value = $"{monthStr} 作業報告書";
+            titleCell.Style.Font.FontSize = 18;
+            titleCell.Style.Font.Bold = true;
+            titleCell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+            ws.Range(2, 1, 2, 7).Merge();
+
+            // Company & Employee
+            ws.Cell(4, 5).Value = $"会社名: {companyName}";
+            ws.Range(4, 5, 4, 7).Merge().Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Right;
+            
+            ws.Cell(5, 5).Value = $"担当者: {empName}";
+            ws.Range(5, 5, 5, 7).Merge().Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Right;
+
+            // Headers
+            var headers = new[] { "期日", "曜日", "開始時間", "終了時間", "休憩時間", "実績時間", "作業内容" };
+            for (int i = 0; i < headers.Length; i++)
+            {
+                var cell = ws.Cell(6, i + 1);
+                cell.Value = headers[i];
+                cell.Style.Font.Bold = true;
+                cell.Style.Fill.BackgroundColor = XLColor.FromHtml("#EBF5EB"); // 浅绿色背景
+                cell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                cell.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+                cell.Style.Border.OutsideBorderColor = XLColor.LightGray;
+            }
+
+            // Data Rows
+            int row = 7;
+            decimal totalHours = 0;
+            foreach (var d in details)
+            {
+                ws.Cell(row, 1).Value = d.Date;
+                ws.Cell(row, 2).Value = d.Weekday;
+                ws.Cell(row, 3).Value = d.Start;
+                ws.Cell(row, 4).Value = d.End;
+                ws.Cell(row, 5).Value = d.Lunch > 0 ? $"{d.Lunch}分" : "";
+                ws.Cell(row, 6).Value = d.Hours > 0 ? d.Hours : "";
+                ws.Cell(row, 7).Value = d.Task;
+
+                // 周末高亮
+                if (d.Weekday.Contains("土")) ws.Cell(row, 2).Style.Font.FontColor = XLColor.Blue;
+                if (d.Weekday.Contains("日")) ws.Cell(row, 2).Style.Font.FontColor = XLColor.Red;
+
+                // 边框和居中
+                for (int i = 1; i <= 7; i++)
+                {
+                    var cell = ws.Cell(row, i);
+                    cell.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+                    cell.Style.Border.OutsideBorderColor = XLColor.LightGray;
+                    if (i < 7) cell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                }
+
+                totalHours += d.Hours;
+                row++;
+            }
+
+            // Total Row
+            ws.Cell(row, 1).Value = "合計";
+            ws.Cell(row, 1).Style.Font.Bold = true;
+            ws.Cell(row, 1).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+            
+            ws.Cell(row, 6).Value = totalHours;
+            ws.Cell(row, 6).Style.Font.Bold = true;
+            ws.Cell(row, 6).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+
+            for (int i = 1; i <= 7; i++)
+            {
+                var cell = ws.Cell(row, i);
+                cell.Style.Fill.BackgroundColor = XLColor.FromHtml("#F5F7FA");
+                cell.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+                cell.Style.Border.OutsideBorderColor = XLColor.LightGray;
+            }
+
+            // Column Widths
+            ws.Column(1).Width = 14;
+            ws.Column(2).Width = 10;
+            ws.Column(3).Width = 14;
+            ws.Column(4).Width = 14;
+            ws.Column(5).Width = 14;
+            ws.Column(6).Width = 14;
+            ws.Column(7).Width = 40;
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"作業報告書_{empName}_{month}.xlsx");
+        });
+
         // 勤怠サマリー一覧取得
         app.MapGet("/staffing/timesheets", async (HttpRequest req, NpgsqlDataSource ds) =>
         {

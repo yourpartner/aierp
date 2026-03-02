@@ -61,6 +61,67 @@
                   </div>
                 </div>
               </div>
+
+              <!-- 微信风格的历史工资单列表 -->
+              <div v-else-if="currentWechatView === 'payslip_history'" class="detail-view wechat-style">
+                <div class="detail-header">
+                  <div class="back-btn" @click="currentWechatView = 'chat'">&lt;</div>
+                  <div class="title">給与明細履歴</div>
+                  <div class="more-btn">...</div>
+                </div>
+                <div class="detail-body history-body">
+                  <div class="year-group">
+                    <div class="year-title">2026年</div>
+                    <div class="history-list">
+                      <div class="history-item" @click="currentWechatView = 'payslip'">
+                        <div class="history-info">
+                          <div class="history-month">02月分</div>
+                          <div class="history-date">支給日: 2026-03-01</div>
+                        </div>
+                        <div class="history-amount">¥ 325,000</div>
+                        <div class="history-arrow">&gt;</div>
+                      </div>
+                      <div class="history-item">
+                        <div class="history-info">
+                          <div class="history-month">01月分</div>
+                          <div class="history-date">支給日: 2026-02-01</div>
+                        </div>
+                        <div class="history-amount">¥ 320,000</div>
+                        <div class="history-arrow">&gt;</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="year-group">
+                    <div class="year-title">2025年</div>
+                    <div class="history-list">
+                      <div class="history-item">
+                        <div class="history-info">
+                          <div class="history-month">12月分 (賞与)</div>
+                          <div class="history-date">支給日: 2025-12-15</div>
+                        </div>
+                        <div class="history-amount">¥ 600,000</div>
+                        <div class="history-arrow">&gt;</div>
+                      </div>
+                      <div class="history-item">
+                        <div class="history-info">
+                          <div class="history-month">12月分</div>
+                          <div class="history-date">支給日: 2025-12-01</div>
+                        </div>
+                        <div class="history-amount">¥ 318,000</div>
+                        <div class="history-arrow">&gt;</div>
+                      </div>
+                      <div class="history-item">
+                        <div class="history-info">
+                          <div class="history-month">11月分</div>
+                          <div class="history-date">支給日: 2025-11-01</div>
+                        </div>
+                        <div class="history-amount">¥ 322,000</div>
+                        <div class="history-arrow">&gt;</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
               
               <div v-else class="detail-view wechat-style">
                 <div class="detail-header">
@@ -146,6 +207,78 @@
                   
                   <div class="action-area">
                     <button class="line-btn primary">PDFをダウンロード</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Line 风格的历史工资单列表 -->
+              <div v-else-if="currentLineView === 'payslip_history'" class="detail-view line-style">
+                <div class="detail-header line-style">
+                  <div class="back-btn" @click="currentLineView = 'chat'">×</div>
+                  <div class="title">給与明細履歴</div>
+                  <div class="more-btn">⋮</div>
+                </div>
+                <div class="detail-body history-body line-theme">
+                  <div class="liff-header">
+                    <h2>過去の給与明細</h2>
+                  </div>
+                  
+                  <div class="line-history-list">
+                    <div class="line-history-card" @click="currentLineView = 'payslip'">
+                      <div class="card-header">
+                        <span class="month-badge">2026年 2月</span>
+                        <span class="pay-date">3/1 支給</span>
+                      </div>
+                      <div class="card-body">
+                        <div class="amount-label">差引支給額</div>
+                        <div class="amount-value">¥ 325,000</div>
+                      </div>
+                      <div class="card-footer">
+                        詳細を見る <span class="arrow">→</span>
+                      </div>
+                    </div>
+                    
+                    <div class="line-history-card">
+                      <div class="card-header">
+                        <span class="month-badge">2026年 1月</span>
+                        <span class="pay-date">2/1 支給</span>
+                      </div>
+                      <div class="card-body">
+                        <div class="amount-label">差引支給額</div>
+                        <div class="amount-value">¥ 320,000</div>
+                      </div>
+                      <div class="card-footer">
+                        詳細を見る <span class="arrow">→</span>
+                      </div>
+                    </div>
+                    
+                    <div class="line-history-card bonus">
+                      <div class="card-header">
+                        <span class="month-badge bonus-badge">2025年 冬季賞与</span>
+                        <span class="pay-date">12/15 支給</span>
+                      </div>
+                      <div class="card-body">
+                        <div class="amount-label">差引支給額</div>
+                        <div class="amount-value">¥ 600,000</div>
+                      </div>
+                      <div class="card-footer">
+                        詳細を見る <span class="arrow">→</span>
+                      </div>
+                    </div>
+                    
+                    <div class="line-history-card">
+                      <div class="card-header">
+                        <span class="month-badge">2025年 12月</span>
+                        <span class="pay-date">12/1 支給</span>
+                      </div>
+                      <div class="card-body">
+                        <div class="amount-label">差引支給額</div>
+                        <div class="amount-value">¥ 318,000</div>
+                      </div>
+                      <div class="card-footer">
+                        詳細を見る <span class="arrow">→</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -566,5 +699,160 @@ onUnmounted(() => {
 .line-btn.primary {
   background-color: #00c300;
   color: white;
+}
+
+/* --- WeChat 风格历史工资单样式 --- */
+.wechat-style .history-body {
+  background-color: #f5f5f5;
+}
+
+.year-group {
+  margin-bottom: 16px;
+}
+
+.year-title {
+  padding: 12px 16px 8px;
+  font-size: 14px;
+  color: #888;
+  font-weight: bold;
+}
+
+.history-list {
+  background-color: #fff;
+  border-top: 1px solid #e5e5e5;
+  border-bottom: 1px solid #e5e5e5;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
+}
+
+.history-item:last-child {
+  border-bottom: none;
+}
+
+.history-item:active {
+  background-color: #f9f9f9;
+}
+
+.history-info {
+  flex: 1;
+}
+
+.history-month {
+  font-size: 16px;
+  color: #333;
+  margin-bottom: 4px;
+}
+
+.history-date {
+  font-size: 12px;
+  color: #999;
+}
+
+.history-amount {
+  font-size: 16px;
+  font-weight: bold;
+  color: #333;
+  margin-right: 12px;
+}
+
+.history-arrow {
+  font-size: 16px;
+  color: #ccc;
+}
+
+/* --- Line 风格历史工资单样式 --- */
+.line-style .history-body {
+  background-color: #f4f5f6;
+  padding-bottom: 40px;
+}
+
+.line-history-list {
+  padding: 0 16px;
+}
+
+.line-history-card {
+  background-color: #fff;
+  border-radius: 12px;
+  margin-bottom: 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.line-history-card:active {
+  transform: scale(0.98);
+}
+
+.line-history-card.bonus {
+  border-left: 4px solid #ff9800;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  background-color: #fafafa;
+}
+
+.month-badge {
+  font-size: 14px;
+  font-weight: bold;
+  color: #111;
+}
+
+.bonus-badge {
+  color: #ff9800;
+}
+
+.pay-date {
+  font-size: 12px;
+  color: #888;
+}
+
+.line-history-card .card-body {
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.line-history-card .amount-label {
+  font-size: 13px;
+  color: #666;
+}
+
+.line-history-card .amount-value {
+  font-size: 20px;
+  font-weight: bold;
+  color: #00c300;
+}
+
+.line-history-card.bonus .amount-value {
+  color: #ff9800;
+}
+
+.line-history-card .card-footer {
+  padding: 12px 16px;
+  font-size: 13px;
+  color: #00c300;
+  text-align: right;
+  border-top: 1px solid #f0f0f0;
+}
+
+.line-history-card.bonus .card-footer {
+  color: #ff9800;
+}
+
+.line-history-card .arrow {
+  margin-left: 4px;
 }
 </style>
