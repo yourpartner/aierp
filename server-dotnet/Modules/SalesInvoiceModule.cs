@@ -336,6 +336,29 @@ public static class SalesInvoiceModule
                 {
                     await FinanceService.RefreshGlViewAsync(conn);
                 }
+
+                // 生成请求书 PDF 并上传到 Azure Storage
+                string? pdfBlobName = null;
+                string? pdfUrl = null;
+                string? pdfError = null;
+                try
+                {
+                    var pdfService = req.HttpContext.RequestServices.GetService<SalesPdfService>();
+                    if (pdfService != null)
+                    {
+                        var companyInfo = await SalesPdfService.GetCompanyInfoAsync(ds, cc.ToString()!);
+                        using var payloadDoc2 = JsonDocument.Parse(invoicePayload.ToJsonString());
+                        var invoiceData = SalesPdfService.ExtractInvoiceData(payloadDoc2.RootElement, invoiceNo);
+                        pdfBlobName = await pdfService.GenerateInvoicePdfAsync(cc.ToString()!, companyInfo, invoiceData, CancellationToken.None);
+                        pdfUrl = pdfService.GetReadUri(pdfBlobName);
+                        Console.WriteLine($"[SalesInvoice.Pdf] Generated: {pdfBlobName}");
+                    }
+                }
+                catch (Exception pdfEx)
+                {
+                    pdfError = pdfEx.Message;
+                    Console.WriteLine($"[Warning] Failed to generate invoice PDF for {invoiceNo}: {pdfEx.Message}");
+                }
                 
                 return Results.Ok(new { 
                     id = invoiceId, 
@@ -344,7 +367,10 @@ public static class SalesInvoiceModule
                     taxAmount,
                     lineCount = lineNo,
                     voucherNo,
-                    voucherError
+                    voucherError,
+                    pdfBlobName,
+                    pdfUrl,
+                    pdfError
                 });
             }
             catch (Exception ex)

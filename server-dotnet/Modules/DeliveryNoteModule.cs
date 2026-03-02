@@ -294,7 +294,31 @@ public static class DeliveryNoteModule
                 }
 
                 await tx.CommitAsync();
-                return Results.Ok(new { id = deliveryNoteId, deliveryNo, lineCount = lineNo });
+
+                // 生成纳品書 PDF 并上传到 Azure Storage
+                string? pdfBlobName = null;
+                string? pdfUrl = null;
+                string? pdfError = null;
+                try
+                {
+                    var pdfService = req.HttpContext.RequestServices.GetService<SalesPdfService>();
+                    if (pdfService != null)
+                    {
+                        var companyInfo = await SalesPdfService.GetCompanyInfoAsync(ds, cc.ToString()!);
+                        using var payloadDoc2 = JsonDocument.Parse(payloadJson);
+                        var dnData = SalesPdfService.ExtractDeliveryData(payloadDoc2.RootElement, deliveryNo);
+                        pdfBlobName = await pdfService.GenerateDeliveryNotePdfAsync(cc.ToString()!, companyInfo, dnData, CancellationToken.None);
+                        pdfUrl = pdfService.GetReadUri(pdfBlobName);
+                        Console.WriteLine($"[DeliveryNote.Pdf] Generated: {pdfBlobName}");
+                    }
+                }
+                catch (Exception pdfEx)
+                {
+                    pdfError = pdfEx.Message;
+                    Console.WriteLine($"[Warning] Failed to generate delivery note PDF for {deliveryNo}: {pdfEx.Message}");
+                }
+
+                return Results.Ok(new { id = deliveryNoteId, deliveryNo, lineCount = lineNo, pdfBlobName, pdfUrl, pdfError });
             }
             catch (Exception ex)
             {
@@ -383,7 +407,29 @@ public static class DeliveryNoteModule
                 }
 
                 await tx.CommitAsync();
-                return Results.Ok(new { id = deliveryNoteId, deliveryNo });
+
+                // 生成纳品書 PDF
+                string? pdfBlobName2 = null;
+                string? pdfUrl2 = null;
+                try
+                {
+                    var pdfService2 = req.HttpContext.RequestServices.GetService<SalesPdfService>();
+                    if (pdfService2 != null)
+                    {
+                        var companyInfo2 = await SalesPdfService.GetCompanyInfoAsync(ds, cc.ToString()!);
+                        using var payloadDoc2 = JsonDocument.Parse(payloadJson);
+                        var dnData2 = SalesPdfService.ExtractDeliveryData(payloadDoc2.RootElement, deliveryNo);
+                        pdfBlobName2 = await pdfService2.GenerateDeliveryNotePdfAsync(cc.ToString()!, companyInfo2, dnData2, CancellationToken.None);
+                        pdfUrl2 = pdfService2.GetReadUri(pdfBlobName2);
+                        Console.WriteLine($"[DeliveryNote.Pdf] Generated: {pdfBlobName2}");
+                    }
+                }
+                catch (Exception pdfEx)
+                {
+                    Console.WriteLine($"[Warning] Failed to generate delivery note PDF: {pdfEx.Message}");
+                }
+
+                return Results.Ok(new { id = deliveryNoteId, deliveryNo, pdfBlobName = pdfBlobName2, pdfUrl = pdfUrl2 });
             }
             catch (Exception ex)
             {
