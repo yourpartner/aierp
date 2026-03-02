@@ -18,7 +18,7 @@
       
       <!-- 审计结果 -->
       <el-alert v-if="auditResult" :type="auditResult.highRiskCount > 0 ? 'error' : (auditResult.mediumRiskCount > 0 ? 'warning' : 'success')" 
-                :title="`${text.auditResult}: ${auditResult.totalRoles}个角色, 高风险${auditResult.highRiskCount}个, 中风险${auditResult.mediumRiskCount}个`"
+                :title="`${text.auditResult}: ロール${auditResult.totalRoles}件、高リスク${auditResult.highRiskCount}件、中リスク${auditResult.mediumRiskCount}件`"
                 show-icon closable @close="auditResult=null" style="margin-bottom:12px" />
 
       <el-table :data="rows" size="small" border @row-dblclick="onEdit">
@@ -53,17 +53,17 @@
       </el-table>
     </el-card>
 
-    <!-- 创建/编辑角色对话框 -->
-    <el-dialog v-model="showCreate" :title="editId ? text.editRole : text.createRole" width="800px" destroy-on-close>
-      <el-form :model="form" label-width="120px" size="small">
+    <!-- 作成/編集ロールダイアログ -->
+    <el-dialog v-model="showCreate" :title="editId ? text.editRole : text.createRole" width="560px" destroy-on-close class="role-form-dialog">
+      <el-form :model="form" label-width="120px" size="small" class="role-form">
         <el-form-item :label="text.roleCode" required>
-          <el-input v-model="form.roleCode" :disabled="!!editId" :placeholder="text.roleCodePlaceholder" />
+          <el-input v-model="form.roleCode" :disabled="!!editId" :placeholder="text.roleCodePlaceholder" class="role-form-input" />
         </el-form-item>
         <el-form-item :label="text.roleName">
-          <el-input v-model="form.roleName" />
+          <el-input v-model="form.roleName" class="role-form-input" />
         </el-form-item>
         <el-form-item :label="text.description">
-          <el-input v-model="form.description" type="textarea" :rows="2" />
+          <el-input v-model="form.description" type="textarea" :rows="2" class="role-form-input" />
         </el-form-item>
         <el-form-item :label="text.caps">
           <div class="caps-selector">
@@ -81,13 +81,13 @@
         <el-form-item :label="text.dataScopes">
           <div class="data-scopes">
             <div v-for="(scope, idx) in form.dataScopes" :key="idx" class="data-scope-row">
-              <el-select v-model="scope.entityType" size="small" :placeholder="text.entityType" style="width:150px">
+              <el-select v-model="scope.entityType" size="small" :placeholder="text.entityType" class="data-scope-select">
                 <el-option :label="text.entityVoucher" value="voucher" />
                 <el-option :label="text.entityEmployee" value="employee" />
                 <el-option :label="text.entityCustomer" value="customer" />
                 <el-option :label="text.entityOrder" value="order" />
               </el-select>
-              <el-select v-model="scope.scopeType" size="small" style="width:150px">
+              <el-select v-model="scope.scopeType" size="small" class="data-scope-select">
                 <el-option :label="text.scopeAll" value="all" />
                 <el-option :label="text.scopeDept" value="department" />
                 <el-option :label="text.scopeSelf" value="self" />
@@ -104,14 +104,14 @@
       </template>
     </el-dialog>
 
-    <!-- AI辅助创建角色对话框 -->
-    <el-dialog v-model="showAiDialog" :title="text.aiCreateTitle" width="700px" destroy-on-close>
+    <!-- AIでロール作成ダイアログ -->
+    <el-dialog v-model="showAiDialog" :title="text.aiCreateTitle" width="560px" destroy-on-close class="role-form-dialog">
       <div class="ai-dialog-content">
         <el-alert type="info" :closable="false" style="margin-bottom:16px">
           <template #title>{{ text.aiHint }}</template>
         </el-alert>
         
-        <el-input v-model="aiPrompt" type="textarea" :rows="5" :placeholder="text.aiPlaceholder" />
+        <el-input v-model="aiPrompt" type="textarea" :rows="5" :placeholder="text.aiPlaceholder" class="role-form-input" />
         
         <div v-if="aiGenerating" style="text-align:center;padding:20px">
           <el-icon class="is-loading" :size="32"><Loading /></el-icon>
@@ -151,8 +151,8 @@
       </template>
     </el-dialog>
 
-    <!-- 合规检查结果对话框 -->
-    <el-dialog v-model="showCheckDialog" :title="text.checkResult" width="600px">
+    <!-- 権限チェック結果ダイアログ -->
+    <el-dialog v-model="showCheckDialog" :title="text.checkResult" width="520px" class="role-form-dialog">
       <div v-if="checkResult">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item :label="text.roleName">{{ checkResult.roleName }}</el-descriptions-item>
@@ -353,7 +353,8 @@ const texts: Record<string, Record<string, string>> = {
     requiredRoleCode: 'Role code is required'
   }
 }
-const text = computed(() => texts[lang.value] || texts.ja)
+// 角色管理画面は日本語表示に統一
+const text = computed(() => texts.ja)
 
 const rows = ref<any[]>([])
 const modules = ref<any[]>([])
@@ -407,8 +408,7 @@ async function loadPermissions() {
 
 function getModuleName(mod: any) {
   if (mod.moduleName) {
-    const l = lang.value === 'ja' ? 'ja' : (lang.value === 'en' ? 'en' : 'zh')
-    return mod.moduleName[l] || mod.moduleName.zh || mod.moduleCode
+    return mod.moduleName.ja || mod.moduleName.en || mod.moduleName.zh || mod.moduleCode
   }
   return mod.moduleCode
 }
@@ -419,8 +419,7 @@ function getModuleCaps(moduleCode: string) {
 
 function getCapName(cap: any) {
   if (cap.capName) {
-    const l = lang.value === 'ja' ? 'ja' : (lang.value === 'en' ? 'en' : 'zh')
-    return cap.capName[l] || cap.capName.zh || cap.capCode
+    return cap.capName.ja || cap.capName.en || cap.capName.zh || cap.capCode
   }
   return cap.capCode
 }
@@ -594,12 +593,29 @@ onMounted(() => {
   display: flex;
   gap: 8px;
 }
+/* ダイアログ内の入力幅を弾窗に収める */
+:deep(.role-form-dialog .el-dialog__body) {
+  overflow-x: hidden;
+}
+:deep(.role-form-dialog .el-form-item__content) {
+  max-width: 100%;
+}
+:deep(.role-form-dialog .role-form-input),
+:deep(.role-form-dialog .el-input),
+:deep(.role-form-dialog .el-textarea) {
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+}
 .caps-selector {
-  max-height: 400px;
+  max-height: 360px;
   overflow-y: auto;
+  overflow-x: hidden;
   border: 1px solid #eee;
   border-radius: 4px;
   padding: 12px;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .caps-module {
   margin-bottom: 16px;
@@ -618,17 +634,28 @@ onMounted(() => {
   border: 1px solid #eee;
   border-radius: 4px;
   padding: 12px;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .data-scope-row {
   display: flex;
   gap: 8px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.data-scope-select {
+  width: 140px;
+  min-width: 0;
 }
 .ai-dialog-content {
   min-height: 200px;
+  max-width: 100%;
 }
 .ai-result {
   margin-top: 16px;
+}
+:deep(.ai-result .el-descriptions) {
+  max-width: 100%;
 }
 </style>
 

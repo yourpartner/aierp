@@ -421,16 +421,16 @@ BEGIN
   );
   
   INSERT INTO roles (company_code, role_code, role_name, role_type, description) VALUES
-  (NULL, 'SYS_ADMIN', '系统管理员', 'builtin', '拥有所有权限，包括系统设置和用户管理'),
-  (NULL, 'ACCOUNTANT_SENIOR', '高级会计', 'builtin', '负责日常会计工作，可创建编辑过账凭证，查看报表，执行银行操作'),
-  (NULL, 'ACCOUNTANT_JUNIOR', '初级会计', 'builtin', '可创建编辑凭证但不能过账，不能执行银行操作'),
-  (NULL, 'HR_MANAGER', '人事经理', 'builtin', '人事全部权限，可查看薪资信息，执行薪资计算'),
-  (NULL, 'HR_STAFF', '人事专员', 'builtin', '人事基本权限，可管理员工信息，不能查看薪资详情'),
-  (NULL, 'SALES_MANAGER', '销售经理', 'builtin', '销售和CRM全部权限，可查看销售分析'),
-  (NULL, 'SALES_STAFF', '销售人员', 'builtin', '销售基本权限，可管理自己的客户和订单'),
-  (NULL, 'WAREHOUSE_MANAGER', '仓库主管', 'builtin', '库存全部权限，可执行库存调整'),
-  (NULL, 'WAREHOUSE_STAFF', '仓库人员', 'builtin', '库存基本权限，可执行入出库操作'),
-  (NULL, 'TAX_ACCOUNTANT', '税理士', 'builtin', '外部税理士，只读访问财务数据和报表'),
-  (NULL, 'AUDITOR', '审计师', 'builtin', '外部审计师，只读访问所有财务数据'),
-  (NULL, 'VIEWER', '只读用户', 'builtin', '只能查看基本信息，不能执行任何操作');
+  (NULL, 'SYS_ADMIN', 'システム管理者', 'builtin', '全ての権限（システム設定・ユーザー管理を含む）'),
+  (NULL, 'ACCOUNTANT_SENIOR', '上級会計', 'builtin', '日常の会計業務、仕訳の作成・編集・転記、レポート参照、銀行操作が可能'),
+  (NULL, 'ACCOUNTANT_JUNIOR', '初級会計', 'builtin', '仕訳の作成・編集は可能。転記・銀行操作は不可'),
+  (NULL, 'HR_MANAGER', '人事マネージャー', 'builtin', '人事の全権限、給与情報の参照・給与計算の実行が可能'),
+  (NULL, 'HR_STAFF', '人事担当', 'builtin', '人事の基本権限、従業員情報の管理が可能。給与詳細は参照不可'),
+  (NULL, 'SALES_MANAGER', '販売マネージャー', 'builtin', '販売・CRMの全権限、販売分析の参照が可能'),
+  (NULL, 'SALES_STAFF', '販売担当', 'builtin', '販売の基本権限、自担当の顧客・受注の管理が可能'),
+  (NULL, 'WAREHOUSE_MANAGER', '倉庫責任者', 'builtin', '在庫の全権限、在庫調整が可能'),
+  (NULL, 'WAREHOUSE_STAFF', '倉庫担当', 'builtin', '在庫の基本権限、入出庫操作が可能'),
+  (NULL, 'TAX_ACCOUNTANT', '税理士', 'builtin', '外部税理士。財務データ・レポートの参照のみ'),
+  (NULL, 'AUDITOR', '監査担当', 'builtin', '外部監査。全財務データの参照のみ'),
+  (NULL, 'VIEWER', '閲覧専用ユーザー', 'builtin', '基本情報の参照のみ。操作は不可');
 END $$;

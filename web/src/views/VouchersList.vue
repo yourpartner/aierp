@@ -261,7 +261,6 @@ import api from '../api'
 import { useI18n } from '../i18n'
 import VoucherDetailCard from '../components/VoucherDetailCard.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import * as XLSX from 'xlsx'
 
 const { text } = useI18n()
 const props = withDefaults(defineProps<{ 
@@ -687,54 +686,22 @@ const downloading = ref(false)
 async function downloadExcel() {
   downloading.value = true
   try {
-    // 取得当前过滤条件下的全部数据（最多5000条）
-    const r = await api.post('/objects/voucher/search', {
-      page: 1,
-      pageSize: 5000,
+    const r = await api.post('/vouchers/export', {
       where: buildWhere(),
       orderBy: [{ field: 'posting_date', dir: 'DESC' }, { field: 'voucher_no', dir: 'DESC' }]
-    })
-    const data: any[] = Array.isArray(r.data?.data) ? r.data.data : []
-
-    const sheetData = [
-      ['転記日', '伝票種別', '伝票番号', '摘要', '勘定科目', '借貸区分', '金額']
-    ]
-    for (const row of data) {
-      const lines: any[] = Array.isArray(row.payload?.lines) ? row.payload.lines : []
-      const postingDate = row.posting_date || ''
-      const vType = row.voucher_type || ''
-      const vNo = row.voucher_no || ''
-      const summary = row.payload?.header?.summary || ''
-      if (lines.length === 0) {
-        sheetData.push([postingDate, vType, vNo, summary, '', '', ''])
-      } else {
-        lines.forEach((line: any, idx: number) => {
-          sheetData.push([
-            idx === 0 ? postingDate : '',
-            idx === 0 ? vType : '',
-            idx === 0 ? vNo : '',
-            idx === 0 ? summary : '',
-            line.accountCode || line.account_code || '',
-            line.drcr || line.side || '',
-            Number(line.amount ?? 0)
-          ])
-        })
-      }
-    }
-
-    const ws = XLSX.utils.aoa_to_sheet(sheetData)
-    // 列幅設定
-    ws['!cols'] = [
-      { wch: 12 }, { wch: 10 }, { wch: 18 }, { wch: 30 },
-      { wch: 14 }, { wch: 8 }, { wch: 14 }
-    ]
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, '会計伝票一覧')
-    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    XLSX.writeFile(wb, `会計伝票一覧_${today}.xlsx`)
-    ElMessage.success(`${data.length}件をダウンロードしました`)
+    }, { responseType: 'blob' })
+    const blob = r.data as Blob
+    const name = (r.headers['content-disposition'] as string)?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/)?.[1]?.replace(/['"]/g, '') || `会計伝票一覧_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('Excelをダウンロードしました')
   } catch (e: any) {
-    ElMessage.error(e?.message || 'ダウンロードに失敗しました')
+    const msg = e?.response?.data?.error ?? e?.message ?? 'ダウンロードに失敗しました'
+    ElMessage.error(typeof msg === 'string' ? msg : msg.detail ?? 'ダウンロードに失敗しました')
   } finally {
     downloading.value = false
   }

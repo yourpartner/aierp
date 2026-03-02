@@ -106,6 +106,8 @@ export interface Messages {
     assetClasses: string
     assetsList: string
     depreciation: string
+    cashFlow: string
+    expenseClaims: string
     moneytree: string
     employees: string
     departments: string
@@ -927,6 +929,8 @@ export const ja: Messages = {
     assetClasses: '資産クラス管理',
     assetsList: '固定資産一覧',
     depreciation: '定期償却記帳',
+    cashFlow: '資金繰り',
+    expenseClaims: '経費精算一覧',
     moneytree: '銀行明細',
     employees: '社員一覧',
     departments: '部門階層',
@@ -1944,20 +1948,22 @@ export const en: Messages = {
     groupOrders: 'Order Management',
     groupCRM: 'CRM',
     groupSystem: 'System Settings',
-    groupFixedAssets: 'Fixed Assets',
-    faClasses: 'Asset Classes',
-    faList: 'Fixed Assets',
-    faDepreciation: 'Depreciation Posting',
+    groupFixedAssets: '固定資産',
+    faClasses: '資産クラス管理',
+    faList: '固定資産一覧',
+    faDepreciation: '定期償却記帳',
     // Dynamic menu translations (backend menu.xxx mapping)
     finance: 'Finance & Accounting',
     hr: 'HR Management',
     ai: 'AI',
     financialStatements: 'Financial Statements',
     financialNodes: 'Statement Designer',
-    fixedAssets: 'Fixed Assets',
-    assetClasses: 'Asset Classes',
-    assetsList: 'Fixed Assets List',
-    depreciation: 'Depreciation Posting',
+    fixedAssets: '固定資産',
+    assetClasses: '資産クラス管理',
+    assetsList: '固定資産一覧',
+    depreciation: '定期償却記帳',
+    cashFlow: 'Cash Flow',
+    expenseClaims: 'Expense Claims',
     moneytree: 'Bank Transactions',
     employees: 'Employees',
     departments: 'Departments',
@@ -2995,6 +3001,8 @@ zh.nav = {
   assetClasses: '资产类别管理',
   assetsList: '固定资产列表',
   depreciation: '定期折旧记账',
+  cashFlow: '资金周转',
+  expenseClaims: '经费报销一览',
   moneytree: '银行明细',
   employees: '员工列表',
   departments: '部门层级',

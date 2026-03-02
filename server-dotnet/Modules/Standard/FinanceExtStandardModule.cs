@@ -22,14 +22,14 @@ public class FinanceExtStandardModule : ModuleBase
         Dependencies = new[] { "finance_core" },
         Menus = new[]
         {
-            new MenuConfig { Id = "menu_bank_payment", Label = "menu.bankPayment", Icon = "Money", Path = "/operations/bank-payment", ParentId = "menu_finance", Order = 107 },
-            new MenuConfig { Id = "menu_fb_payment", Label = "menu.fbPayment", Icon = "Tickets", Path = "/fb-payment", ParentId = "menu_finance", Order = 108 },
-            new MenuConfig { Id = "menu_cash_ledger", Label = "menu.cashLedger", Icon = "Coin", Path = "/cash/ledger", ParentId = "menu_finance", Order = 109 },
-            new MenuConfig { Id = "menu_financial_statements", Label = "menu.financialStatements", Icon = "DataAnalysis", Path = "/financial/statements", ParentId = "menu_finance", Order = 110 },
-            new MenuConfig { Id = "menu_financial_nodes", Label = "menu.financialNodes", Icon = "SetUp", Path = "/financial/nodes", ParentId = "menu_finance", Order = 111 },
-            new MenuConfig { Id = "menu_consumption_tax", Label = "menu.consumptionTax", Icon = "Memo", Path = "/financial/consumption-tax", ParentId = "menu_finance", Order = 112 },
-            new MenuConfig { Id = "menu_monthly_closing", Label = "menu.monthlyClosing", Icon = "Calendar", Path = "/financial/monthly-closing", ParentId = "menu_finance", Order = 113 },
-            new MenuConfig { Id = "menu_ledger_export", Label = "menu.ledgerExport", Icon = "Download", Path = "/ledger-export", ParentId = "menu_finance", Order = 114 },
+            new MenuConfig { Id = "menu_bank_payment", Label = "menu.bankPayment", Icon = "Money", Path = "/operations/bank-payment", ParentId = "menu_finance", Order = 109 },
+            new MenuConfig { Id = "menu_fb_payment", Label = "menu.fbPayment", Icon = "Tickets", Path = "/fb-payment", ParentId = "menu_finance", Order = 110 },
+            new MenuConfig { Id = "menu_cash_ledger", Label = "menu.cashLedger", Icon = "Coin", Path = "/cash/ledger", ParentId = "menu_finance", Order = 111 },
+            new MenuConfig { Id = "menu_financial_statements", Label = "menu.financialStatements", Icon = "DataAnalysis", Path = "/financial/statements", ParentId = "menu_finance", Order = 112 },
+            new MenuConfig { Id = "menu_financial_nodes", Label = "menu.financialNodes", Icon = "SetUp", Path = "/financial/nodes", ParentId = "menu_finance", Order = 113 },
+            new MenuConfig { Id = "menu_consumption_tax", Label = "menu.consumptionTax", Icon = "Memo", Path = "/financial/consumption-tax", ParentId = "menu_finance", Order = 114 },
+            new MenuConfig { Id = "menu_monthly_closing", Label = "menu.monthlyClosing", Icon = "Calendar", Path = "/financial/monthly-closing", ParentId = "menu_finance", Order = 115 },
+            new MenuConfig { Id = "menu_ledger_export", Label = "menu.ledgerExport", Icon = "Download", Path = "/ledger-export", ParentId = "menu_finance", Order = 116 },
         }
     };
     
