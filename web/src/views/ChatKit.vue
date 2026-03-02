@@ -37,7 +37,8 @@
         <div class="section">
           <div class="section-title">移动端模拟器</div>
           <el-menu class="menu">
-            <el-menu-item index="sim-all" @click="$router.push('/simulator')">双平台预览</el-menu-item>
+            <el-menu-item index="sim-payslip" @click="$router.push('/simulator?scenario=payslip')">工资明细场景</el-menu-item>
+            <el-menu-item index="sim-cert" @click="$router.push('/simulator?scenario=cert')">证明书申请场景</el-menu-item>
           </el-menu>
         </div>
       </div>

@@ -11,26 +11,6 @@
         <div class="content">企業アシスタントへようこそ！下のメニューからサービスをご利用ください。</div>
       </div>
       
-      <!-- 模拟系统主动推送工资单场景 -->
-      <div class="message received">
-        <div class="avatar">
-          <div class="avatar-icon">企</div>
-        </div>
-        <div class="content push-card">
-          <div class="card-title">給与明細発行のお知らせ</div>
-          <div class="card-date">2026年02月分</div>
-          <div class="card-body">
-            <p>今月の給与明細が発行されました。以下のボタンからご確認ください。</p>
-            <div class="card-item"><span>差引支給額</span><span class="highlight">¥ 325,000</span></div>
-            <div class="card-item"><span>支給日</span><span>2026-03-01</span></div>
-          </div>
-          <div class="card-footer" @click="handleAction('payslip_push')">
-            <span>詳細を確認する</span>
-            <span>&gt;</span>
-          </div>
-        </div>
-      </div>
-      
       <div v-for="(msg, index) in messages" :key="index" :class="['message', msg.type]">
         <div class="avatar" v-if="msg.type === 'received'">
           <div class="avatar-icon">企</div>
@@ -42,7 +22,13 @@
           <div class="card-title">{{ msg.cardData?.title }}</div>
           <div class="card-date">{{ msg.cardData?.date }}</div>
           <div class="card-body">
-            <p>{{ msg.cardData?.desc }}</p>
+            <p v-if="msg.cardData?.desc">{{ msg.cardData?.desc }}</p>
+            <template v-if="msg.cardData?.items">
+              <div class="card-item" v-for="(item, i) in msg.cardData.items" :key="i">
+                <span>{{ item.label }}</span>
+                <span :class="{ highlight: item.highlight }">{{ item.value }}</span>
+              </div>
+            </template>
           </div>
           <div class="card-footer" @click="handleAction(msg.cardData?.action || 'payslip')">
             <span>詳細を確認する</span>
@@ -93,8 +79,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
+const route = useRoute()
 const activeMenu = ref<string | null>(null)
 const chatArea = ref<HTMLElement | null>(null)
 
@@ -112,6 +100,58 @@ interface Message {
 }
 
 const messages = ref<Message[]>([])
+
+const scrollToBottom = () => {
+  nextTick(() => {
+    if (chatArea.value) {
+      chatArea.value.scrollTop = chatArea.value.scrollHeight
+    }
+  })
+}
+
+const initScenario = () => {
+  messages.value = []
+  const scenario = route.query.scenario
+  
+  if (scenario === 'payslip' || !scenario) {
+    // 默认或工资单场景：推送工资单卡片
+    messages.value.push({
+      type: 'received',
+      text: '',
+      isCard: true,
+      cardData: {
+        title: '給与明細発行のお知らせ',
+        date: '2026年02月分',
+        desc: '今月の給与明細が発行されました。以下のボタンからご確認ください。',
+        items: [
+          { label: '差引支給額', value: '¥ 325,000', highlight: true },
+          { label: '支給日', value: '2026-03-01' }
+        ],
+        action: 'payslip_push'
+      }
+    })
+  } else if (scenario === 'cert') {
+    // 证明书申请场景：预先展示申请流程
+    messages.value.push({ type: 'sent', text: '在職証明書を発行してほしいです。' })
+    messages.value.push({ type: 'received', text: '証明書の発行リクエストを受け付けました。担当者が確認後、3営業日以内にこちらへPDFでお送りします。しばらくお待ちください。' })
+    messages.value.push({ type: 'received', text: 'お待たせいたしました。在職証明書の発行が完了しました。' })
+    messages.value.push({
+      type: 'received',
+      text: '',
+      isFile: true,
+      fileData: { name: '在職証明書_20260302.pdf', size: '156 KB', type: 'pdf' }
+    })
+  }
+  scrollToBottom()
+}
+
+onMounted(() => {
+  initScenario()
+})
+
+watch(() => route.query.scenario, () => {
+  initScenario()
+})
 
 const toggleMenu = (menu: string) => {
   if (activeMenu.value === menu) {
@@ -207,14 +247,6 @@ const handleAction = (action: string) => {
       }, 1000)
     }
   }, 600)
-}
-
-const scrollToBottom = () => {
-  nextTick(() => {
-    if (chatArea.value) {
-      chatArea.value.scrollTop = chatArea.value.scrollHeight
-    }
-  })
 }
 </script>
 

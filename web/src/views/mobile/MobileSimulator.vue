@@ -302,15 +302,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import WechatUI from './WechatUI.vue'
 import LineUI from './LineUI.vue'
 
+const route = useRoute()
 const currentTime = ref('12:00')
 const theme = ref('light')
 
 const currentWechatView = ref('chat')
 const currentLineView = ref('chat')
+
+watch(() => route.query.scenario, () => {
+  currentWechatView.value = 'chat'
+  currentLineView.value = 'chat'
+})
 
 const getDetailTitle = (view: string) => {
   switch(view) {
