@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("TempHashGen")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+91f8f373b854bfea04a11f44fc47b795931cb1e1")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c01f12b4c948fd1fc196e6ad8aec878ca757bb6a")]
 [assembly: System.Reflection.AssemblyProductAttribute("TempHashGen")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TempHashGen")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

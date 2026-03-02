@@ -247,34 +247,34 @@
                   <el-icon><Delete /></el-icon>
                 </el-button>
                 <!-- 解析結果サマリー（読み取り専用タグ表示） -->
-                <div v-if="item._parsing || item.payrollConfig" class="salary-summary" style="width:100%; margin-top:6px;">
-                  <div v-if="item._parsing" style="display:flex; align-items:center; gap:6px; color:#909399; font-size:12px;">
+                <div v-if="item?._parsing || item?.payrollConfig" class="salary-summary" style="width:100%; margin-top:6px;">
+                  <div v-if="item?._parsing" style="display:flex; align-items:center; gap:6px; color:#909399; font-size:12px;">
                     <el-icon class="is-loading"><Loading /></el-icon> 解析中...
                   </div>
-                  <div v-else-if="item.payrollConfig" style="display:flex; flex-wrap:wrap; align-items:center; gap:6px;">
+                  <div v-else-if="item?.payrollConfig" style="display:flex; flex-wrap:wrap; align-items:center; gap:6px;">
                     <!-- 金額タグ -->
-                    <el-tag v-if="item.payrollConfig.baseSalary" size="small" type="primary" effect="plain">
-                      基本給 ¥{{ Number(item.payrollConfig.baseSalary).toLocaleString() }}
+                    <el-tag v-if="item?.payrollConfig?.baseSalary" size="small" type="primary" effect="plain">
+                      基本給 ¥{{ Number(item?.payrollConfig?.baseSalary).toLocaleString() }}
                     </el-tag>
-                    <el-tag v-if="item.payrollConfig.commuteAllowance" size="small" type="primary" effect="plain">
-                      交通費 ¥{{ Number(item.payrollConfig.commuteAllowance).toLocaleString() }}
+                    <el-tag v-if="item?.payrollConfig?.commuteAllowance" size="small" type="primary" effect="plain">
+                      交通費 ¥{{ Number(item?.payrollConfig?.commuteAllowance).toLocaleString() }}
                     </el-tag>
                     <!-- 保険・税タグ -->
-                    <el-tag v-if="item.payrollConfig.socialInsurance" size="small" type="success" effect="plain">社会保険</el-tag>
-                    <el-tag v-if="item.payrollConfig.employmentInsurance" size="small" type="success" effect="plain">雇用保険</el-tag>
-                    <el-tag v-if="item.payrollConfig.incomeTax" size="small" type="warning" effect="plain">源泉徴収</el-tag>
-                    <el-tag v-if="item.payrollConfig.residentTax" size="small" type="warning" effect="plain">住民税</el-tag>
+                    <el-tag v-if="item?.payrollConfig?.socialInsurance" size="small" type="success" effect="plain">社会保険</el-tag>
+                    <el-tag v-if="item?.payrollConfig?.employmentInsurance" size="small" type="success" effect="plain">雇用保険</el-tag>
+                    <el-tag v-if="item?.payrollConfig?.incomeTax" size="small" type="warning" effect="plain">源泉徴収</el-tag>
+                    <el-tag v-if="item?.payrollConfig?.residentTax" size="small" type="warning" effect="plain">住民税</el-tag>
                     <!-- 手当・控除タグ -->
-                    <el-tag v-if="item.payrollConfig.overtime" size="small" type="info" effect="plain">残業手当</el-tag>
-                    <el-tag v-if="item.payrollConfig.holidayWork" size="small" type="info" effect="plain">休日手当</el-tag>
-                    <el-tag v-if="item.payrollConfig.lateNight" size="small" type="info" effect="plain">深夜手当</el-tag>
-                    <el-tag v-if="item.payrollConfig.absenceDeduction" size="small" type="danger" effect="plain">欠勤控除</el-tag>
+                    <el-tag v-if="item?.payrollConfig?.overtime" size="small" type="info" effect="plain">残業手当</el-tag>
+                    <el-tag v-if="item?.payrollConfig?.holidayWork" size="small" type="info" effect="plain">休日手当</el-tag>
+                    <el-tag v-if="item?.payrollConfig?.lateNight" size="small" type="info" effect="plain">深夜手当</el-tag>
+                    <el-tag v-if="item?.payrollConfig?.absenceDeduction" size="small" type="danger" effect="plain">欠勤控除</el-tag>
                     <!-- 何も検出されなかった場合 -->
-                    <span v-if="!item.payrollConfig.baseSalary && !item.payrollConfig.commuteAllowance &&
-                                !item.payrollConfig.socialInsurance && !item.payrollConfig.employmentInsurance &&
-                                !item.payrollConfig.incomeTax && !item.payrollConfig.residentTax &&
-                                !item.payrollConfig.overtime && !item.payrollConfig.holidayWork &&
-                                !item.payrollConfig.lateNight && !item.payrollConfig.absenceDeduction"
+                    <span v-if="!item?.payrollConfig?.baseSalary && !item?.payrollConfig?.commuteAllowance &&
+                                !item?.payrollConfig?.socialInsurance && !item?.payrollConfig?.employmentInsurance &&
+                                !item?.payrollConfig?.incomeTax && !item?.payrollConfig?.residentTax &&
+                                !item?.payrollConfig?.overtime && !item?.payrollConfig?.holidayWork &&
+                                !item?.payrollConfig?.lateNight && !item?.payrollConfig?.absenceDeduction"
                           style="font-size:12px; color:#c0c4cc;">キーワードが検出されませんでした</span>
                     <el-button size="small" text type="primary" style="font-size:11px; padding:0;" @click="parseSalaryDescription(idx)">再解析</el-button>
                   </div>
@@ -899,53 +899,72 @@ async function reload() {
 }
 
 async function loadEmployee() {
-  const r = await api.get(`/objects/employee/${id.value}`)
-  const data = r.data?.payload || r.data || {}
+  let data: Record<string, any> = {}
+  try {
+    const r = await api.get(`/objects/employee/${id.value}`)
+    const raw = r.data?.payload ?? r.data
+    if (raw != null && typeof raw === 'object') {
+      data = raw
+    } else if (typeof raw === 'string') {
+      try {
+        data = JSON.parse(raw) || {}
+      } catch {
+        data = {}
+      }
+    }
+  } catch (e: any) {
+    error.value = e?.response?.data?.error || e?.message || '読み込みに失敗しました'
+    return
+  }
+
+  const contact = data.contact && typeof data.contact === 'object' ? data.contact : {}
+  const insurance = data.insurance && typeof data.insurance === 'object' ? data.insurance : {}
   Object.assign(model, {
-    code: data.code || '',
-    nameKanji: data.nameKanji || '',
-    nameKana: data.nameKana || '',
-    gender: data.gender || '',
-    birthDate: data.birthDate || '',
-    nationality: data.nationality || 'JP',
-    arriveJPDate: data.arriveJPDate || '',
-    startWorkDate: data.startWorkDate || '',
-    myNumber: data.myNumber || '',
-    taxNo: data.taxNo || '',
+    code: data.code ?? '',
+    nameKanji: data.nameKanji ?? '',
+    nameKana: data.nameKana ?? '',
+    gender: data.gender ?? '',
+    birthDate: data.birthDate ?? '',
+    nationality: data.nationality ?? 'JP',
+    arriveJPDate: data.arriveJPDate ?? '',
+    startWorkDate: data.startWorkDate ?? '',
+    myNumber: data.myNumber ?? '',
+    taxNo: data.taxNo ?? '',
     contact: {
-      phone: data.contact?.phone || '',
-      email: data.contact?.email || '',
-      postalCode: data.contact?.postalCode || '',
-      address: data.contact?.address || ''
+      phone: contact.phone ?? '',
+      email: contact.email ?? '',
+      postalCode: contact.postalCode ?? '',
+      address: contact.address ?? ''
     },
     insurance: {
-      hireInsuranceNo: data.insurance?.hireInsuranceNo || '',
-      endowNo: data.insurance?.endowNo || '',
-      healthNo: data.insurance?.healthNo || '',
-      endowBaseNo: data.insurance?.endowBaseNo || '',
-      joinDate: data.insurance?.joinDate || '',
-      quitDate: data.insurance?.quitDate || ''
+      hireInsuranceNo: insurance.hireInsuranceNo ?? '',
+      endowNo: insurance.endowNo ?? '',
+      healthNo: insurance.healthNo ?? '',
+      endowBaseNo: insurance.endowBaseNo ?? '',
+      joinDate: insurance.joinDate ?? '',
+      quitDate: insurance.quitDate ?? ''
     },
     contracts: Array.isArray(data.contracts) ? data.contracts : [],
-    salaries: Array.isArray(data.salaries) ? data.salaries.map((s: any) => ({ ...s, payrollConfig: s.payrollConfig ?? null })) : [],
+    salaries: Array.isArray(data.salaries) ? data.salaries.map((s: any) => ({ ...(s && typeof s === 'object' ? s : {}), payrollConfig: s?.payrollConfig ?? null })) : [],
     departments: Array.isArray(data.departments) ? data.departments : [],
     bankAccounts: Array.isArray(data.bankAccounts) ? data.bankAccounts : [],
     emergencies: Array.isArray(data.emergencies) ? data.emergencies : [],
     attachments: Array.isArray(data.attachments) ? data.attachments : [],
     dependents: Array.isArray(data.dependents) ? data.dependents : [],
-    primaryDepartmentName: data.primaryDepartmentName || ''
-  })
-  
-  // description があるが payrollConfig がない場合は自動解析
-  model.salaries.forEach((_: any, idx: number) => {
-    const s = model.salaries[idx]
-    if (s.description?.trim() && !s.payrollConfig) {
-      parseSalaryDescription(idx)
-    }
+    primaryDepartmentName: data.primaryDepartmentName ?? ''
   })
 
-  // 解析银行账户的银行名称和支店名称
-  await resolveBankNames()
+  try {
+    model.salaries.forEach((_: any, idx: number) => {
+      const s = model.salaries[idx]
+      if (s?.description?.trim() && !s.payrollConfig) {
+        parseSalaryDescription(idx)
+      }
+    })
+    await resolveBankNames()
+  } catch (e: any) {
+    console.warn('loadEmployee post-process:', e)
+  }
 }
 
 // 根据bankCode和branchCode查询银行名称和支店名称

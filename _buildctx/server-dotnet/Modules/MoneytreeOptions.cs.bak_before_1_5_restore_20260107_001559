@@ -1,0 +1,31 @@
+using System;
+
+namespace Server.Modules;
+
+/// <summary>
+/// Moneytree OAuth/API 配置（供 MoneytreeService / Moneytree 模块使用）
+/// </summary>
+public sealed class MoneytreeOptions
+{
+    public string ClientId { get; set; } = string.Empty;
+    public string ClientSecret { get; set; } = string.Empty;
+    public string RedirectUri { get; set; } = string.Empty;
+
+    // OAuth
+    public string AuthBaseUrl { get; set; } = "https://oauth.moneytree.jp/oauth/authorize";
+    public string TokenUrl { get; set; } = "https://oauth.moneytree.jp/oauth/token";
+
+    // API
+    public string ApiBaseUrl { get; set; } = "https://api.moneytree.jp/v2";
+
+    // OAuth scopes（MoneytreeService 仍使用 Scopes 字段名）
+    public string Scope { get; set; } = "accounts:read transactions:read";
+    public string Scopes => Scope;
+
+    public bool UsePkce { get; set; } = true;
+    public TimeSpan TokenRefreshSkew { get; set; } = TimeSpan.FromMinutes(2);
+
+    // 兼容旧代码字段名
+    public string BaseUrl => ApiBaseUrl.TrimEnd('/');
+    public string AuthUrl => AuthBaseUrl.TrimEnd('/');
+}

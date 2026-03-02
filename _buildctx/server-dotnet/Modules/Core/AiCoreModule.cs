@@ -1,0 +1,125 @@
+using Microsoft.Extensions.Logging;
+using Npgsql;
+using Server.Infrastructure.Modules;
+using Server.Infrastructure.Skills;
+using Server.Modules.AgentKit.Tools;
+
+namespace Server.Modules.Core;
+
+/// <summary>
+/// AI核心模块 - 包含AI对话、智能助手等功能
+/// </summary>
+public class AiCoreModule : ModuleBase
+{
+    public override ModuleInfo GetInfo() => new()
+    {
+        Id = "ai_core",
+        Name = "AI核心",
+        Description = "AI对话助手、智能场景、自动化规则等核心AI功能",
+        Category = ModuleCategory.Core,
+        Version = "1.0.0",
+        Dependencies = Array.Empty<string>(),
+        Menus = new[]
+        {
+            new MenuConfig { Id = "menu_ai", Label = "menu.ai", Icon = "ChatLineSquare", Path = "", ParentId = null, Order = 10 },
+            new MenuConfig { Id = "menu_chat", Label = "menu.chat", Icon = "ChatDotRound", Path = "/chat", ParentId = "menu_ai", Order = 11 },
+            new MenuConfig { Id = "menu_agent_scenarios", Label = "menu.agentScenarios", Icon = "Collection", Path = "/ai/agent-scenarios", ParentId = "menu_ai", Order = 12 },
+            new MenuConfig { Id = "menu_agent_rules", Label = "menu.agentRules", Icon = "SetUp", Path = "/ai/agent-rules", ParentId = "menu_ai", Order = 13 },
+            new MenuConfig { Id = "menu_agent_skills", Label = "menu.agentSkills", Icon = "Cpu", Path = "/ai/agent-skills", ParentId = "menu_ai", Order = 14 },
+            new MenuConfig { Id = "menu_workflow_rules", Label = "menu.workflowRules", Icon = "Operation", Path = "/workflow/rules", ParentId = "menu_ai", Order = 14 },
+        }
+    };
+    
+    public override void RegisterServices(IServiceCollection services, IConfiguration configuration)
+    {
+        // 注册 AgentToolRegistry（Scoped，因为需要在每个请求中注册工具）
+        services.AddScoped<AgentToolRegistry>();
+        
+        // 注册各个 Agent 工具（Scoped，因为依赖数据库连接等）
+        // 注意：需与 BuildToolDefinitions() 保持一致
+        services.AddScoped<CheckAccountingPeriodTool>();
+        services.AddScoped<VerifyInvoiceRegistrationTool>();
+        services.AddScoped<LookupCustomerTool>();
+        services.AddScoped<LookupMaterialTool>();
+        services.AddScoped<LookupAccountTool>();
+        services.AddScoped<LookupVendorTool>();
+        services.AddScoped<SearchVendorReceiptsTool>();
+        services.AddScoped<GetExpenseAccountOptionsTool>();
+        services.AddScoped<CreateVendorInvoiceTool>();
+        services.AddScoped<GetVoucherByNumberTool>();
+        services.AddScoped<ExtractBookingSettlementDataTool>();
+        services.AddScoped<FindMoneytreeDepositForSettlementTool>();
+        services.AddScoped<PreflightCheckTool>();
+        services.AddScoped<CalculatePayrollTool>();
+        services.AddScoped<SavePayrollTool>();
+        services.AddScoped<GetPayrollHistoryTool>();
+        services.AddScoped<GetMyPayrollTool>();
+        services.AddScoped<GetPayrollComparisonTool>();
+        services.AddScoped<GetDepartmentSummaryTool>();
+        
+        // 银行明細記帳ツール
+        services.AddScoped<IdentifyBankCounterpartyTool>();
+        services.AddScoped<SearchBankOpenItemsTool>();
+        services.AddScoped<ResolveBankAccountTool>();
+        services.AddScoped<SearchHistoricalPatternsTool>();
+        services.AddScoped<ClearOpenItemTool>();
+        services.AddScoped<SkipTransactionTool>();
+        
+        // 注册核心服务
+        services.AddScoped<AgentKitService>();
+        services.AddScoped<AgentScenarioService>();
+        services.AddScoped<AgentAccountingRuleService>();
+        
+        // Unified Agent Skills Framework
+        services.AddScoped<AgentSkillService>();
+        services.AddScoped<SkillMatcher>();
+        services.AddScoped<SkillPromptBuilder2>();
+        services.AddScoped<WorkflowRulesService>();
+        services.AddScoped<AiChatbotService>();
+        services.AddScoped<AiLearningService>();
+        
+        // AI Skills + Learning Framework
+        services.AddScoped<HistoricalPatternService>();
+        services.AddScoped<LearningEventCollector>();
+        services.AddScoped<SkillContextBuilder>();
+        services.AddScoped<MessageTaskRouter>();
+
+        // Phase 6: Learning Engine + Proactive Alert
+        services.AddScoped<LearningEngine>();
+        services.AddScoped<ProactiveAlertService>();
+        services.AddHostedService<ProactiveAlertBackgroundService>();
+
+        // AI Unified Orchestrator — Context Engine + Skill Router
+        services.AddScoped<InvoiceBookingSkill>();
+        services.AddScoped<TimesheetSkill>();
+        services.AddScoped<PayrollSkill>();
+        services.AddScoped<CertificateSkill>();
+        services.AddScoped<LeaveSkill>();
+        services.AddScoped<WeComChannelAdapter>();
+        // Phase 4: Advanced Skills
+        services.AddScoped<ResumeAnalysisSkill>();
+        services.AddScoped<BillingSkill>();
+        services.AddScoped<PurchaseOrderSkill>();
+        services.AddScoped<OpportunitySkill>();
+        services.AddScoped<FinancialReportSkill>();
+        services.AddScoped<SkillRouter>(sp =>
+        {
+            var router = new SkillRouter(
+                sp.GetRequiredService<ILogger<SkillRouter>>(),
+                sp.GetRequiredService<NpgsqlDataSource>());
+            // 注册所有技能
+            router.RegisterSkill(sp.GetRequiredService<InvoiceBookingSkill>());
+            router.RegisterSkill(sp.GetRequiredService<TimesheetSkill>());
+            router.RegisterSkill(sp.GetRequiredService<PayrollSkill>());
+            router.RegisterSkill(sp.GetRequiredService<CertificateSkill>());
+            router.RegisterSkill(sp.GetRequiredService<LeaveSkill>());
+            router.RegisterSkill(sp.GetRequiredService<ResumeAnalysisSkill>());
+            router.RegisterSkill(sp.GetRequiredService<BillingSkill>());
+            router.RegisterSkill(sp.GetRequiredService<PurchaseOrderSkill>());
+            router.RegisterSkill(sp.GetRequiredService<OpportunitySkill>());
+            router.RegisterSkill(sp.GetRequiredService<FinancialReportSkill>());
+            return router;
+        });
+    }
+}
+

@@ -3,6 +3,9 @@ obj/
 **/bin/
 **/obj/
 bin_*/
+bin_build_check*/
+publish/
+Dump*/
 *.user
 *.suo
 .vs/

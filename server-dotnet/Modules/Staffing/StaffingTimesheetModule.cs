@@ -6,6 +6,7 @@ using Npgsql;
 using Server.Domain;
 using Server.Infrastructure;
 using Server.Infrastructure.Modules;
+using ClosedXML.Excel;
 
 namespace Server.Modules.Staffing;
 

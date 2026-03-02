@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "P4zbDII7oq2lGNlpfvx3fheB0PpZTkmDIjNR1on1eMMSXGVolYT3E6RuYPGHZAafp2b/jW9WDRrgfoFHXHHKHg==",
+  "success": true,
+  "projectFilePath": "d:\\yanxia\\_buildctx\\server-dotnet\\Tools\\EmployeeImport\\EmployeeImport.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\ryuho\\.nuget\\packages\\microsoft.extensions.dependencyinjection.abstractions\\8.0.0\\microsoft.extensions.dependencyinjection.abstractions.8.0.0.nupkg.sha512",
+    "C:\\Users\\ryuho\\.nuget\\packages\\microsoft.extensions.logging.abstractions\\8.0.0\\microsoft.extensions.logging.abstractions.8.0.0.nupkg.sha512",
+    "C:\\Users\\ryuho\\.nuget\\packages\\npgsql\\8.0.5\\npgsql.8.0.5.nupkg.sha512"
+  ],
+  "logs": []
+}

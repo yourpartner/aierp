@@ -1303,6 +1303,7 @@ public class FinanceService
         // Check if voucher is a reversal voucher itself
         if (root.TryGetProperty("isReversal", out var isRevEl) && isRevEl.ValueKind == JsonValueKind.True)
         {
+
             throw new Exception("反対仕訳は削除できません。");
         }
         

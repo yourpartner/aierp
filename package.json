@@ -5,6 +5,7 @@
     "element-plus": "^2.11.4",
     "jaconv": "^1.1.2",
     "jsoneditor": "^10.4.1",
+    "pdf-parse": "^2.4.5",
     "zengin-code": "^1.0.0-p20250929"
   },
   "devDependencies": {

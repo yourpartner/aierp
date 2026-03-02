@@ -5,9 +5,12 @@ using System.Text.Json.Nodes;
 using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using ClosedXML.Excel;
 using Server.Infrastructure;
+using HttpRequest = Microsoft.AspNetCore.Http.HttpRequest;
 
 namespace Server.Modules;
 
@@ -1730,7 +1733,7 @@ public static class HrPayrollModule
             if (body is null || body.Entries is null || body.Entries.Count == 0 || string.IsNullOrWhiteSpace(body.Month))
                 return Results.BadRequest(new { error = "month and entries required" });
 
-            var user = Auth.GetUserCtx(req);
+            var user = Auth.GetUserCtx((Microsoft.AspNetCore.Http.HttpRequest)req);
             try
             {
                 var result = await payroll.SaveManualAsync(cc.ToString(), user, body, ct);
@@ -1758,7 +1761,7 @@ public static class HrPayrollModule
             if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
                 return Results.BadRequest(new { error = "Missing x-company-code" });
             var companyCode = cc.ToString();
-            var user = Auth.GetUserCtx(req);
+            var user = Auth.GetUserCtx((Microsoft.AspNetCore.Http.HttpRequest)req);
             if (user is null || string.IsNullOrWhiteSpace(user.UserId))
                 return Results.Unauthorized();
 
@@ -1889,6 +1892,80 @@ public static class HrPayrollModule
             });
         }).RequireAuthorization();
 
+        // POST /maintenance/payroll/run-and-save
+        // 指定公司、月份：计算该公司该月所有员工工资并直接保存（用于运维/一次性执行，如 GCP 2026-01）。
+        // Body: { "month": "YYYY-MM" }，x-company-code 指定公司。
+        app.MapPost("/maintenance/payroll/run-and-save", async (HttpRequest req, PayrollService payroll, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+            var companyCode = cc.ToString();
+            PayrollMaintenanceRunRequest? body = null;
+            try
+            {
+                body = await JsonSerializer.DeserializeAsync<PayrollMaintenanceRunRequest>(req.Body, PayrollJsonSerializerOptions, ct);
+            }
+            catch { }
+            var month = body?.Month?.Trim();
+            if (string.IsNullOrWhiteSpace(month) || month.Length != 7 || month[4] != '-')
+                return Results.BadRequest(new { error = "body.month required (YYYY-MM)" });
+
+            var employeeIds = await payroll.ResolveEmployeeIdsAsync(companyCode, null, ct);
+            if (employeeIds.Count == 0)
+                return Results.BadRequest(new { error = "no employees to run payroll" });
+
+            PayrollService.PayrollManualRunResult preview;
+            try
+            {
+                preview = await payroll.ManualRunAsync(companyCode, employeeIds, month, null, false, ct);
+            }
+            catch (PayrollExecutionException ex)
+            {
+                return Results.Json(new { error = ex.Message, ex.Payload }, statusCode: ex.StatusCode);
+            }
+
+            var saveEntries = new List<PayrollService.PayrollManualSaveEntry>();
+            foreach (var entry in preview.Entries)
+            {
+                var metadataNode = new JsonObject { ["source"] = JsonValue.Create("maintenance") };
+                saveEntries.Add(CreateManualSaveEntry(entry, false, metadataNode));
+            }
+
+            var systemUser = new Auth.UserCtx(
+                UserId: "maintenance-run-and-save",
+                Roles: new[] { "admin" },
+                Caps: new[] { "payroll:write" },
+                DeptId: null,
+                EmployeeCode: null,
+                UserName: "Maintenance",
+                CompanyCode: companyCode);
+
+            var saveRequest = new PayrollService.PayrollManualSaveRequest
+            {
+                Month = preview.Month!,
+                PolicyId = preview.PolicyId,
+                Overwrite = true,
+                RunType = "maintenance",
+                Entries = saveEntries
+            };
+
+            try
+            {
+                var saveResult = await payroll.SaveManualAsync(companyCode, systemUser, saveRequest, ct);
+                return Results.Ok(new
+                {
+                    runId = saveResult.RunId,
+                    month = preview.Month,
+                    entryCount = saveResult.EntryCount,
+                    entryIdsByEmployeeId = saveResult.EntryIdsByEmployeeId
+                });
+            }
+            catch (PayrollExecutionException ex)
+            {
+                return Results.Json(new { error = ex.Message, ex.Payload }, statusCode: ex.StatusCode);
+            }
+        }).RequireAuthorization();
+
         // ========== Payroll Task Management Endpoints ==========
 
         // GET /payroll/tasks
@@ -1925,7 +2002,7 @@ public static class HrPayrollModule
             if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
                 return Results.BadRequest(new { error = "Missing x-company-code" });
 
-            var user = Auth.GetUserCtx(req);
+            var user = Auth.GetUserCtx((Microsoft.AspNetCore.Http.HttpRequest)req);
             if (user is null || string.IsNullOrWhiteSpace(user.UserId))
                 return Results.Unauthorized();
 
@@ -1971,7 +2048,7 @@ public static class HrPayrollModule
             if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
                 return Results.BadRequest(new { error = "Missing x-company-code" });
 
-            var user = Auth.GetUserCtx(req);
+            var user = Auth.GetUserCtx((Microsoft.AspNetCore.Http.HttpRequest)req);
             if (user is null || string.IsNullOrWhiteSpace(user.UserId))
                 return Results.Unauthorized();
 
@@ -1999,7 +2076,7 @@ public static class HrPayrollModule
             if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
                 return Results.BadRequest(new { error = "Missing x-company-code" });
 
-            var user = Auth.GetUserCtx(req);
+            var user = Auth.GetUserCtx((Microsoft.AspNetCore.Http.HttpRequest)req);
             if (user is null || string.IsNullOrWhiteSpace(user.UserId))
                 return Results.Unauthorized();
 
@@ -2047,7 +2124,7 @@ public static class HrPayrollModule
             if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
                 return Results.BadRequest(new { error = "Missing x-company-code" });
 
-            var user = Auth.GetUserCtx(req);
+            var user = Auth.GetUserCtx((Microsoft.AspNetCore.Http.HttpRequest)req);
             if (user is null || string.IsNullOrWhiteSpace(user.UserId))
                 return Results.Unauthorized();
 
@@ -6378,3 +6455,5 @@ internal sealed record PayrollAutoRunRequest(
     bool? Debug,
     decimal? DiffPercentThreshold,
     decimal? DiffAmountThreshold);
+
+internal sealed record PayrollMaintenanceRunRequest(string? Month);

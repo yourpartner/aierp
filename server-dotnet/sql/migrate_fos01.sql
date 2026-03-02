@@ -1,4 +1,4 @@
-﻿-- =====================================================================
+-- =====================================================================
 -- FOS01 Data Migration Script
 -- Source: Old System (MySQL) CompanyID=250, 鏍紡浼氱ぞFOS
 -- Target: New System (PostgreSQL/Azure) company_code='FOS01'
@@ -15,22 +15,12 @@
 BEGIN;
 
 -- =====================================================================
--- Pre-flight safety check: ensure FOS01 doesn't collide with existing data
+-- 1. Company (re-import: ensure FOS01 exists; update name if already present)
 -- =====================================================================
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM companies WHERE company_code = 'FOS01') THEN
-    RAISE EXCEPTION 'ABORT: company_code FOS01 already exists in companies table. Migration cancelled to protect existing data.';
-  END IF;
-  RAISE NOTICE 'Pre-flight check passed: FOS01 does not exist yet.';
-END
-$$;
-
--- =====================================================================
--- 1. Company Information
--- =====================================================================
-INSERT INTO companies (company_code, name) VALUES
-  ('FOS01', '株式会社FOS');
+INSERT INTO companies (company_code, name)
+SELECT 'FOS01', '株式会社FOS'
+WHERE NOT EXISTS (SELECT 1 FROM companies WHERE company_code = 'FOS01');
+UPDATE companies SET name = '株式会社FOS' WHERE company_code = 'FOS01';
 
 -- =====================================================================
 -- 2. Chart of Accounts (浼氳▓绉戠洰) - 87 records

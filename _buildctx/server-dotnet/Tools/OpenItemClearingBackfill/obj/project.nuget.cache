@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "dgSpecHash": "vUweXkemEmpc5q6jn8DMagZoZahCQM6Da4nNaCFLEtVO42Y3XXyraxd66tYA80Kr3Vf4QC0HBzAM5udA65XX+g==",
+  "success": true,
+  "projectFilePath": "d:\\yanxia\\_buildctx\\server-dotnet\\Tools\\OpenItemClearingBackfill\\OpenItemClearingBackfill.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\ryuho\\.nuget\\packages\\microsoft.extensions.dependencyinjection.abstractions\\8.0.0\\microsoft.extensions.dependencyinjection.abstractions.8.0.0.nupkg.sha512",
+    "C:\\Users\\ryuho\\.nuget\\packages\\microsoft.extensions.logging.abstractions\\8.0.0\\microsoft.extensions.logging.abstractions.8.0.0.nupkg.sha512",
+    "C:\\Users\\ryuho\\.nuget\\packages\\npgsql\\8.0.1\\npgsql.8.0.1.nupkg.sha512"
+  ],
+  "logs": [
+    {
+      "code": "NU1903",
+      "level": "Warning",
+      "warningLevel": 1,
+      "message": "Package 'Npgsql' 8.0.1 has a known high severity vulnerability, https://github.com/advisories/GHSA-x9vc-6hfv-hg8c",
+      "libraryId": "Npgsql",
+      "targetGraphs": [
+        "net8.0"
+      ]
+    }
+  ]
+}
