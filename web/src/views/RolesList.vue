@@ -54,16 +54,16 @@
     </el-card>
 
     <!-- 作成/編集ロールダイアログ -->
-    <el-dialog v-model="showCreate" :title="editId ? text.editRole : text.createRole" width="560px" destroy-on-close class="role-form-dialog">
-      <el-form :model="form" label-width="120px" size="small" class="role-form">
+    <el-dialog v-model="showCreate" :title="editId ? text.editRole : text.createRole" width="480px" destroy-on-close>
+      <el-form :model="form" label-width="100px" size="small">
         <el-form-item :label="text.roleCode" required>
-          <el-input v-model="form.roleCode" :disabled="!!editId" :placeholder="text.roleCodePlaceholder" class="role-form-input" />
+          <el-input v-model="form.roleCode" :disabled="!!editId" :placeholder="text.roleCodePlaceholder" />
         </el-form-item>
         <el-form-item :label="text.roleName">
-          <el-input v-model="form.roleName" class="role-form-input" />
+          <el-input v-model="form.roleName" />
         </el-form-item>
         <el-form-item :label="text.description">
-          <el-input v-model="form.description" type="textarea" :rows="2" class="role-form-input" />
+          <el-input v-model="form.description" type="textarea" :rows="2" />
         </el-form-item>
         <el-form-item :label="text.caps">
           <div class="caps-selector">
@@ -105,13 +105,13 @@
     </el-dialog>
 
     <!-- AIでロール作成ダイアログ -->
-    <el-dialog v-model="showAiDialog" :title="text.aiCreateTitle" width="560px" destroy-on-close class="role-form-dialog">
+    <el-dialog v-model="showAiDialog" :title="text.aiCreateTitle" width="480px" destroy-on-close>
       <div class="ai-dialog-content">
         <el-alert type="info" :closable="false" style="margin-bottom:16px">
           <template #title>{{ text.aiHint }}</template>
         </el-alert>
         
-        <el-input v-model="aiPrompt" type="textarea" :rows="5" :placeholder="text.aiPlaceholder" class="role-form-input" />
+        <el-input v-model="aiPrompt" type="textarea" :rows="5" :placeholder="text.aiPlaceholder" />
         
         <div v-if="aiGenerating" style="text-align:center;padding:20px">
           <el-icon class="is-loading" :size="32"><Loading /></el-icon>
@@ -152,7 +152,7 @@
     </el-dialog>
 
     <!-- 権限チェック結果ダイアログ -->
-    <el-dialog v-model="showCheckDialog" :title="text.checkResult" width="520px" class="role-form-dialog">
+    <el-dialog v-model="showCheckDialog" :title="text.checkResult" width="480px">
       <div v-if="checkResult">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item :label="text.roleName">{{ checkResult.roleName }}</el-descriptions-item>
@@ -593,49 +593,30 @@ onMounted(() => {
   display: flex;
   gap: 8px;
 }
-/* ダイアログ内の入力幅を弾窗に収める */
-:deep(.role-form-dialog .el-dialog__body) {
-  overflow-x: hidden;
-}
-:deep(.role-form-dialog .el-form-item__content) {
-  max-width: 100%;
-}
-:deep(.role-form-dialog .role-form-input),
-:deep(.role-form-dialog .el-input),
-:deep(.role-form-dialog .el-textarea) {
-  max-width: 100%;
-  width: 100%;
-  box-sizing: border-box;
-}
 .caps-selector {
-  max-height: 360px;
+  max-height: 320px;
   overflow-y: auto;
-  overflow-x: hidden;
-  border: 1px solid #eee;
-  border-radius: 4px;
+  border: 1px solid var(--el-border-color-lighter, #eee);
+  border-radius: 8px;
   padding: 12px;
-  max-width: 100%;
-  box-sizing: border-box;
 }
 .caps-module {
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 .caps-module-title {
   font-weight: 600;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   padding-bottom: 4px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--el-border-color-lighter, #eee);
 }
 .cap-checkbox {
   display: block;
   margin: 4px 0;
 }
 .data-scopes {
-  border: 1px solid #eee;
-  border-radius: 4px;
+  border: 1px solid var(--el-border-color-lighter, #eee);
+  border-radius: 8px;
   padding: 12px;
-  max-width: 100%;
-  box-sizing: border-box;
 }
 .data-scope-row {
   display: flex;
@@ -645,17 +626,12 @@ onMounted(() => {
 }
 .data-scope-select {
   width: 140px;
-  min-width: 0;
 }
 .ai-dialog-content {
-  min-height: 200px;
-  max-width: 100%;
+  min-height: 180px;
 }
 .ai-result {
   margin-top: 16px;
-}
-:deep(.ai-result .el-descriptions) {
-  max-width: 100%;
 }
 </style>
 
