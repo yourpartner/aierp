@@ -3672,6 +3672,7 @@ const pathToEmbedKeyMap: Record<string, string> = {
   '/payroll-execute': 'payroll.execute',
   '/payroll-history': 'payroll.history',
   '/hr/resident-tax': 'hr.resident_tax',
+  '/hr/wage-ledger': 'hr.wageLedger',
   '/timesheets': 'timesheets.list',
   // 系统模块
   '/company/settings': 'company.settings',
@@ -4813,6 +4814,7 @@ async function onSelectCommon(key:string){
     if (key==='cert.request') return router.push('/cert/request')
     if (key==='company.settings') return router.push('/company/settings')
     if (key==='finance.cashFlow') return router.push('/finance/cash-flow')
+    if (key==='hr.wageLedger') return router.push('/hr/wage-ledger')
   }
   openInModal(key, getTitle(key))
 }
