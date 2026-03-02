@@ -29,7 +29,9 @@ export const coreRoutes: RouteRecordRaw[] = [
 ]
 
 // 财务核心模块路由 - 已通过 ChatKit 弹窗访问，不需要独立路由
-export const financeCoreRoutes: RouteRecordRaw[] = []
+export const financeCoreRoutes: RouteRecordRaw[] = [
+  { path: '/finance/cash-flow', component: () => import('../views/finance/CashFlow.vue'), meta: { requiresAuth: true } },
+]
 
 // 财务扩展模块路由 - 已通过 ChatKit 弹窗访问，不需要独立路由
 export const financeExtRoutes: RouteRecordRaw[] = []

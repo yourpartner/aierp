@@ -3664,6 +3664,7 @@ const pathToEmbedKeyMap: Record<string, string> = {
   '/financial/consumption-tax': 'fin.consumptionTax',
   '/financial/monthly-closing': 'fin.monthlyClosing',
   '/cash/ledger': 'cash.ledger',
+  '/finance/cash-flow': 'finance.cashFlow',
   '/moneytree/transactions': 'moneytree.transactions',
   // 人事模块
   '/hr/departments': 'hr.dept',
@@ -4811,6 +4812,7 @@ async function onSelectCommon(key:string){
     if (key==='hr.emp.new') return router.push('/hr/employee/new')
     if (key==='cert.request') return router.push('/cert/request')
     if (key==='company.settings') return router.push('/company/settings')
+    if (key==='finance.cashFlow') return router.push('/finance/cash-flow')
   }
   openInModal(key, getTitle(key))
 }
