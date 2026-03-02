@@ -35,7 +35,7 @@
         <div class="avatar" v-if="msg.type === 'received'">
           <div class="avatar-icon">企</div>
         </div>
-        <div class="content" v-if="!msg.isCard">{{ msg.text }}</div>
+        <div class="content" v-if="!msg.isCard && !msg.isFile">{{ msg.text }}</div>
         
         <!-- 动态生成的卡片消息 -->
         <div class="content push-card" v-if="msg.isCard">
@@ -48,6 +48,15 @@
             <span>詳細を確認する</span>
             <span>&gt;</span>
           </div>
+        </div>
+
+        <!-- 动态生成的文件消息 -->
+        <div class="content file-card" v-if="msg.isFile">
+          <div class="file-info">
+            <div class="file-name">{{ msg.fileData?.name }}</div>
+            <div class="file-size">{{ msg.fileData?.size }}</div>
+          </div>
+          <div class="file-icon">📄</div>
         </div>
         
         <div class="avatar" v-if="msg.type === 'sent'">
@@ -94,6 +103,12 @@ interface Message {
   text: string;
   isCard?: boolean;
   cardData?: any;
+  isFile?: boolean;
+  fileData?: {
+    name: string;
+    size: string;
+    type: string;
+  };
 }
 
 const messages = ref<Message[]>([])
@@ -144,9 +159,23 @@ const handleAction = (action: string) => {
       targetView = 'timesheet';
       break;
     case 'cert': 
-      actionText = '証明書を申請'; 
-      replyText = '証明書申請ページを開いています...';
-      targetView = 'cert';
+      actionText = '在職証明書を発行してほしいです。'; 
+      replyText = '証明書の発行リクエストを受け付けました。担当者が確認後、3営業日以内にこちらへPDFでお送りします。しばらくお待ちください。';
+      
+      // 模拟管理员审批并发送 PDF
+      setTimeout(() => {
+        messages.value.push({ type: 'received', text: 'お待たせいたしました。在職証明書の発行が完了しました。' })
+        scrollToBottom()
+        setTimeout(() => {
+          messages.value.push({
+            type: 'received',
+            text: '',
+            isFile: true,
+            fileData: { name: '在職証明書_20260302.pdf', size: '156 KB', type: 'pdf' }
+          })
+          scrollToBottom()
+        }, 500)
+      }, 3000)
       break;
     case 'dashboard': 
       actionText = 'マイページを開く'; 
@@ -306,6 +335,42 @@ const scrollToBottom = () => {
   background-color: #fff;
   border-radius: 8px;
   overflow: hidden;
+}
+
+/* 文件消息样式 */
+.message .content.file-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 200px;
+  background-color: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 4px;
+  padding: 12px;
+}
+
+.file-info {
+  flex: 1;
+  overflow: hidden;
+}
+
+.file-name {
+  font-size: 15px;
+  color: #333;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.file-size {
+  font-size: 12px;
+  color: #999;
+}
+
+.file-icon {
+  font-size: 32px;
+  margin-left: 12px;
 }
 
 .card-title {
