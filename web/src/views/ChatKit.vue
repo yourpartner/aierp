@@ -32,6 +32,14 @@
             </el-menu>
           </div>
         </template>
+        
+        <!-- 移动端模拟器入口 -->
+        <div class="section">
+          <div class="section-title">移动端模拟器</div>
+          <el-menu class="menu">
+            <el-menu-item index="sim-all" @click="$router.push('/simulator')">双平台预览</el-menu-item>
+          </el-menu>
+        </div>
       </div>
     </aside>
     <main class="main">
@@ -3786,7 +3794,13 @@ const profileInitials = computed(() => {
 async function syncProfileFromStorage(){
   // sessionStorage → localStorage の順で読む（リフレッシュ後は localStorage が残る）
   const storedName = sessionStorage.getItem('currentUserName') || localStorage.getItem('currentUserName')
-  if (storedName) profile.name = storedName
+  if (storedName) {
+    try {
+      profile.name = decodeURIComponent(escape(storedName))
+    } catch {
+      profile.name = storedName
+    }
+  }
   const storedCompany = sessionStorage.getItem('currentCompany') || localStorage.getItem('currentCompany')
   if (storedCompany) profile.company = storedCompany
   const storedCaps = sessionStorage.getItem('userCaps') || localStorage.getItem('userCaps')
@@ -3796,9 +3810,13 @@ async function syncProfileFromStorage(){
     try {
       const me = await api.get('/auth/me')
       if (me.data?.name) {
-        profile.name = me.data.name
-        localStorage.setItem('currentUserName', me.data.name)
-        sessionStorage.setItem('currentUserName', me.data.name)
+        let decodedName = me.data.name
+        try {
+          decodedName = decodeURIComponent(escape(me.data.name))
+        } catch {}
+        profile.name = decodedName
+        localStorage.setItem('currentUserName', decodedName)
+        sessionStorage.setItem('currentUserName', decodedName)
       }
       if (me.data?.companyCode) {
         profile.company = me.data.companyCode

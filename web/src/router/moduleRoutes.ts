@@ -20,6 +20,12 @@ export const coreRoutes: RouteRecordRaw[] = [
   { path: '/company/settings', component: () => import('../views/CompanySettings.vue'), meta: { requiresAuth: true } },
   { path: '/system/users', component: () => import('../views/UsersList.vue'), meta: { requiresAuth: true } },
   { path: '/system/roles', component: () => import('../views/RolesList.vue'), meta: { requiresAuth: true } },
+  // 移动端模拟器
+  { 
+    path: '/simulator', 
+    component: () => import('../views/mobile/MobileSimulator.vue'),
+    meta: { requiresAuth: true }
+  }
 ]
 
 // 财务核心模块路由 - 已通过 ChatKit 弹窗访问，不需要独立路由

@@ -65,20 +65,28 @@ async function login(){
         const pad = '='.repeat((4 - (base64.length % 4)) % 4)
         const decoded = JSON.parse(atob(base64 + pad))
         const resolvedName = decoded.name || r.data?.name || ''
+        let decodedResolvedName = resolvedName
+        try {
+          decodedResolvedName = decodeURIComponent(escape(resolvedName))
+        } catch {}
         const resolvedCompany = decoded.companyCode || form.companyCode
-        if (resolvedName) store.setItem('currentUserName', resolvedName)
+        if (decodedResolvedName) store.setItem('currentUserName', decodedResolvedName)
         store.setItem('currentCompany', resolvedCompany)
         if (decoded.caps) store.setItem('userCaps', decoded.caps)
         if (decoded.roles) store.setItem('userRoles', decoded.roles)
         // sessionStorage にも書いておく（同一タブ内での即時反映用）
-        if (resolvedName) sessionStorage.setItem('currentUserName', resolvedName)
+        if (decodedResolvedName) sessionStorage.setItem('currentUserName', decodedResolvedName)
         sessionStorage.setItem('currentCompany', resolvedCompany)
         if (decoded.caps) sessionStorage.setItem('userCaps', decoded.caps)
         if (decoded.roles) sessionStorage.setItem('userRoles', decoded.roles)
       } catch {
         // JWT 解析失敗時は従来通り
         const name = r.data?.name
-        if (name) sessionStorage.setItem('currentUserName', name)
+        let decodedName = name
+        try {
+          if (name) decodedName = decodeURIComponent(escape(name))
+        } catch {}
+        if (decodedName) sessionStorage.setItem('currentUserName', decodedName)
         sessionStorage.setItem('currentCompany', form.companyCode)
       }
       // 通知 App.vue 重新加载公司名称
