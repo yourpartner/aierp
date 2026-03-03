@@ -52,7 +52,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { InfoFilled, Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import api from '@/api'
+import api from '../../api'
 
 interface Employee {
   code: string
