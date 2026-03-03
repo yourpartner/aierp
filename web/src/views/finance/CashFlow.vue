@@ -1,454 +1,346 @@
 <template>
-  <div class="cash-flow-container">
-    <div class="page-header">
-      <div class="title-area">
-        <h2>資金繰り</h2>
-        <el-tooltip content="資金繰りの状況を確認します" placement="right">
-          <el-icon class="info-icon"><InfoFilled /></el-icon>
-        </el-tooltip>
-      </div>
-      <div class="action-area">
-        <el-date-picker
-          v-model="dateRange"
-          type="daterange"
-          range-separator="〜"
-          start-placeholder="開始日"
-          end-placeholder="終了日"
-          value-format="YYYY-MM-DD"
-          size="small"
-          class="date-picker"
-        />
-      </div>
+  <div class="cash-flow-page">
+    <!-- 顶部统计卡片 -->
+    <div class="summary-cards">
+      <el-card v-for="card in summaryCards" :key="card.label" class="summary-card" shadow="hover">
+        <div class="card-icon" :style="{ background: card.bg }">
+          <el-icon :size="22" :color="card.color"><component :is="card.icon" /></el-icon>
+        </div>
+        <div class="card-body">
+          <div class="card-value">¥{{ formatAmount(card.value) }}</div>
+          <div class="card-label">{{ card.label }}</div>
+        </div>
+      </el-card>
     </div>
 
-    <div class="chart-section">
-      <div class="chart-legend">
-        <div class="legend-item">
-          <span class="color-box in"></span>
-          <span>入金金額</span>
-        </div>
-        <div class="legend-item">
-          <span class="color-box out"></span>
-          <span>出金金額</span>
-        </div>
-        <div class="legend-item">
-          <span class="line-box"></span>
-          <span>資金残高</span>
-        </div>
-      </div>
-      <div class="chart-wrapper">
-        <!-- 模拟 ECharts 图表，这里用 CSS 画一个类似的示意图 -->
-        <div class="mock-chart">
-          <div class="y-axis">
-            <span>400,000,000</span>
-            <span>300,000,000</span>
-            <span>200,000,000</span>
-            <span>100,000,000</span>
-            <span>0</span>
-            <span>-100,000,000</span>
-          </div>
-          <div class="chart-content">
-            <!-- 0 轴线 -->
-            <div class="zero-line"></div>
-            <!-- 折线 (资金残高) -->
-            <svg class="line-svg" viewBox="0 0 800 300" preserveAspectRatio="none">
-              <polyline points="0,80 100,85 200,95 300,70 400,75 500,50 600,45 700,50 800,20" fill="none" stroke="#ff6b6b" stroke-width="2" />
-              <circle cx="0" cy="80" r="3" fill="#fff" stroke="#ff6b6b" stroke-width="2" />
-              <circle cx="100" cy="85" r="3" fill="#fff" stroke="#ff6b6b" stroke-width="2" />
-              <circle cx="200" cy="95" r="3" fill="#fff" stroke="#ff6b6b" stroke-width="2" />
-              <circle cx="300" cy="70" r="3" fill="#fff" stroke="#ff6b6b" stroke-width="2" />
-              <circle cx="400" cy="75" r="3" fill="#fff" stroke="#ff6b6b" stroke-width="2" />
-              <circle cx="500" cy="50" r="3" fill="#fff" stroke="#ff6b6b" stroke-width="2" />
-              <circle cx="600" cy="45" r="3" fill="#fff" stroke="#ff6b6b" stroke-width="2" />
-              <circle cx="700" cy="50" r="3" fill="#fff" stroke="#ff6b6b" stroke-width="2" />
-              <circle cx="800" cy="20" r="3" fill="#fff" stroke="#ff6b6b" stroke-width="2" />
-            </svg>
-            
-            <!-- 柱状图 (入金/出金) -->
-            <div class="bars">
-              <div class="bar-group" style="left: 10%">
-                <div class="bar out" style="height: 10px; bottom: -10px;"></div>
-              </div>
-              <div class="bar-group" style="left: 25%">
-                <div class="bar in" style="height: 15px; bottom: 0;"></div>
-              </div>
-              <div class="bar-group" style="left: 35%">
-                <div class="bar in" style="height: 30px; bottom: 0;"></div>
-              </div>
-              <div class="bar-group" style="left: 50%">
-                <div class="bar out" style="height: 5px; bottom: -5px;"></div>
-              </div>
-              <div class="bar-group" style="left: 60%">
-                <div class="bar in" style="height: 60px; bottom: 0;"></div>
-                <div class="bar out" style="height: 15px; bottom: -15px;"></div>
-              </div>
-              <div class="bar-group" style="left: 75%">
-                <div class="bar in" style="height: 30px; bottom: 0;"></div>
-                <div class="bar out" style="height: 10px; bottom: -10px;"></div>
-              </div>
-              <div class="bar-group" style="left: 95%">
-                <div class="bar in" style="height: 45px; bottom: 0;"></div>
-              </div>
-            </div>
-
-            <div class="x-axis">
-              <span>2023/11/2</span>
-              <span>2023/11/10</span>
-              <span>2023/11/20</span>
-              <span>2023/11/25</span>
-              <span>2023/12/5</span>
-              <span>2023/12/15</span>
-              <span>2023/12/25</span>
-              <span>2023/12/31</span>
-            </div>
+    <!-- 图表区域 -->
+    <el-card class="chart-card" shadow="never">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">資金繰り推移</span>
+          <div class="header-actions">
+            <el-radio-group v-model="chartPeriod" size="small" @change="updateChart">
+              <el-radio-button value="daily">日次</el-radio-button>
+              <el-radio-button value="weekly">週次</el-radio-button>
+              <el-radio-button value="monthly">月次</el-radio-button>
+            </el-radio-group>
+            <el-date-picker
+              v-model="dateRange"
+              type="daterange"
+              range-separator="〜"
+              start-placeholder="開始日"
+              end-placeholder="終了日"
+              value-format="YYYY-MM-DD"
+              size="small"
+              style="width: 260px"
+              @change="updateChart"
+            />
           </div>
         </div>
-      </div>
-    </div>
+      </template>
+      <div ref="chartRef" class="echarts-container"></div>
+    </el-card>
 
-    <div class="table-section">
-      <div class="table-header">
-        <h3>2023/11/30 入出金明細</h3>
-      </div>
-      <el-table :data="tableData" style="width: 100%" size="small" border>
-        <el-table-column prop="type" label="入出金種別" width="200">
+    <!-- 明细表区域 -->
+    <el-card class="detail-card" shadow="never">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">入出金明細</span>
+          <div class="header-actions">
+            <el-select v-model="detailFilter" size="small" placeholder="種別" clearable style="width: 160px">
+              <el-option label="すべて" value="" />
+              <el-option label="入金のみ" value="income" />
+              <el-option label="出金のみ" value="expense" />
+            </el-select>
+          </div>
+        </div>
+      </template>
+      <el-table :data="filteredTableData" stripe size="small" :header-cell-style="{ background: '#f8fafc', color: '#475569', fontWeight: 600 }">
+        <el-table-column label="日付" width="110" prop="date" />
+        <el-table-column label="入出金種別" min-width="220">
           <template #default="{ row }">
-            <span :class="row.isIncome ? 'text-danger' : 'text-success'">{{ row.type }}</span>
+            <el-tag :type="row.isIncome ? 'danger' : 'success'" size="small" effect="plain" style="margin-right: 6px">
+              {{ row.isIncome ? '入金' : '出金' }}
+            </el-tag>
+            <span>{{ row.type }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="amount" label="金額" width="150" align="right">
+        <el-table-column label="金額" width="160" align="right">
           <template #default="{ row }">
-            <span :class="row.isIncome ? 'text-danger' : 'text-success'">{{ formatAmount(row.amount) }}</span>
+            <span :style="{ color: row.isIncome ? '#ef4444' : '#22c55e', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }">
+              {{ row.isIncome ? '+' : '-' }}¥{{ formatAmount(Math.abs(row.amount)) }}
+            </span>
           </template>
         </el-table-column>
-        <el-table-column prop="partner" label="入出金相手" width="250">
+        <el-table-column label="取引先" min-width="200" prop="partner" />
+        <el-table-column label="伝票番号" width="150">
           <template #default="{ row }">
-            <span :class="row.isIncome ? 'text-danger' : 'text-success'">{{ row.partner }}</span>
+            <el-link type="primary" :underline="false" style="font-size: 12px">{{ row.voucherNo }}</el-link>
           </template>
         </el-table-column>
-        <el-table-column prop="voucherNo" label="入出金伝票" width="150">
-          <template #header>
-            入出金伝票 <el-icon class="info-icon"><InfoFilled /></el-icon>
-          </template>
-          <template #default="{ row }">
-            <a href="#" class="link-text" :class="row.isIncome ? 'text-danger' : 'text-success'">{{ row.voucherNo }}</a>
-          </template>
-        </el-table-column>
-        <el-table-column prop="note" label="備考">
-          <template #default="{ row }">
-            <span :class="row.isIncome ? 'text-danger' : 'text-success'">{{ row.note }}</span>
-          </template>
-        </el-table-column>
+        <el-table-column label="備考" min-width="200" prop="note" show-overflow-tooltip />
       </el-table>
-    </div>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { InfoFilled } from '@element-plus/icons-vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, shallowRef } from 'vue'
+import { Wallet, TrendCharts, ArrowUp, ArrowDown } from '@element-plus/icons-vue'
+import * as echarts from 'echarts/core'
+import { BarChart, LineChart } from 'echarts/charts'
+import {
+  TitleComponent, TooltipComponent, LegendComponent,
+  GridComponent, DataZoomComponent, MarkLineComponent
+} from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
 
-const dateRange = ref(['2023-11-01', '2023-12-31'])
+echarts.use([
+  BarChart, LineChart, TitleComponent, TooltipComponent,
+  LegendComponent, GridComponent, DataZoomComponent,
+  MarkLineComponent, CanvasRenderer
+])
 
-const formatAmount = (amount: number) => {
-  return amount.toLocaleString()
+const chartRef = ref<HTMLElement>()
+let chartInstance: echarts.ECharts | null = null
+const dateRange = ref(['2025-10-01', '2026-02-28'])
+const chartPeriod = ref('monthly')
+const detailFilter = ref('')
+
+const formatAmount = (n: number) => n.toLocaleString('ja-JP')
+
+// 模拟月次数据
+const monthlyData = {
+  categories: ['2025/10', '2025/11', '2025/12', '2026/01', '2026/02'],
+  income:     [12500000,  9800000,  15200000,  8400000,  11300000],
+  expense:    [8900000,   11200000, 9600000,   10500000, 7800000],
+  balance:    [48600000,  47200000, 52800000,  50700000, 54200000],
 }
 
-// 假数据
-const tableData = ref([
-  {
-    type: '受注より入金予定（請求済）',
-    amount: 825000,
-    partner: '得意先 A社',
-    voucherNo: '2309000115/1',
-    note: '得意先 A社 2023年09月請求書YP2309-C136-001',
-    isIncome: true
-  },
-  {
-    type: 'その他入金',
-    amount: 380160,
-    partner: '得意先 Bホールディングス(株)',
-    voucherNo: '2309000123/1',
-    note: '得意先 Bホールディングス(株) 2023年09月請求書YP2309-C138-002',
-    isIncome: true
-  },
-  {
-    type: '発注より出金予定（請求済）',
-    amount: 638000,
-    partner: '仕入先 Cソフト',
-    voucherNo: '2309000275/3',
-    note: '仕入先 Cソフト 2023年09月請求書YP2309-V114-001',
-    isIncome: false
-  },
-  {
-    type: '発注より出金予定（請求済）',
-    amount: 880000,
-    partner: '仕入先 Cソフト',
-    voucherNo: '2309000275/6',
-    note: '仕入先 Cソフト 2023年09月請求書YP2309-V114-001',
-    isIncome: false
-  },
-  {
-    type: '発注より出金予定（請求済）',
-    amount: 55000,
-    partner: '仕入先 Cソフト',
-    voucherNo: '2309000275/9',
-    note: '仕入先 Cソフト 2023年09月請求書YP2309-V114-001',
-    isIncome: false
-  },
-  {
-    type: '受注より入金予定（請求済）',
-    amount: 66000,
-    partner: '得意先 D社',
-    voucherNo: '2309000281/1',
-    note: '得意先 D社 2023年09月請求書YP2309-C136-002',
-    isIncome: true
-  },
-  {
-    type: '受注より入金予定（請求済）',
-    amount: 880000,
-    partner: '得意先 E社',
-    voucherNo: '2310000036/1',
-    note: '得意先 E社 2023年10月請求書YP2310-C132-001',
-    isIncome: true
-  },
-  {
-    type: '受注より入金予定（請求済）',
-    amount: 1320000,
-    partner: '得意先 E社',
-    voucherNo: '2310000036/4',
-    note: '得意先 E社 2023年10月請求書YP2310-C132-001',
-    isIncome: true
-  },
-  {
-    type: '受注より入金予定（請求済）',
-    amount: 935000,
-    partner: '得意先 F社',
-    voucherNo: '2310000038/1',
-    note: '得意先 F社 2023年10月請求書YP2310-C140-001',
-    isIncome: true
-  }
+const summaryCards = computed(() => [
+  { label: '現在残高',     value: 54200000,  icon: Wallet,      color: '#3b82f6', bg: '#eff6ff' },
+  { label: '今月入金合計',  value: 11300000,  icon: ArrowDown,   color: '#ef4444', bg: '#fef2f2' },
+  { label: '今月出金合計',  value: 7800000,   icon: ArrowUp,     color: '#22c55e', bg: '#f0fdf4' },
+  { label: '今月収支',     value: 3500000,   icon: TrendCharts, color: '#8b5cf6', bg: '#f5f3ff' },
 ])
+
+const tableData = ref([
+  { date: '2026/02/28', type: '受注より入金（請求済）',     amount: 2825000,  partner: '得意先 A社',                 voucherNo: 'RC-2602-001', note: 'A社 2026年01月請求書', isIncome: true },
+  { date: '2026/02/25', type: 'その他入金',              amount: 1380160,  partner: '得意先 Bホールディングス(株)', voucherNo: 'RC-2602-002', note: 'Bホールディングス(株) 2026年01月請求書', isIncome: true },
+  { date: '2026/02/20', type: '発注より出金（請求済）',     amount: 1638000,  partner: '仕入先 Cソフト',             voucherNo: 'PY-2602-001', note: 'Cソフト 2026年01月請求書', isIncome: false },
+  { date: '2026/02/18', type: '受注より入金（請求済）',     amount: 3200000,  partner: '得意先 D社',                 voucherNo: 'RC-2602-003', note: 'D社 2026年01月請求書', isIncome: true },
+  { date: '2026/02/15', type: '発注より出金（請求済）',     amount: 2880000,  partner: '仕入先 E工業',               voucherNo: 'PY-2602-002', note: 'E工業 部品仕入れ', isIncome: false },
+  { date: '2026/02/10', type: '給与支払',                amount: 1850000,  partner: '従業員',                     voucherNo: 'PY-2602-003', note: '2026年02月給与', isIncome: false },
+  { date: '2026/02/08', type: '受注より入金（請求済）',     amount: 1894840,  partner: '得意先 F社',                 voucherNo: 'RC-2602-004', note: 'F社 2026年01月請求書', isIncome: true },
+  { date: '2026/02/05', type: '家賃・光熱費',             amount: 432000,   partner: 'ビル管理会社',               voucherNo: 'PY-2602-004', note: '2026年02月オフィス賃料', isIncome: false },
+  { date: '2026/02/03', type: '受注より入金（請求済）',     amount: 2000000,  partner: '得意先 G社',                 voucherNo: 'RC-2602-005', note: 'G社 スポット案件', isIncome: true },
+  { date: '2026/02/01', type: '社会保険料',               amount: 1000000,  partner: '年金事務所',                 voucherNo: 'PY-2602-005', note: '2026年01月分社会保険料', isIncome: false },
+])
+
+const filteredTableData = computed(() => {
+  if (!detailFilter.value) return tableData.value
+  return tableData.value.filter(r => detailFilter.value === 'income' ? r.isIncome : !r.isIncome)
+})
+
+function buildChartOption() {
+  const d = monthlyData
+  return {
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross', crossStyle: { color: '#999' } },
+      backgroundColor: 'rgba(255,255,255,0.96)',
+      borderColor: '#e2e8f0',
+      textStyle: { color: '#334155', fontSize: 12 },
+      formatter(params: any[]) {
+        let s = `<div style="font-weight:600;margin-bottom:4px">${params[0].axisValue}</div>`
+        for (const p of params) {
+          const marker = `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${p.color};margin-right:6px"></span>`
+          s += `<div style="display:flex;justify-content:space-between;gap:24px">${marker}${p.seriesName}<span style="font-weight:600;font-variant-numeric:tabular-nums">¥${Number(p.value).toLocaleString('ja-JP')}</span></div>`
+        }
+        return s
+      }
+    },
+    legend: {
+      top: 0,
+      itemWidth: 14,
+      itemHeight: 10,
+      textStyle: { fontSize: 12, color: '#64748b' },
+    },
+    grid: { top: 40, left: 20, right: 20, bottom: 50, containLabel: true },
+    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
+    xAxis: {
+      type: 'category',
+      data: d.categories,
+      axisLine: { lineStyle: { color: '#e2e8f0' } },
+      axisTick: { show: false },
+      axisLabel: { color: '#64748b', fontSize: 11 },
+    },
+    yAxis: [
+      {
+        type: 'value',
+        name: '入出金額',
+        nameTextStyle: { color: '#94a3b8', fontSize: 11, padding: [0, 0, 0, 40] },
+        axisLabel: { color: '#64748b', fontSize: 11, formatter: (v: number) => v >= 1e6 ? `${(v / 1e6).toFixed(0)}M` : `${(v / 1e3).toFixed(0)}K` },
+        splitLine: { lineStyle: { color: '#f1f5f9', type: 'dashed' } },
+        axisLine: { show: false },
+        axisTick: { show: false },
+      },
+      {
+        type: 'value',
+        name: '資金残高',
+        nameTextStyle: { color: '#94a3b8', fontSize: 11, padding: [0, 40, 0, 0] },
+        axisLabel: { color: '#64748b', fontSize: 11, formatter: (v: number) => v >= 1e6 ? `${(v / 1e6).toFixed(0)}M` : `${(v / 1e3).toFixed(0)}K` },
+        splitLine: { show: false },
+        axisLine: { show: false },
+        axisTick: { show: false },
+      }
+    ],
+    series: [
+      {
+        name: '入金',
+        type: 'bar',
+        barWidth: '28%',
+        itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: '#fca5a5' }, { offset: 1, color: '#fecaca' }]), borderRadius: [4, 4, 0, 0] },
+        data: d.income,
+      },
+      {
+        name: '出金',
+        type: 'bar',
+        barWidth: '28%',
+        itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: '#86efac' }, { offset: 1, color: '#bbf7d0' }]), borderRadius: [4, 4, 0, 0] },
+        data: d.expense,
+      },
+      {
+        name: '資金残高',
+        type: 'line',
+        yAxisIndex: 1,
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 8,
+        lineStyle: { width: 3, color: '#6366f1' },
+        itemStyle: { color: '#6366f1', borderWidth: 2, borderColor: '#fff' },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(99,102,241,0.15)' }, { offset: 1, color: 'rgba(99,102,241,0.01)' }]) },
+        data: d.balance,
+      }
+    ],
+    animationDuration: 800,
+    animationEasing: 'cubicOut',
+  }
+}
+
+function initChart() {
+  if (!chartRef.value) return
+  chartInstance = echarts.init(chartRef.value)
+  chartInstance.setOption(buildChartOption())
+}
+
+function updateChart() {
+  if (chartInstance) chartInstance.setOption(buildChartOption())
+}
+
+function handleResize() {
+  chartInstance?.resize()
+}
+
+onMounted(() => {
+  nextTick(initChart)
+  window.addEventListener('resize', handleResize)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', handleResize)
+  chartInstance?.dispose()
+})
 </script>
 
 <style scoped>
-.cash-flow-container {
+.cash-flow-page {
   padding: 20px;
-  background-color: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: #f8fafc;
   min-height: 100%;
 }
 
-.page-header {
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.summary-card {
+  border-radius: 12px;
+  border: none;
+}
+
+.summary-card :deep(.el-card__body) {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+}
+
+.card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.card-body {
+  min-width: 0;
+}
+
+.card-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1e293b;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.card-label {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+
+.chart-card,
+.detail-card {
+  border-radius: 12px;
+  border: none;
+}
+
+.card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid #ebeef5;
-}
-
-.title-area {
-  display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
-.title-area h2 {
-  margin: 0;
-  font-size: 18px;
-  color: #303133;
-  font-weight: 500;
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e293b;
 }
 
-.info-icon {
-  color: #409eff;
-  cursor: pointer;
-}
-
-.chart-section {
-  margin-bottom: 30px;
-}
-
-.chart-legend {
-  display: flex;
-  justify-content: center;
-  gap: 20px;
-  margin-bottom: 10px;
-}
-
-.legend-item {
+.header-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: #606266;
+  gap: 10px;
 }
 
-.color-box {
-  width: 24px;
-  height: 12px;
-  border-radius: 2px;
-}
-
-.color-box.in {
-  background-color: #fca5a5;
-}
-
-.color-box.out {
-  background-color: #b2f2bb;
-}
-
-.line-box {
-  width: 24px;
-  height: 2px;
-  background-color: #ff6b6b;
-  position: relative;
-}
-
-.line-box::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  border: 1px solid #ff6b6b;
-  background-color: #fff;
-}
-
-.chart-wrapper {
-  height: 300px;
-  position: relative;
-  padding-left: 80px;
-  padding-bottom: 30px;
-}
-
-.mock-chart {
+.echarts-container {
   width: 100%;
-  height: 100%;
-  position: relative;
+  height: 380px;
 }
 
-.y-axis {
-  position: absolute;
-  left: -80px;
-  top: 0;
-  bottom: 0;
-  width: 70px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  align-items: flex-end;
-  font-size: 11px;
-  color: #606266;
-  padding-bottom: 30px; /* 留出 x 轴空间 */
-}
-
-.chart-content {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  border-left: 1px solid #dcdfe6;
-  border-bottom: 1px solid #dcdfe6;
-}
-
-.zero-line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 20%; /* 假设 0 在 20% 的位置 */
-  height: 1px;
-  background-color: #909399;
-  z-index: 1;
-}
-
-.line-svg {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 3;
-}
-
-.bars {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 20%; /* 对齐 zero-line */
-  height: 80%;
-  z-index: 2;
-}
-
-.bar-group {
-  position: absolute;
-  width: 30px;
-  transform: translateX(-50%);
-}
-
-.bar {
-  position: absolute;
-  width: 100%;
-  opacity: 0.8;
-}
-
-.bar.in {
-  background-color: #fca5a5;
-}
-
-.bar.out {
-  background-color: #b2f2bb;
-}
-
-.x-axis {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -25px;
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: #606266;
-}
-
-.table-section {
-  margin-top: 20px;
-}
-
-.table-header {
-  margin-bottom: 10px;
-}
-
-.table-header h3 {
-  margin: 0;
-  font-size: 14px;
-  color: #606266;
-  font-weight: 500;
-}
-
-.text-danger {
-  color: #f56c6c;
-}
-
-.text-success {
-  color: #67c23a;
-}
-
-.link-text {
-  text-decoration: none;
-}
-
-.link-text:hover {
-  text-decoration: underline;
-}
-
-:deep(.el-table th.el-table__cell) {
-  background-color: #f5f7fa;
-  color: #606266;
-  font-weight: 500;
+.detail-card :deep(.el-table) {
+  font-size: 13px;
 }
 </style>
