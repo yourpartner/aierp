@@ -1,10 +1,10 @@
 <template>
   <div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-      <span style="font-weight:600">{{ resolvedTitle }}</span>
-      <div>
-        <el-button v-if="createPath" type="primary" @click="onCreate">{{ schemaText.create }}</el-button>
-        <el-button @click="load" :loading="loading">{{ schemaText.refresh }}</el-button>
+    <div v-if="!props.hideHeader" class="schema-list-header">
+      <span class="schema-list-title">{{ resolvedTitle }}</span>
+      <div class="schema-list-actions">
+        <el-button v-if="createPath" type="primary" size="small" @click="onCreate">{{ schemaText.create }}</el-button>
+        <el-button size="small" @click="load" :loading="loading">{{ schemaText.refresh }}</el-button>
       </div>
     </div>
     <el-table :data="rows" stripe style="width: 100%" v-loading="loading" @row-click="onRowClick">
@@ -43,7 +43,7 @@ watchEffect(() => {
 })
 
 const emit = defineEmits<{ (e: 'row-click', row: any): void }>()
-const props = defineProps<{ entity: string; title?: string; createPath?: string; createInModal?: boolean }>()
+const props = defineProps<{ entity: string; title?: string; createPath?: string; createInModal?: boolean; hideHeader?: boolean }>()
 const rows = ref<any[]>([])
 const loading = ref(false)
 const schemaDoc = ref<any>(null)
@@ -140,4 +140,24 @@ async function save(){
 defineExpose({ reload: load, rows })
 </script>
 
+<style scoped>
+.schema-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #ebeef5;
+}
 
+.schema-list-title {
+  font-weight: 600;
+  font-size: 15px;
+  color: #303133;
+}
+
+.schema-list-actions {
+  display: flex;
+  gap: 8px;
+}
+</style>

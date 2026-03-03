@@ -5,16 +5,14 @@
         <div class="page-header">
           <div class="page-header-title">{{ navText.inventoryBatchNew }}</div>
           <div class="page-actions">
+            <el-button type="primary" :loading="saving" :disabled="!!errorMsg" @click="save">{{ commonText.save }}</el-button>
             <el-button @click="$router.push('/batches')">{{ commonText.backList }}</el-button>
           </div>
         </div>
       </template>
-      <el-form :model="model" label-width="120px" style="max-width:720px">
+      <el-form :model="model" label-width="120px" class="batch-form">
         <el-alert v-if="errorMsg" :title="errorMsg" type="error" show-icon style="margin-bottom:12px" />
         <DynamicForm v-if="!errorMsg" :ui="ui" :schema="schema" :model="model" />
-        <el-form-item>
-          <el-button type="primary" :loading="saving" :disabled="!!errorMsg" @click="save">{{ commonText.save }}</el-button>
-        </el-form-item>
       </el-form>
     </el-card>
   </div>
@@ -66,6 +64,28 @@ loadSchema()
 <style scoped>
 .page.page-medium {
   max-width: 900px;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.page-header-title {
+  font-weight: 600;
+  font-size: 15px;
+  color: #303133;
+}
+
+.page-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.batch-form {
+  max-width: 720px;
+  padding-top: 4px;
 }
 </style>
 

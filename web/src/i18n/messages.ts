@@ -392,6 +392,10 @@ export interface Messages {
       amount: string
       status: string
       issueDate: string
+      actions: string
+      view: string
+      detailTitle: string
+      close: string
     }
     activities: {
       title: string
@@ -1245,7 +1249,11 @@ export const ja: Messages = {
       customer: '顧客コード',
       amount: '金額',
       status: 'ステータス',
-      issueDate: '発行日'
+      issueDate: '発行日',
+      actions: '操作',
+      view: '詳細',
+      detailTitle: '受注詳細',
+      close: '閉じる'
     },
     activities: {
       title: '活動一覧',
@@ -1661,7 +1669,58 @@ export const ja: Messages = {
     'option:inactive': '無効',
     'button:选择银行': '銀行を選択',
     'button:选择支店': '支店を選択',
-    schedulerTask: 'スケジュールタスク'
+    schedulerTask: 'スケジュールタスク',
+    primaryimageurl: '商品画像',
+    primaryimage: '商品画像',
+    primaryimageblobname: '画像ファイル名',
+    primaryimagecontenttype: '画像形式',
+    primaryimagefilename: '画像ファイル名',
+    imageurl: '画像URL',
+    image: '画像',
+    weightuom: '重量単位',
+    weightunit: '重量単位',
+    standardcost: '標準原価',
+    standardprice: '標準単価',
+    purchaseprice: '仕入単価',
+    saleprice: '販売価格',
+    sellingprice: '販売価格',
+    reorderpoint: '発注点',
+    reorderqty: '発注数量',
+    reorderquantity: '発注数量',
+    minstock: '最小在庫数',
+    maxstock: '最大在庫数',
+    minqty: '最小数量',
+    maxqty: '最大数量',
+    minquantity: '最小数量',
+    maxquantity: '最大数量',
+    shelflife: '賞味期限日数',
+    expirydate: '有効期限',
+    expirationdate: '有効期限',
+    manufacturedate: '製造日',
+    mfgdate: '製造日',
+    productiondate: '製造日',
+    batchdate: 'ロット日',
+    barcode: 'バーコード',
+    barcodes: 'バーコード',
+    jancode: 'JANコード',
+    eancode: 'EANコード',
+    suppliercode: '仕入先コード',
+    supplier: '仕入先',
+    vendor: '仕入先',
+    vendorcode: '仕入先コード',
+    taxrate: '税率',
+    taxcode: '税コード',
+    accountcode: '勘定科目コード',
+    glaccountcode: '勘定科目コード',
+    glaccount: '勘定科目',
+    stockaccount: '在庫勘定科目',
+    active: '有効',
+    enabled: '有効',
+    disabled: '無効',
+    sortorder: '表示順',
+    displayorder: '表示順',
+    parentcode: '親コード',
+    parentname: '親名称'
   },
   deliveryNotes: {
     deliveryNotes: '納品書管理',
@@ -2278,7 +2337,11 @@ export const en: Messages = {
       customer: 'Customer Code',
       amount: 'Amount',
       status: 'Status',
-      issueDate: 'Issue Date'
+      issueDate: 'Issue Date',
+      actions: 'Actions',
+      view: 'Details',
+      detailTitle: 'Order Details',
+      close: 'Close'
     },
     activities: {
       title: 'Activities',
@@ -3415,6 +3478,20 @@ zh.tables.accounts = {
     BS: '资产负债表科目',
     PL: '损益表科目'
   }
+}
+
+zh.tables.salesOrders = {
+  title: '销售订单列表',
+  new: '新建订单',
+  number: '订单号',
+  customer: '客户代码',
+  amount: '金额',
+  status: '状态',
+  issueDate: '下单日期',
+  actions: '操作',
+  view: '详情',
+  detailTitle: '订单详情',
+  close: '关闭'
 }
 
 zh.tables.monthlyClosing = {

@@ -43,7 +43,7 @@
 
       <el-dialog
         v-model="detailVisible"
-        :title="tableLabels.detailTitle"
+        :title="tableLabels.detailTitle || '受注詳細'"
         width="fit-content"
         :style="{ maxWidth: '95vw' }"
         destroy-on-close
@@ -177,8 +177,8 @@
         </template>
         <template #footer>
           <div class="dialog-footer">
-            <el-button @click="detailVisible = false">{{ tableLabels.close || '閉じる' }}</el-button>
             <el-button v-if="!hasDeliveryNote()" type="primary" @click="openDeliveryDialog" :disabled="!currentOrderId">納品書作成</el-button>
+            <el-button @click="detailVisible = false">{{ tableLabels.close || '閉じる' }}</el-button>
           </div>
         </template>
       </el-dialog>
@@ -798,12 +798,6 @@ async function openDetail(row: any) {
 .delivery-date {
   width: 100%;
   max-width: 200px;
-}
-
-.dialog-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
 }
 </style>
 
