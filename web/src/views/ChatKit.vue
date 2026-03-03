@@ -3877,6 +3877,8 @@ const embedMap:Record<string, any> = {
   ,'payroll.execute': PayrollExecute
   ,'payroll.history': defineAsyncComponent(() => import('./PayrollHistory.vue'))
   ,'hr.resident_tax': defineAsyncComponent(() => import('./ResidentTaxList.vue'))
+  ,'hr.wage_ledger': defineAsyncComponent(() => import('./hr/WageLedger.vue'))
+  ,'hr.wageLedger': defineAsyncComponent(() => import('./hr/WageLedger.vue'))
   ,'timesheets.list': defineAsyncComponent(() => import('./TimesheetsList.vue'))
   ,'timesheet.new': defineAsyncComponent(() => import('./TimesheetForm.vue'))
   ,'cert.request': CertificateRequestForm

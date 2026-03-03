@@ -316,9 +316,8 @@ ORDER BY r.period_month, r.run_type";
         ws.Range(20, 1, 20, 17).Style.Border.BottomBorder = XLBorderStyleValues.Medium;
 
         // ─── データ集計 ───
-        // monthly run: month 1-12
-        // bonus run: bonus ①②③ (columns 13,14,15)
-        var monthlyByMonth = data.Where(d => d.RunType == "monthly").GroupBy(d => d.Month).ToDictionary(g => g.Key, g => g.ToList());
+        // bonus以外（manual/monthly/regular 等）は月次として扱う
+        var monthlyByMonth = data.Where(d => d.RunType != "bonus").GroupBy(d => d.Month).ToDictionary(g => g.Key, g => g.ToList());
         var bonusRuns = data.Where(d => d.RunType == "bonus").OrderBy(d => d.Month).ToList();
 
         // 列index: 月1→col2, 月12→col13, 賞与①→col14, 賞与②→col15, 賞与③→col16, 合計→col17
@@ -335,6 +334,8 @@ ORDER BY r.period_month, r.run_type";
             int col = 14 + bi;
             FillDataColumn(ws, col, bonusRuns[bi].Items, rowDefs, true);
         }
+
+        // 行5〜9（勤怠）は数値データがない場合は空欄のままでよい
 
         // 合計列
         FillTotalColumn(ws, 17, rowDefs, monthlyByMonth, bonusRuns);

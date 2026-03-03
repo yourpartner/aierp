@@ -36,9 +36,8 @@
         @click="downloadSingle(emp)"
         :title="`${emp.code} ${emp.name} をダウンロード`"
       >
-        <span class="emp-code">{{ emp.code }}</span>
         <span class="emp-name">{{ emp.name }}</span>
-        <span class="emp-position">「{{ emp.position || '社員' }}」</span>
+        <span class="emp-meta">{{ emp.code }}<template v-if="emp.position"><br/>{{ emp.position }}</template></span>
       </div>
     </div>
 
@@ -179,7 +178,7 @@ onMounted(() => loadEmployees())
 
 .employee-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
   gap: 10px;
   min-height: 200px;
 }
@@ -187,16 +186,18 @@ onMounted(() => loadEmployees())
 .employee-card {
   background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%);
   border-radius: 8px;
-  padding: 12px 14px;
+  padding: 12px 12px 10px;
   display: flex;
-  align-items: center;
-  gap: 5px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   color: #fff;
   font-size: 13px;
   cursor: pointer;
   transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
   box-shadow: 0 2px 6px rgba(34,197,94,0.25);
   user-select: none;
+  min-height: 60px;
 }
 
 .employee-card:hover {
@@ -209,22 +210,17 @@ onMounted(() => loadEmployees())
   transform: translateY(0);
 }
 
-.emp-code {
-  font-weight: 600;
-  white-space: nowrap;
-}
-
 .emp-name {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 90px;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.3;
+  word-break: break-all;
 }
 
-.emp-position {
-  white-space: nowrap;
-  opacity: 0.9;
-  font-size: 12px;
+.emp-meta {
+  font-size: 11px;
+  opacity: 0.85;
+  line-height: 1.4;
 }
 
 .empty-state {
