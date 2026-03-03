@@ -1,5 +1,5 @@
 <template>
-  <!-- ========== ページモード（元通りの el-card 表示） ========== -->
+  <!-- ========== ページモード ========== -->
   <div v-if="!dialogMode" class="timesheet-form">
     <el-card class="timesheet-form-card" v-loading="loading" element-loading-text="読み込み中...">
       <template #header>
@@ -7,16 +7,10 @@
           <div class="timesheet-form-header__left">
             <el-icon class="timesheet-form-header__icon"><EditPen /></el-icon>
             <span class="timesheet-form-header__title">工数入力</span>
-            <el-tag v-if="submissionStatus" size="small" :type="submissionStatusTagType(submissionStatus)" class="timesheet-form-header__status">
-              {{ submissionStatusLabel(submissionStatus) }}
-            </el-tag>
           </div>
           <div class="timesheet-form-header__right">
-            <el-button type="primary" @click="saveAll" :loading="saving" :disabled="monthLocked || proxyNoTarget">
-              <el-icon><Check /></el-icon><span>一時保存</span>
-            </el-button>
-            <el-button type="success" @click="submitForApproval" :loading="submitting" :disabled="monthLocked || !canSubmitSelectedMonth || proxyNoTarget">
-              <el-icon><Upload /></el-icon><span>月次提出</span>
+            <el-button type="primary" @click="saveAll" :loading="saving" :disabled="proxyNoTarget">
+              <el-icon><Check /></el-icon><span>保存</span>
             </el-button>
           </div>
         </div>
@@ -47,13 +41,13 @@
           <template #default="{ row }"><span :class="{ 'text-red': row.isWeekend || row.isHoliday }">{{ weekdayLabel(row.date) }}</span></template>
         </el-table-column>
         <el-table-column label="開始" width="120">
-          <template #default="{ row }"><el-time-select v-model="row.startTime" :start="'06:00'" :end="'23:30'" :step="'00:10'" @change="onTimePicked(row)" placeholder="時間を選択" :disabled="monthLocked" /></template>
+          <template #default="{ row }"><el-time-select v-model="row.startTime" :start="'06:00'" :end="'23:30'" :step="'00:10'" @change="onTimePicked(row)" placeholder="時間を選択" /></template>
         </el-table-column>
         <el-table-column label="終了" width="120">
-          <template #default="{ row }"><el-time-select v-model="row.endTime" :start="'06:00'" :end="'23:30'" :step="'00:10'" @change="onTimePicked(row)" placeholder="時間を選択" :disabled="monthLocked" /></template>
+          <template #default="{ row }"><el-time-select v-model="row.endTime" :start="'06:00'" :end="'23:30'" :step="'00:10'" @change="onTimePicked(row)" placeholder="時間を選択" /></template>
         </el-table-column>
         <el-table-column label="休憩(分)" width="80">
-          <template #default="{ row }"><el-input-number v-model="row.lunchMinutes" :min="0" :max="240" :controls="false" @change="recomputeRow(row)" style="width: 70px" :disabled="monthLocked" /></template>
+          <template #default="{ row }"><el-input-number v-model="row.lunchMinutes" :min="0" :max="240" :controls="false" @change="recomputeRow(row)" style="width: 70px" /></template>
         </el-table-column>
         <el-table-column label="勤務時間" width="70">
           <template #default="{ row }">{{ formatHourDisplay(row.hours) }}</template>
@@ -65,10 +59,7 @@
           </template>
         </el-table-column>
         <el-table-column label="作業内容" min-width="320">
-          <template #default="{ row }"><el-input v-model="row.task" placeholder="作業内容" :disabled="monthLocked" /></template>
-        </el-table-column>
-        <el-table-column label="ステータス" width="90" fixed="right">
-          <template #default="{ row }">{{ statusLabel(row.status) }}</template>
+          <template #default="{ row }"><el-input v-model="row.task" placeholder="作業内容" @input="row._dirty = true" /></template>
         </el-table-column>
       </el-table>
     </el-card>
@@ -76,11 +67,6 @@
 
   <!-- ========== ダイアログ埋め込みモード ========== -->
   <div v-else class="timesheet-form-dialog-body" v-loading="loading" element-loading-text="読み込み中...">
-    <!-- ステータス表示 -->
-    <div v-if="submissionStatus" class="timesheet-form-dialog-status">
-      <el-tag size="small" :type="submissionStatusTagType(submissionStatus)">{{ submissionStatusLabel(submissionStatus) }}</el-tag>
-    </div>
-
     <!-- 操作エリア -->
     <div class="timesheet-form-actions">
       <el-date-picker v-model="month" type="month" placeholder="月を選択" format="YYYY-MM" value-format="YYYY-MM" @change="buildDays" class="timesheet-form-actions__month" />
@@ -106,13 +92,13 @@
         <template #default="{ row }"><span :class="{ 'text-red': row.isWeekend || row.isHoliday }">{{ weekdayLabel(row.date) }}</span></template>
       </el-table-column>
       <el-table-column label="開始" width="120">
-        <template #default="{ row }"><el-time-select v-model="row.startTime" :start="'06:00'" :end="'23:30'" :step="'00:10'" @change="onTimePicked(row)" placeholder="時間を選択" :disabled="monthLocked" /></template>
+        <template #default="{ row }"><el-time-select v-model="row.startTime" :start="'06:00'" :end="'23:30'" :step="'00:10'" @change="onTimePicked(row)" placeholder="時間を選択" /></template>
       </el-table-column>
       <el-table-column label="終了" width="120">
-        <template #default="{ row }"><el-time-select v-model="row.endTime" :start="'06:00'" :end="'23:30'" :step="'00:10'" @change="onTimePicked(row)" placeholder="時間を選択" :disabled="monthLocked" /></template>
+        <template #default="{ row }"><el-time-select v-model="row.endTime" :start="'06:00'" :end="'23:30'" :step="'00:10'" @change="onTimePicked(row)" placeholder="時間を選択" /></template>
       </el-table-column>
       <el-table-column label="休憩(分)" width="80">
-        <template #default="{ row }"><el-input-number v-model="row.lunchMinutes" :min="0" :max="240" :controls="false" @change="recomputeRow(row)" style="width: 70px" :disabled="monthLocked" /></template>
+        <template #default="{ row }"><el-input-number v-model="row.lunchMinutes" :min="0" :max="240" :controls="false" @change="recomputeRow(row)" style="width: 70px" /></template>
       </el-table-column>
       <el-table-column label="勤務時間" width="70">
         <template #default="{ row }">{{ formatHourDisplay(row.hours) }}</template>
@@ -124,58 +110,53 @@
         </template>
       </el-table-column>
       <el-table-column label="作業内容" min-width="300">
-        <template #default="{ row }"><el-input v-model="row.task" placeholder="作業内容" :disabled="monthLocked" /></template>
-      </el-table-column>
-      <el-table-column label="ステータス" width="90" fixed="right">
-        <template #default="{ row }">{{ statusLabel(row.status) }}</template>
+        <template #default="{ row }"><el-input v-model="row.task" placeholder="作業内容" @input="row._dirty = true" /></template>
       </el-table-column>
     </el-table>
 
     <!-- 保存ボタン -->
     <div class="timesheet-form-dialog-footer">
-      <el-button type="primary" @click="saveAll" :loading="saving" :disabled="monthLocked || proxyNoTarget">
-        <el-icon><Check /></el-icon>一時保存
-      </el-button>
-      <el-button type="success" @click="submitForApproval" :loading="submitting" :disabled="monthLocked || !canSubmitSelectedMonth || proxyNoTarget">
-        <el-icon><Upload /></el-icon>月次提出
+      <el-button type="primary" @click="saveAll" :loading="saving" :disabled="proxyNoTarget">
+        <el-icon><Check /></el-icon>保存
       </el-button>
     </div>
   </div>
 </template>
+
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import api from '../api'
 import { ElMessage } from 'element-plus'
-import { EditPen, Check, Upload } from '@element-plus/icons-vue'
+import { EditPen, Check } from '@element-plus/icons-vue'
 
 const props = defineProps<{ dialogMode?: boolean }>()
 const emit = defineEmits<{ saved: [] }>()
 
-type DayRow = { 
-  id?: string, 
-  date: string, 
-  startTime: string, 
-  endTime: string, 
-  lunchMinutes: number, 
-  hours: number, 
-  overtime: number, 
-  task?: string, 
-  status?: string, 
-  _dirty?: boolean,
-  isWeekend?: boolean,
+type DayRow = {
+  id?: string
+  date: string
+  startTime: string
+  endTime: string
+  lunchMinutes: number
+  hours: number
+  overtime: number
+  task?: string
+  status?: string
+  _dirty?: boolean
+  isWeekend?: boolean
   isHoliday?: boolean
 }
 
-const month = ref<string>(new Date().toISOString().slice(0,7))
+const month = ref<string>(new Date().toISOString().slice(0, 7))
 const rows = ref<DayRow[]>([])
 const saving = ref(false)
-const submitting = ref(false)
 const loading = ref(true)
-const settings = ref<{ workdayDefaultStart?:string, workdayDefaultEnd?:string, lunchMinutes?:number }>({ workdayDefaultStart: '09:00', workdayDefaultEnd: '18:00', lunchMinutes: 60 })
+const settings = ref<{ workdayDefaultStart?: string; workdayDefaultEnd?: string; lunchMinutes?: number }>({
+  workdayDefaultStart: '09:00',
+  workdayDefaultEnd: '18:00',
+  lunchMinutes: 60
+})
 const holidaySet = ref<Set<string>>(new Set())
-const submissionStatus = ref<string>('')
-const monthLocked = ref(false)
-const canSubmitSelectedMonth = ref(true)
 
 const canManageTimesheets = computed(() => {
   const caps = (sessionStorage.getItem('userCaps') || '').split(',').filter(Boolean)
@@ -186,7 +167,7 @@ const proxyNoTarget = computed(() => proxyMode.value && !proxyEmployeeId.value)
 const proxyMode = ref(false)
 const proxyEmployeeId = ref<string>('')
 const proxyEmployeeName = ref<string>('')
-const employeeOptions = ref<{value:string, label:string, mappedUserId:string}[]>([])
+const employeeOptions = ref<{ value: string; label: string; mappedUserId: string }[]>([])
 const employeeLoading = ref(false)
 
 function targetUserId(): string {
@@ -202,12 +183,8 @@ async function searchEmployees(q: string) {
   try {
     const ym = month.value
     const asOfDate = ym ? `${ym}-01` : undefined
-    const where: any[] = [
-      { field: '__employment_status__', op: 'eq', value: 'active' }
-    ]
-    if (asOfDate) {
-      where.push({ field: '__employment_as_of__', op: 'eq', value: asOfDate })
-    }
+    const where: any[] = [{ field: '__employment_status__', op: 'eq', value: 'active' }]
+    if (asOfDate) where.push({ field: '__employment_as_of__', op: 'eq', value: asOfDate })
     if (q) {
       where.push({ anyOf: [
         { json: 'nameKanji', op: 'contains', value: q },
@@ -228,7 +205,6 @@ async function searchEmployees(q: string) {
         mappedUserId: ''
       }
     })
-    // Fetch user→employee mapping to use correct userId for employees with accounts
     try {
       const uRes = await api.get('/api/users')
       const users = Array.isArray(uRes.data?.users) ? uRes.data.users : []
@@ -236,13 +212,9 @@ async function searchEmployees(q: string) {
       for (const u of users) {
         if (u.employeeId) empToUser.set(u.employeeId, u.id)
       }
-      for (const opt of options) {
-        opt.mappedUserId = empToUser.get(opt.value) || opt.value
-      }
+      for (const opt of options) opt.mappedUserId = empToUser.get(opt.value) || opt.value
     } catch {
-      for (const opt of options) {
-        opt.mappedUserId = opt.value
-      }
+      for (const opt of options) opt.mappedUserId = opt.value
     }
     employeeOptions.value = options
   } catch {
@@ -268,68 +240,64 @@ function onProxyModeChange(val: boolean) {
   }
 }
 
-function pad2(n:number){ return String(n).padStart(2,'0') }
-function daysInMonth(ym:string){ const [y,m] = ym.split('-').map(Number); return new Date(y!, m!, 0).getDate() }
-function parseHm(s:string){ const m = /^([0-2]\d):(\d{2})$/.exec(s||''); if (!m) return null; const hh=Number(m[1]); const mm=Number(m[2]); if (hh>24||mm>59) return null; return hh*60+mm }
+function pad2(n: number) { return String(n).padStart(2, '0') }
+function daysInMonth(ym: string) { const [y, m] = ym.split('-').map(Number); return new Date(y!, m!, 0).getDate() }
+function parseHm(s: string) { const m = /^([0-2]\d):(\d{2})$/.exec(s || ''); if (!m) return null; const hh = Number(m[1]); const mm = Number(m[2]); if (hh > 24 || mm > 59) return null; return hh * 60 + mm }
 
-function recomputeRow(r:DayRow){
+function recomputeRow(r: DayRow) {
   const a = parseHm(r.startTime); const b = parseHm(r.endTime)
-  if (a==null || b==null){ r.hours=0; r.overtime=0; return }
-  const mins = Math.max(0, b - a - Number(r.lunchMinutes||0))
-  const h = Math.round((mins/60)*100)/100
+  if (a == null || b == null) { r.hours = 0; r.overtime = 0; return }
+  const mins = Math.max(0, b - a - Number(r.lunchMinutes || 0))
+  const h = Math.round((mins / 60) * 100) / 100
   r.hours = h
-  // 加班计算：工作日=实际-标准(不小于0)，周末/祝日=全部算加班
   const isHolidayOrWeekend = r.isWeekend || r.isHoliday
   const stdA = parseHm(settings.value.workdayDefaultStart || '09:00') ?? 540
   const stdB = parseHm(settings.value.workdayDefaultEnd || '18:00') ?? 1080
-  const stdMins = Math.max(0, stdB - stdA - Number(settings.value.lunchMinutes||60))
-  const stdHours = Math.round((stdMins/60)*100)/100
+  const stdMins = Math.max(0, stdB - stdA - Number(settings.value.lunchMinutes || 60))
+  const stdHours = Math.round((stdMins / 60) * 100) / 100
   r.overtime = Math.max(0, isHolidayOrWeekend ? h : (h - stdHours))
   r._dirty = true
 }
 
-function isWeekend(dateStr:string){ const d=new Date(dateStr); const w=d.getDay(); return w===0||w===6 }
+function isWeekend(dateStr: string) { const d = new Date(dateStr); const w = d.getDay(); return w === 0 || w === 6 }
 
-function rowClass({ row }:any){ 
+function rowClass({ row }: any) {
   if (row.isHoliday && !row.isWeekend) return 'row-holiday'
   if (row.isWeekend) return 'row-weekend'
-  return '' 
+  return ''
 }
 
-function weekdayLabel(dateStr:string){
-  const w=['日','月','火','水','木','金','土']
-  try{ return w[new Date(dateStr).getDay()] }catch{ return '' }
+function weekdayLabel(dateStr: string) {
+  const w = ['日', '月', '火', '水', '木', '金', '土']
+  try { return w[new Date(dateStr).getDay()] } catch { return '' }
 }
-function onTimePicked(r:DayRow){ recomputeRow(r) }
 
-function formatHourDisplay(value:number){
+function onTimePicked(r: DayRow) { recomputeRow(r) }
+
+function formatHourDisplay(value: number) {
   const minutes = Math.round((Number(value) || 0) * 60)
   if (!minutes) return '0H'
   const h = Math.floor(minutes / 60)
   const m = minutes % 60
-  const parts:string[] = []
+  const parts: string[] = []
   if (h) parts.push(`${h}H`)
   if (m) parts.push(`${m}M`)
   return parts.join('')
 }
 
-async function loadHolidays(ym:string) {
+async function loadHolidays(ym: string) {
   const from = `${ym}-01`
   const to = `${ym}-${pad2(daysInMonth(ym))}`
-  console.log('[Timesheet] Loading holidays for:', from, 'to', to)
   try {
     const r = await api.get('/holidays', { params: { from, to } })
-    console.log('[Timesheet] Holidays API response:', r.data)
     const list = Array.isArray(r.data?.holidays) ? r.data.holidays : []
     holidaySet.value = new Set(list.map((h: any) => h.date))
-    console.log('[Timesheet] Holiday dates loaded:', Array.from(holidaySet.value))
-  } catch (e) {
-    console.error('[Timesheet] Failed to load holidays:', e)
+  } catch {
     holidaySet.value = new Set()
   }
 }
 
-async function buildDays(){
+async function buildDays() {
   loading.value = true
   const ym = month.value
 
@@ -337,57 +305,45 @@ async function buildDays(){
     searchEmployees('')
     if (!proxyEmployeeId.value) {
       rows.value = []
-      submissionStatus.value = ''
-      monthLocked.value = false
       loading.value = false
       return
     }
   }
 
-  // 方案A: 当月は提出できない（前月まで）
-  const currentYm = new Date().toISOString().slice(0,7)
-  canSubmitSelectedMonth.value = ym < currentYm
-  
-  // 先加载节假日数据
   await loadHolidays(ym)
-  
+
   const cnt = daysInMonth(ym)
-  const arr:DayRow[] = []
-  for (let d=1; d<=cnt; d++){
+  const arr: DayRow[] = []
+  for (let d = 1; d <= cnt; d++) {
     const ds = `${ym}-${pad2(d)}`
     const isWd = !isWeekend(ds)
     const isHday = holidaySet.value.has(ds)
     const isWorkDay = isWd && !isHday
-    
     const st = isWorkDay ? (settings.value.workdayDefaultStart || '09:00') : ''
     const et = isWorkDay ? (settings.value.workdayDefaultEnd || '18:00') : ''
     const lm = Number(settings.value.lunchMinutes || 60)
-      const base:DayRow = { 
-      date: ds, 
-      startTime: st, 
-      endTime: et, 
-      lunchMinutes: lm, 
-      hours: 0, 
-      overtime: 0, 
-      task:'', 
-      status: 'draft',
-      isWeekend: !isWd,
-      isHoliday: isHday
+    const base: DayRow = {
+      date: ds, startTime: st, endTime: et, lunchMinutes: lm,
+      hours: 0, overtime: 0, task: '', status: 'draft',
+      isWeekend: !isWd, isHoliday: isHday
     }
     if (st && et) recomputeRow(base)
     arr.push(base)
   }
-  try{
+  try {
     const tuid = targetUserId()
-    const tsWhere: any[] = [{ field:'month', op:'in', value: [ym] }]
+    const tsWhere: any[] = [{ field: 'month', op: 'in', value: [ym] }]
     if (tuid) tsWhere.push({ json: 'creatorUserId', op: 'in', value: [tuid] })
-    const r = await api.post('/objects/timesheet/search', { page:1, pageSize:200, where: tsWhere, orderBy:[{ field:'timesheet_date', dir:'ASC' }] })
-    const list = Array.isArray(r.data?.data)? r.data.data : []
+    const r = await api.post('/objects/timesheet/search', {
+      page: 1, pageSize: 200, where: tsWhere,
+      orderBy: [{ field: 'timesheet_date', dir: 'ASC' }]
+    })
+    const list = Array.isArray(r.data?.data) ? r.data.data : []
     const byDate = new Map<string, any>()
-    list.forEach((x:any)=> byDate.set(x.timesheet_date || x.payload?.date, x))
-    for (const row of arr){
+    list.forEach((x: any) => byDate.set(x.timesheet_date || x.payload?.date, x))
+    for (const row of arr) {
       const ex = byDate.get(row.date)
-      if (ex){
+      if (ex) {
         row.id = ex.id
         row.startTime = ex.payload?.startTime || row.startTime
         row.endTime = ex.payload?.endTime || row.endTime
@@ -395,165 +351,81 @@ async function buildDays(){
         row.hours = Number(ex.payload?.hours || 0)
         row.overtime = Number(ex.payload?.overtime || 0)
         row.task = ex.payload?.task || ''
-        row.status = ex.payload?.status || 'saved'
-        // 若后端已有但行为空，按现配置重算
+        row.status = 'saved'
         if (!row.hours) recomputeRow(row)
       }
     }
-  }catch{}
+  } catch {}
   rows.value = arr
-  await loadMonthlySubmissionStatus(ym)
   loading.value = false
 }
 
 function currentUserId(): string {
-  try{
+  try {
     const raw = sessionStorage.getItem('user')
     if (!raw) return ''
     const u = JSON.parse(raw)
     return (u?.id || u?.userId || u?.user_id || '').toString()
-  }catch{
+  } catch {
     return ''
   }
 }
 
-async function loadMonthlySubmissionStatus(ym: string) {
-  submissionStatus.value = ''
-  monthLocked.value = false
-  if (!ym) return
-  const uid = targetUserId()
-  if (!uid) return
-  try{
-    const resp = await api.post('/objects/timesheet_submission/search', {
-      page: 1,
-      pageSize: 1,
-      where: [
-        { field: 'month', op: 'in', value: [ym] },
-        { json: 'creatorUserId', op: 'in', value: [uid] }
-      ],
-      orderBy: [{ field: 'updated_at', dir: 'DESC' }]
-    })
-    const row = Array.isArray(resp.data?.data) ? resp.data.data[0] : null
-    const status = row?.payload?.status || row?.status || ''
-    submissionStatus.value = (status || '').toString()
-    const s = submissionStatus.value.toLowerCase()
-    monthLocked.value = s === 'submitted' || s === 'approved'
-  }catch{
-    submissionStatus.value = ''
-    monthLocked.value = false
-  }
-}
-
-function isMonthLocked() {
-  const s = (submissionStatus.value || '').toLowerCase()
-  return s === 'submitted' || s === 'approved'
-}
-
 async function saveDirtyRows(showToast: boolean) {
   saving.value = true
-  try{
-    if (isMonthLocked()){
-      throw new Error('この月は提出済みのため修正できません')
-    }
+  try {
     const uid = targetUserId()
-    for (const r of rows.value){
+    for (const r of rows.value) {
       if (!r._dirty) continue
-      const payload:any = { 
-        date:r.date, 
-        startTime:r.startTime, 
-        endTime:r.endTime, 
-        lunchMinutes:r.lunchMinutes, 
-        hours:r.hours, 
-        overtime:r.overtime, 
-        task:r.task||'', 
-        status: r.status === 'draft' ? 'saved' : (r.status || 'saved'),
+      const payload: any = {
+        date: r.date,
+        startTime: r.startTime || null,
+        endTime: r.endTime || null,
+        lunchMinutes: r.lunchMinutes,
+        hours: r.hours,
+        overtime: r.overtime,
+        task: r.task || '',
+        status: 'saved',
         creatorUserId: uid || undefined,
         isHoliday: r.isHoliday || false
       }
       if (r.id) await api.put(`/objects/timesheet/${r.id}`, { payload })
       else {
         const res = await api.post('/objects/timesheet', { payload })
-        try{ r.id = res.data?.id }catch{}
+        try { r.id = res.data?.id } catch {}
       }
       r._dirty = false
+      r.status = 'saved'
     }
-    if (showToast) ElMessage.success('一時保存しました')
-  }catch(e:any){
-    if (showToast) ElMessage.error(e?.response?.data?.error||'保存に失敗しました')
+    if (showToast) ElMessage.success('保存しました')
+  } catch (e: any) {
+    if (showToast) ElMessage.error(e?.response?.data?.error || '保存に失敗しました')
     throw e
+  } finally {
+    saving.value = false
   }
-  finally{ saving.value=false }
 }
 
-async function saveAll(){
+async function saveAll() {
   await saveDirtyRows(true)
   if (props.dialogMode) emit('saved')
 }
 
-async function submitForApproval(){
-  submitting.value = true
-  try{
-    const ym = month.value
-    if (!ym) throw new Error('月を選択してください')
-    if (!canSubmitSelectedMonth.value) throw new Error('当月は月締め後に提出してください')
-    // 先に未保存分があれば保存してから提出
-    if (rows.value.some(r => r._dirty)) {
-      await saveDirtyRows(false)
-    }
-    const submitBody: any = { month: ym }
-    if (proxyMode.value && proxyEmployeeId.value) {
-      submitBody.forUserId = targetUserId()
-    }
-    await api.post('/operations/timesheet/submit-month', submitBody)
-    await buildDays()
-    await loadMonthlySubmissionStatus(ym)
-    ElMessage.success('月次提出しました')
-  }catch(e:any){
-    ElMessage.error(e?.response?.data?.error||e?.message||'提出に失敗しました')
-  }finally{
-    submitting.value = false
-  }
-}
-
-function statusLabel(s: string) {
-  switch (s) {
-    case 'approved': return '承認済'
-    case 'submitted': return '提出済'
-    case 'saved': return '保存済'
-    case 'rejected': return '却下'
-    case 'draft': return ''
-    default: return ''
-  }
-}
-
-function submissionStatusLabel(s: string) {
-  switch ((s || '').toLowerCase()) {
-    case 'approved': return '月次：承認済'
-    case 'rejected': return '月次：却下'
-    case 'submitted': return '月次：提出済'
-    default: return '月次：未提出'
-  }
-}
-
-function submissionStatusTagType(s: string) {
-  switch ((s || '').toLowerCase()) {
-    case 'approved': return 'success'
-    case 'rejected': return 'danger'
-    case 'submitted': return 'warning'
-    default: return 'info'
-  }
-}
-
-async function loadSettings(){
-  try{
+async function loadSettings() {
+  try {
     const r = await api.get('/company/settings')
     const p = r.data?.payload || r.data || {}
-    settings.value = { workdayDefaultStart: p.workdayDefaultStart || '09:00', workdayDefaultEnd: p.workdayDefaultEnd || '18:00', lunchMinutes: Number(p.lunchMinutes || 60) }
-  }catch{}
+    settings.value = {
+      workdayDefaultStart: p.workdayDefaultStart || '09:00',
+      workdayDefaultEnd: p.workdayDefaultEnd || '18:00',
+      lunchMinutes: Number(p.lunchMinutes || 60)
+    }
+  } catch {}
 }
 
 loadSettings().then(buildDays)
 </script>
+
 <style scoped>
 .timesheet-form {
   padding: 16px;
@@ -591,10 +463,6 @@ loadSettings().then(buildDays)
   color: #303133;
 }
 
-.timesheet-form-header__status {
-  font-weight: 500;
-}
-
 .timesheet-form-header__right {
   display: flex;
   gap: 8px;
@@ -605,10 +473,6 @@ loadSettings().then(buildDays)
   display: flex;
   flex-direction: column;
   gap: 0;
-}
-
-.timesheet-form-dialog-status {
-  margin-bottom: 8px;
 }
 
 .timesheet-form-dialog-footer {
