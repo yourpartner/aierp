@@ -135,21 +135,24 @@ onMounted(() => loadEmployees())
 </script>
 
 <style scoped>
+/* ─── ページ全体：丸角カード（embed-dialog内で角丸ダイアログ風に見せる） ─── */
 .wage-ledger-page {
-  padding: 20px;
-  background: #f8fafc;
-  min-height: 100%;
+  background: #fff;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  min-width: 720px;
+  max-width: 1100px;
 }
 
+/* ─── ヘッダー ─── */
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
-  padding: 14px 18px;
+  padding: 18px 24px 16px;
+  border-bottom: 1px solid #e8edf2;
   background: #fff;
-  border-radius: 10px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
 }
 
 .title-area {
@@ -166,8 +169,9 @@ onMounted(() => loadEmployees())
 }
 
 .info-icon {
-  color: #64748b;
+  color: #94a3b8;
   cursor: pointer;
+  font-size: 15px;
 }
 
 .action-area {
@@ -176,54 +180,61 @@ onMounted(() => loadEmployees())
   align-items: center;
 }
 
+/* ─── 社員グリッド ─── */
 .employee-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 10px;
+  padding: 20px 24px 24px;
+  background: #f8fafc;
   min-height: 200px;
 }
 
+/* ─── 社員カード ─── */
 .employee-card {
-  background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%);
-  border-radius: 8px;
-  padding: 12px 12px 10px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #3b82f6;
+  border-radius: 10px;
+  padding: 12px 14px 12px 12px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
-  color: #fff;
-  font-size: 13px;
+  gap: 6px;
   cursor: pointer;
-  transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
-  box-shadow: 0 2px 6px rgba(34,197,94,0.25);
+  transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
   user-select: none;
-  min-height: 60px;
+  min-height: 70px;
 }
 
 .employee-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 14px rgba(34,197,94,0.35);
-  filter: brightness(1.05);
+  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.18);
+  border-color: #93c5fd;
+  border-left-color: #2563eb;
 }
 
 .employee-card:active {
   transform: translateY(0);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
 .emp-name {
   font-weight: 700;
-  font-size: 14px;
-  line-height: 1.3;
+  font-size: 15px;
+  line-height: 1.35;
+  color: #1e293b;
   word-break: break-all;
 }
 
 .emp-meta {
-  font-size: 11px;
-  opacity: 0.85;
-  line-height: 1.4;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
 }
 
 .empty-state {
-  margin-top: 40px;
+  padding: 40px 24px;
 }
 </style>
