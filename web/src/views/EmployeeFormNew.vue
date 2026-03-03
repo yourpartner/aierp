@@ -628,12 +628,29 @@
                 v-for="(item, idx) in model.attachments" 
                 :key="idx" 
                 class="emp-attach-item"
+                :class="{ 'emp-attach-item--image': isImageFile(item) }"
               >
-                <el-icon><Document /></el-icon>
-                <span class="emp-attach-item__name" @click="openAttachment(item)">{{ item.fileName }}</span>
-                <el-button v-if="!isReadonly" size="small" text type="danger" @click="removeAttachment(idx)">
-                  <el-icon><Delete /></el-icon>
-                </el-button>
+                <!-- 画像ファイル: サムネイル表示 -->
+                <template v-if="isImageFile(item)">
+                  <div class="emp-attach-thumb" @click="openAttachment(item)">
+                    <img :src="item.url || item.previewUrl" :alt="item.fileName" class="emp-attach-thumb__img" />
+                    <div class="emp-attach-thumb__overlay">
+                      <el-icon :size="20"><ZoomIn /></el-icon>
+                    </div>
+                  </div>
+                  <span class="emp-attach-item__name" @click="openAttachment(item)">{{ item.fileName }}</span>
+                  <el-button v-if="!isReadonly" size="small" text type="danger" class="emp-attach-item__del--img" @click.stop="removeAttachment(idx)">
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </template>
+                <!-- 非画像ファイル: アイコン表示 -->
+                <template v-else>
+                  <el-icon><Document /></el-icon>
+                  <span class="emp-attach-item__name" @click="openAttachment(item)">{{ item.fileName }}</span>
+                  <el-button v-if="!isReadonly" size="small" text type="danger" @click="removeAttachment(idx)">
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </template>
               </div>
             </div>
           </div>
@@ -767,7 +784,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { 
   User, Phone, Document, OfficeBuilding, FirstAidKit, 
   CreditCard, Warning, Folder, Plus, Delete, Upload, Check,
-  Setting, Edit, InfoFilled, Money, UserFilled, Download, Loading
+  Setting, Edit, InfoFilled, Money, UserFilled, Download, Loading, ZoomIn
 } from '@element-plus/icons-vue'
 import api from '../api'
 import BankBranchPicker from '../components/BankBranchPicker.vue'
@@ -1481,6 +1498,12 @@ const pdfExt = /\.pdf$/i
 const officeExts = /\.(doc|docx|xls|xlsx|ppt|pptx)$/i
 const imageContentTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']
 
+function isImageFile(item: any): boolean {
+  const name = item?.fileName || item?.name || ''
+  const ct = (item?.contentType || '').toLowerCase()
+  return imageContentTypes.includes(ct) || imageExts.test(name)
+}
+
 function openAttachment(item: any) {
   const url = item?.url || item?.previewUrl
   if (!url) return
@@ -1924,6 +1947,74 @@ onMounted(reload)
 }
 .emp-attach-item__name:hover {
   text-decoration: underline;
+}
+
+/* 画像ファイルのカード形式 */
+.emp-attach-item--image {
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+  width: 120px;
+  background: #fff;
+}
+.emp-attach-item--image:hover {
+  border-color: #409eff;
+  box-shadow: 0 2px 12px rgba(64,158,255,0.15);
+  background: #fff;
+}
+.emp-attach-item--image .emp-attach-item__name {
+  max-width: 100%;
+  padding: 6px 8px 4px;
+  font-size: 11px;
+  color: #606266;
+  box-sizing: border-box;
+}
+.emp-attach-item--image .emp-attach-item__name:hover {
+  color: #409eff;
+}
+.emp-attach-thumb {
+  position: relative;
+  width: 100%;
+  height: 80px;
+  cursor: pointer;
+  overflow: hidden;
+  background: #f0f2f5;
+}
+.emp-attach-thumb__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.25s;
+}
+.emp-attach-thumb:hover .emp-attach-thumb__img {
+  transform: scale(1.07);
+}
+.emp-attach-thumb__overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+  color: #fff;
+}
+.emp-attach-thumb:hover .emp-attach-thumb__overlay {
+  opacity: 1;
+}
+.emp-attach-item__del--img {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(255,255,255,0.85) !important;
+  border-radius: 50% !important;
+  padding: 4px !important;
+  min-height: unset !important;
+  z-index: 1;
 }
 
 /* 空状态 */
