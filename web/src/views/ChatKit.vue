@@ -60,7 +60,7 @@
             </div>
             <div class="user-chip">
               <div class="user-meta">
-                <div class="user-name">{{ profile.name }}</div>
+                <div class="user-name">{{ profile.name || profile.company || 'ユーザー' }}</div>
                 <el-button type="danger" size="small" plain @click="handleLogout">
                   {{ text.common?.logout || 'ログアウト' }}
                 </el-button>
