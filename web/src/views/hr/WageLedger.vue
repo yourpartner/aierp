@@ -4,9 +4,7 @@
     <div class="page-header">
       <div class="title-area">
         <h2 class="page-title">賃金台帳</h2>
-        <el-tooltip content="従業員の年次賃金台帳を確認・ダウンロードします" placement="right">
-          <el-icon class="info-icon"><InfoFilled /></el-icon>
-        </el-tooltip>
+        <span class="page-subtitle">{{ year }}年度</span>
       </div>
       <div class="action-area">
         <el-date-picker
@@ -14,17 +12,23 @@
           type="year"
           placeholder="対象年"
           size="small"
-          style="width: 100px"
+          style="width: 96px"
           value-format="YYYY"
           @change="loadEmployees"
         />
-        <el-select v-model="deptFilter" placeholder="部門" size="small" style="width: 140px" clearable @change="loadEmployees">
+        <el-select v-model="deptFilter" placeholder="部門で絞り込み" size="small" style="width: 150px" clearable @change="loadEmployees">
           <el-option v-for="d in departments" :key="d" :label="d" :value="d" />
         </el-select>
-        <el-button type="primary" size="small" :loading="bulkLoading" @click="downloadBulk">
-          <el-icon><Download /></el-icon> 一括ダウンロード
+        <el-button size="small" :loading="bulkLoading" @click="downloadBulk" class="bulk-btn">
+          <el-icon><Download /></el-icon>一括ダウンロード
         </el-button>
       </div>
+    </div>
+
+    <!-- 件数バー -->
+    <div class="count-bar" v-if="!loading">
+      <span class="count-label">{{ filteredEmployees.length }}名</span>
+      <span class="count-hint">クリックで個人の賃金台帳をダウンロードします</span>
     </div>
 
     <!-- 社員グリッド -->
@@ -32,44 +36,37 @@
       <div
         v-for="emp in filteredEmployees"
         :key="emp.code"
-        class="employee-card"
-        :class="{ 'is-downloading': downloadingCodes.has(emp.code) }"
+        class="emp-tile"
+        :class="{ 'emp-tile--loading': downloadingCodes.has(emp.code) }"
         @click="downloadSingle(emp)"
       >
-        <!-- ダウンロード中オーバーレイ -->
-        <div v-if="downloadingCodes.has(emp.code)" class="card-overlay">
-          <div class="card-overlay__spinner"></div>
-          <span class="card-overlay__text">生成中...</span>
-        </div>
+        <!-- ダウンロード中表示 -->
+        <template v-if="downloadingCodes.has(emp.code)">
+          <div class="tile-spinner"></div>
+          <div class="tile-loading-text">生成中</div>
+        </template>
 
-        <!-- アバター -->
-        <div class="emp-avatar" :style="{ background: avatarColor(emp.code) }">
-          {{ emp.name.charAt(0) }}
-        </div>
-
-        <!-- 情報 -->
-        <div class="emp-info">
-          <div class="emp-name">{{ emp.name }}</div>
-          <div class="emp-code-badge">{{ emp.code }}</div>
-          <div v-if="emp.position" class="emp-position">{{ emp.position }}</div>
-        </div>
-
-        <!-- ダウンロードアイコン（ホバー時） -->
-        <div class="emp-dl-icon">
-          <el-icon><Download /></el-icon>
-        </div>
+        <!-- 通常表示 -->
+        <template v-else>
+          <div class="tile-avatar">{{ emp.name.charAt(0) }}</div>
+          <div class="tile-name">{{ emp.name }}</div>
+          <div class="tile-sub">
+            <span class="tile-code">{{ emp.code }}</span>
+            <span v-if="emp.position" class="tile-pos">{{ emp.position }}</span>
+          </div>
+        </template>
       </div>
     </div>
 
     <div v-if="!loading && filteredEmployees.length === 0" class="empty-state">
-      <el-empty description="対象データがありません" />
+      <el-empty description="対象データがありません" :image-size="60" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { InfoFilled, Download } from '@element-plus/icons-vue'
+import { Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '../../api'
 
@@ -87,18 +84,6 @@ const loading = ref(false)
 const bulkLoading = ref(false)
 const employees = ref<Employee[]>([])
 const downloadingCodes = ref(new Set<string>())
-
-const AVATAR_COLORS = [
-  '#4f81bd', '#2e74b5', '#5b9bd5', '#70ad47',
-  '#ed7d31', '#a9d18e', '#7030a0', '#0070c0',
-  '#00b0f0', '#ff0000', '#595959', '#c55a11',
-]
-
-function avatarColor(code: string): string {
-  let h = 0
-  for (let i = 0; i < code.length; i++) h = (h * 31 + code.charCodeAt(i)) >>> 0
-  return AVATAR_COLORS[h % AVATAR_COLORS.length]
-}
 
 const departments = computed(() => {
   const set = new Set(employees.value.map(e => e.department).filter(Boolean))
@@ -174,203 +159,190 @@ onMounted(() => loadEmployees())
 </script>
 
 <style scoped>
-/* ─── ページ全体 ─── */
+/* ── ページ全体 ── */
 .wage-ledger-page {
   background: #fff;
-  border-radius: 16px;
+  border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
-  min-width: 720px;
-  max-width: 1100px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.10);
+  min-width: 680px;
+  max-width: 1060px;
 }
 
-/* ─── ヘッダー ─── */
+/* ── ヘッダー ── */
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 18px 24px 16px;
-  border-bottom: 1px solid #e8edf2;
-  background: #fff;
+  padding: 20px 24px 18px;
+  border-bottom: 1px solid #eaeaea;
 }
 
 .title-area {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: 10px;
 }
 
 .page-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 700;
-  color: #1e293b;
+  color: #222;
+  letter-spacing: 0.02em;
 }
 
-.info-icon {
-  color: #94a3b8;
-  cursor: pointer;
-  font-size: 15px;
+.page-subtitle {
+  font-size: 13px;
+  color: #999;
 }
 
 .action-area {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
 }
 
-/* ─── グリッド ─── */
+.bulk-btn {
+  border-color: #d0d0d0;
+  color: #444;
+  background: #fafafa;
+}
+.bulk-btn:hover {
+  border-color: #409eff;
+  color: #409eff;
+  background: #f0f7ff;
+}
+
+/* ── 件数バー ── */
+.count-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 24px;
+  background: #fafafa;
+  border-bottom: 1px solid #eaeaea;
+}
+
+.count-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+
+.count-hint {
+  font-size: 12px;
+  color: #aaa;
+}
+
+/* ── グリッド ── */
 .employee-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 12px;
-  padding: 20px 24px 24px;
-  background: #f1f5f9;
-  min-height: 200px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 1px;
+  background: #eaeaea;
+  min-height: 180px;
 }
 
-/* ─── 社員カード ─── */
-.employee-card {
+/* ── 社員タイル ── */
+.emp-tile {
   position: relative;
   background: #fff;
-  border-radius: 12px;
-  padding: 16px 14px 14px;
+  padding: 18px 12px 14px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   cursor: pointer;
-  overflow: hidden;
-  transition: transform 0.18s, box-shadow 0.18s;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 6px rgba(0,0,0,0.04);
+  transition: background 0.12s;
   user-select: none;
+  min-height: 110px;
+  justify-content: center;
 }
 
-.employee-card::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 4px;
-  background: linear-gradient(90deg, #3b82f6, #6366f1);
-  opacity: 0;
-  transition: opacity 0.18s;
+.emp-tile:hover {
+  background: #f5f8ff;
 }
 
-.employee-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 8px 20px rgba(59,130,246,0.14), 0 2px 8px rgba(0,0,0,0.06);
+.emp-tile:active {
+  background: #edf2ff;
 }
 
-.employee-card:hover::before {
-  opacity: 1;
-}
-
-.employee-card:active {
-  transform: translateY(-1px);
-}
-
-.employee-card.is-downloading {
+.emp-tile--loading {
   pointer-events: none;
+  background: #fafafa;
 }
 
-/* ─── ダウンロード中オーバーレイ ─── */
-.card-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(255, 255, 255, 0.88);
+/* ── アバター ── */
+.tile-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #e8edf5;
+  color: #4a6fa5;
+  font-size: 18px;
+  font-weight: 700;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  z-index: 2;
-  border-radius: 12px;
+  flex-shrink: 0;
 }
 
-.card-overlay__spinner {
-  width: 26px;
-  height: 26px;
-  border: 3px solid #e2e8f0;
-  border-top-color: #3b82f6;
+.emp-tile:hover .tile-avatar {
+  background: #dae4f5;
+}
+
+/* ── テキスト ── */
+.tile-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a1a1a;
+  text-align: center;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.tile-sub {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.tile-code {
+  font-size: 11px;
+  color: #999;
+  font-family: 'Consolas', monospace;
+}
+
+.tile-pos {
+  font-size: 11px;
+  color: #bbb;
+}
+
+/* ── ローディング ── */
+.tile-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid #e0e0e0;
+  border-top-color: #409eff;
   border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+  animation: spin 0.75s linear infinite;
 }
 
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
 
-.card-overlay__text {
-  font-size: 12px;
-  color: #3b82f6;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-/* ─── アバター ─── */
-.emp-avatar {
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  font-weight: 700;
-  color: #fff;
-  flex-shrink: 0;
-  letter-spacing: -0.02em;
-}
-
-/* ─── 情報エリア ─── */
-.emp-info {
-  width: 100%;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.emp-name {
-  font-weight: 700;
-  font-size: 15px;
-  line-height: 1.3;
-  color: #1e293b;
-  word-break: break-all;
-}
-
-.emp-code-badge {
-  display: inline-block;
+.tile-loading-text {
   font-size: 11px;
-  color: #64748b;
-  background: #f1f5f9;
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-family: monospace;
+  color: #409eff;
+  letter-spacing: 0.05em;
 }
 
-.emp-position {
-  font-size: 12px;
-  color: #94a3b8;
-  line-height: 1.4;
-}
-
-/* ─── ダウンロードアイコン ─── */
-.emp-dl-icon {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  color: #cbd5e1;
-  font-size: 14px;
-  transition: color 0.15s;
-}
-
-.employee-card:hover .emp-dl-icon {
-  color: #3b82f6;
-}
-
-/* ─── 空状態 ─── */
+/* ── 空状態 ── */
 .empty-state {
-  padding: 40px 24px;
+  padding: 48px 24px;
+  background: #fff;
 }
 </style>
