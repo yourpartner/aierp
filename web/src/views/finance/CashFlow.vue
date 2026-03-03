@@ -1,5 +1,10 @@
 <template>
   <div class="cash-flow-page">
+    <!-- 页面标题 -->
+    <div class="page-title-bar">
+      <h2 class="page-title">資金繰り</h2>
+    </div>
+
     <!-- 顶部统计卡片 -->
     <div class="summary-cards">
       <el-card v-for="card in summaryCards" :key="card.label" class="summary-card" shadow="hover">
@@ -148,8 +153,11 @@ function buildChartOption() {
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'cross', crossStyle: { color: '#999' } },
-      backgroundColor: 'rgba(255,255,255,0.96)',
+      backgroundColor: 'rgba(255,255,255,0.97)',
       borderColor: '#e2e8f0',
+      borderRadius: 12,
+      padding: [10, 14],
+      extraCssText: 'box-shadow: 0 4px 16px rgba(0,0,0,0.10);',
       textStyle: { color: '#334155', fontSize: 12 },
       formatter(params: any[]) {
         let s = `<div style="font-weight:600;margin-bottom:4px">${params[0].axisValue}</div>`
@@ -261,6 +269,17 @@ onUnmounted(() => {
   gap: 16px;
   background: #f8fafc;
   min-height: 100%;
+}
+
+.page-title-bar {
+  margin-bottom: 4px;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: #1e293b;
 }
 
 .summary-cards {
