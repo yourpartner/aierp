@@ -13,7 +13,7 @@
           </div>
           <div class="timesheet-form-header__right">
             <el-button type="primary" @click="saveAll" :loading="saving" :disabled="monthLocked || proxyNoTarget">
-              <el-icon><Check /></el-icon><span>当月の変更を保存</span>
+              <el-icon><Check /></el-icon><span>一時保存</span>
             </el-button>
             <el-button type="success" @click="submitForApproval" :loading="submitting" :disabled="monthLocked || !canSubmitSelectedMonth || proxyNoTarget">
               <el-icon><Upload /></el-icon><span>月次提出</span>
@@ -134,7 +134,7 @@
     <!-- 保存ボタン -->
     <div class="timesheet-form-dialog-footer">
       <el-button type="primary" @click="saveAll" :loading="saving" :disabled="monthLocked || proxyNoTarget">
-        <el-icon><Check /></el-icon>当月の変更を保存
+        <el-icon><Check /></el-icon>一時保存
       </el-button>
       <el-button type="success" @click="submitForApproval" :loading="submitting" :disabled="monthLocked || !canSubmitSelectedMonth || proxyNoTarget">
         <el-icon><Upload /></el-icon>月次提出
@@ -477,7 +477,7 @@ async function saveDirtyRows(showToast: boolean) {
       }
       r._dirty = false
     }
-    if (showToast) ElMessage.success('当月の変更を保存しました')
+    if (showToast) ElMessage.success('一時保存しました')
   }catch(e:any){
     if (showToast) ElMessage.error(e?.response?.data?.error||'保存に失敗しました')
     throw e
