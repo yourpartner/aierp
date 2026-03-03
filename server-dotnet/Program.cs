@@ -1353,16 +1353,34 @@ app.MapPost("/auth/login", async (HttpRequest req, NpgsqlDataSource ds) =>
     return Results.Ok(new { token = jwt, name, roles });
 });
 // Current user info endpoint.
-app.MapGet("/auth/me", (HttpContext ctx) =>
+// Returns fresh name from DB if JWT claim is empty (handles name updates without re-login).
+app.MapGet("/auth/me", async (HttpContext ctx, NpgsqlDataSource ds) =>
 {
     var uid = ctx.User?.FindFirst("uid")?.Value;
     var company = ctx.User?.FindFirst("companyCode")?.Value;
     var emp = ctx.User?.FindFirst("employeeCode")?.Value;
-    var name = ctx.User?.FindFirst("name")?.Value;
+    var nameFromToken = ctx.User?.FindFirst("name")?.Value;
     var dept = ctx.User?.FindFirst("deptId")?.Value;
     var roles = ctx.User?.FindFirst("roles")?.Value;
     var caps = ctx.User?.FindFirst("caps")?.Value;
     if (string.IsNullOrEmpty(uid)) return Results.Unauthorized();
+
+    // If name is missing from JWT, fetch fresh from DB
+    var name = nameFromToken;
+    if (string.IsNullOrWhiteSpace(name) && Guid.TryParse(uid, out var userGuid))
+    {
+        try
+        {
+            await using var conn = await ds.OpenConnectionAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT name FROM users WHERE id = $1 LIMIT 1";
+            cmd.Parameters.AddWithValue(userGuid);
+            var dbName = await cmd.ExecuteScalarAsync();
+            if (dbName is string s && !string.IsNullOrWhiteSpace(s)) name = s;
+        }
+        catch { /* ignore DB errors, fall back to token value */ }
+    }
+
     return Results.Ok(new { uid, companyCode = company, employeeCode = emp, name, deptId = dept, roles, caps });
 }).RequireAuthorization();
 // Debug: self-test voucher creation without frontend involvement.
