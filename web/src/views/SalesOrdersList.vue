@@ -177,8 +177,8 @@
         </template>
         <template #footer>
           <div class="dialog-footer">
-            <el-button v-if="!hasDeliveryNote()" type="primary" @click="openDeliveryDialog" :disabled="!currentOrderId">納品書作成</el-button>
             <el-button @click="detailVisible = false">{{ tableLabels.close || '閉じる' }}</el-button>
+            <el-button v-if="!hasDeliveryNote()" type="primary" @click="openDeliveryDialog" :disabled="!currentOrderId">納品書作成</el-button>
           </div>
         </template>
       </el-dialog>

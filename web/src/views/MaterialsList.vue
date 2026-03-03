@@ -97,26 +97,30 @@ function minWidth(col: string) {
   return /name|summary|description/i.test(col) ? 220 : 120
 }
 
-function columnLabel(col: string) {
-  const map = schemaLabels.value || {}
-  const candidates = [col, normalizeKey(col)]
-  if (col.includes('.')) {
-    const last = col.split('.').pop() as string
-    candidates.push(last)
-    candidates.push(normalizeKey(last))
-  }
-  for (const key of candidates) {
-    if (map[key] !== undefined) return map[key]
-  }
-  return col
+function toCamelCase(input: string) {
+  return input.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
 }
 
 function normalizeKey(input: string) {
   return input.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
+function columnLabel(col: string) {
+  const map = schemaLabels.value || {}
+  const base = col.includes('.') ? (col.split('.').pop() as string) : col
+  const candidates = [col, normalizeKey(col), toCamelCase(col), normalizeKey(toCamelCase(col))]
+  if (col.includes('.')) {
+    candidates.push(base, normalizeKey(base), toCamelCase(base), normalizeKey(toCamelCase(base)))
+  }
+  for (const key of candidates) {
+    if (key && map[key] !== undefined) return map[key]
+  }
+  return col
+}
+
 function resolvePath(row: any, path: string) {
   if (!row) return ''
+  const camelPath = toCamelCase(path)
   const walk = (target: any, segments: string[]) => {
     let cur = target
     for (const seg of segments) {
@@ -125,13 +129,21 @@ function resolvePath(row: any, path: string) {
     }
     return cur
   }
+  // Try snake_case and camelCase variants, both at row level and payload level
   const segments = path.split('.')
+  const camelSegments = camelPath.split('.')
   let value = walk(row, segments)
+  if (value === undefined) value = walk(row, camelSegments)
   if (value === undefined) value = walk(row.payload, segments)
+  if (value === undefined) value = walk(row.payload, camelSegments)
   if (value === undefined) value = row.payload?.[path]
+  if (value === undefined) value = row.payload?.[camelPath]
   if (value === undefined) value = row[path]
+  if (value === undefined) value = row[camelPath]
   if (Array.isArray(value)) return value.map((v) => (v == null ? '' : String(v))).join(', ')
   if (value && typeof value === 'object') return JSON.stringify(value)
+  if (value === true) return 'はい'
+  if (value === false) return 'いいえ'
   return value ?? ''
 }
 

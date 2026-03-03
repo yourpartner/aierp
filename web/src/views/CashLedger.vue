@@ -100,7 +100,19 @@
     <el-card class="ledger-card" shadow="never">
       <el-table :data="ledgerData" border size="small" v-loading="loading" show-summary :summary-method="getSummary">
         <el-table-column prop="transactionDate" label="日付" width="110" />
-        <el-table-column prop="transactionNo" label="No." width="130" />
+        <el-table-column label="伝票番号" width="130">
+          <template #default="{ row }">
+            <span
+              v-if="row.voucherNo"
+              class="voucher-link-cell"
+              @click="openVoucher(row.voucherId, row.voucherNo)"
+            >
+              <el-icon class="voucher-link-icon"><Document /></el-icon>
+              {{ row.voucherNo }}
+            </span>
+            <span v-else class="text-muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="description" label="摘要" min-width="200">
           <template #default="{ row }">
             <span>{{ row.counterparty ? `${row.counterparty} ` : '' }}{{ row.description }}</span>
@@ -128,13 +140,6 @@
         <el-table-column prop="balanceAfter" label="残高" align="right" width="130">
           <template #default="{ row }">
             <span class="amount-balance">{{ formatCurrency(row.balanceAfter) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="伝票" width="120">
-          <template #default="{ row }">
-            <el-button v-if="row.voucherNo" link type="primary" size="small" @click="openVoucher(row.voucherId, row.voucherNo)">
-              {{ row.voucherNo }}
-            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -322,7 +327,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Download, Plus, Minus, Check, Wallet } from '@element-plus/icons-vue'
+import { Download, Plus, Minus, Check, Wallet, Document } from '@element-plus/icons-vue'
 import api from '../api'
 import VouchersList from './VouchersList.vue'
 
@@ -1079,6 +1084,36 @@ onMounted(async () => {
 .el-dialog.voucher-detail-dialog .el-dialog__body {
   padding: 0;
   background-color: #fff;
+}
+
+.voucher-link-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #409eff;
+  font-weight: 500;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid #c6e2ff;
+  background: #ecf5ff;
+  transition: background 0.15s;
+}
+
+.voucher-link-cell:hover {
+  background: #d9ecff;
+  color: #337ecc;
+}
+
+.voucher-link-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.text-muted {
+  color: #c0c4cc;
+  font-size: 12px;
 }
 </style>
 
