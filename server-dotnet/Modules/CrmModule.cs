@@ -587,8 +587,7 @@ WHERE company_code=$1 AND payload #>> string_to_array($3, '.') = $2 LIMIT 1";
                 var llmContent = respDoc.RootElement
                     .GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "{}";
 
-                using var resultDoc = JsonDocument.Parse(llmContent);
-                return Results.Json(resultDoc.RootElement);
+                return Results.Content(llmContent, "application/json");
             }
             catch (Exception ex)
             {

@@ -1006,10 +1006,9 @@ public static class SalesInvoiceModule
                     };
 
                     await using var insCmd = new NpgsqlCommand(@"
-                        INSERT INTO sales_invoices (company_code, invoice_no, customer_code, customer_name, invoice_date, due_date, amount_total, tax_amount, status, payload)
-                        VALUES ($1,$2,$3,$4,$5::date,$6::date,$7,$8,'issued',$9::jsonb)", conn, tx);
+                        INSERT INTO sales_invoices (company_code, customer_code, customer_name, invoice_date, due_date, amount_total, tax_amount, status, payload)
+                        VALUES ($1,$2,$3,$4::date,$5::date,$6,$7,'issued',$8::jsonb)", conn, tx);
                     insCmd.Parameters.AddWithValue(cc.ToString()!);
-                    insCmd.Parameters.AddWithValue(invoiceNo);
                     insCmd.Parameters.AddWithValue(customerCode);
                     insCmd.Parameters.AddWithValue(customerName ?? (object)DBNull.Value);
                     insCmd.Parameters.AddWithValue(invoiceDate!);
