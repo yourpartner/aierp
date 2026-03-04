@@ -1020,7 +1020,23 @@ public static class SalesInvoiceModule
                     await insCmd.ExecuteNonQueryAsync();
                     await tx.CommitAsync();
 
-                    results.Add(new { customerCode, customerName, invoiceNo, success = true, dnCount = dnIds.Count, voucherNo, voucherError });
+                    // PDF 生成
+                    string? pdfBlobName = null, pdfUrl = null;
+                    try
+                    {
+                        var pdfService = req.HttpContext.RequestServices.GetService<SalesPdfService>();
+                        if (pdfService != null)
+                        {
+                            var companyInfo = await SalesPdfService.GetCompanyInfoAsync(ds, cc.ToString()!);
+                            using var payloadDoc = JsonDocument.Parse(invoicePayload.ToJsonString());
+                            var invData = SalesPdfService.ExtractInvoiceData(payloadDoc.RootElement, invoiceNo);
+                            pdfBlobName = await pdfService.GenerateInvoicePdfAsync(cc.ToString()!, companyInfo, invData, CancellationToken.None);
+                            pdfUrl = pdfService.GetReadUri(pdfBlobName);
+                        }
+                    }
+                    catch (Exception pdfEx) { Console.WriteLine($"[batch-create] PDF error for {invoiceNo}: {pdfEx.Message}"); }
+
+                    results.Add(new { customerCode, customerName, invoiceNo, success = true, dnCount = dnIds.Count, voucherNo, voucherError, pdfBlobName, pdfUrl });
                 }
                 catch (Exception ex)
                 {
