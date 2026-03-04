@@ -5,7 +5,7 @@
         <div class="page-header">
           <div class="page-header-title">{{ tableLabels.title }}</div>
           <div class="page-actions">
-            <el-button type="primary" @click="createVisible = true">{{ tableLabels.new }}</el-button>
+            <el-button type="primary" @click="openCreateDialog">{{ tableLabels.new }}</el-button>
           </div>
         </div>
       </template>
@@ -395,6 +395,15 @@ const isDragOver = ref(false)
 const isParsing = ref(false)
 const parseError = ref('')
 const parsedOrderData = ref<any>(null)
+
+function openCreateDialog() {
+  createStep.value = 0
+  isParsing.value = false
+  parseError.value = ''
+  parsedOrderData.value = null
+  isDragOver.value = false
+  createVisible.value = true
+}
 
 function resetCreateDialog() {
   createStep.value = 0
