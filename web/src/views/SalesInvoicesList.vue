@@ -749,6 +749,8 @@ const batchSuggestionText = computed(() => {
 })
 
 async function openBatchDialog() {
+  batchDialog.loading = false
+  batchDialog.preview = null
   batchDialog.visible = true
   batchDialog.mode = 'missing_only'
   batchDialog.invoiceDate = new Date().toISOString().slice(0, 10)
@@ -759,13 +761,23 @@ async function loadBatchPreview() {
   if (!batchDialog.yearMonth) return
   batchDialog.loading = true
   batchDialog.preview = null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
   try {
     const [y, m] = batchDialog.yearMonth.split('-')
-    const r = await api.get(`/sales-invoices/batch-preview?year=${y}&month=${m}`)
+    const r = await api.get(`/sales-invoices/batch-preview?year=${y}&month=${m}`, {
+      signal: controller.signal
+    })
     batchDialog.preview = r.data
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.error || 'プレビュー取得に失敗しました')
+    if (e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError') {
+      ElMessage.error('プレビュー取得がタイムアウトしました。再度お試しください。')
+    } else {
+      ElMessage.error(e?.response?.data?.error || 'プレビュー取得に失敗しました')
+    }
+    console.error('[batch-preview]', e)
   } finally {
+    clearTimeout(timer)
     batchDialog.loading = false
   }
 }
