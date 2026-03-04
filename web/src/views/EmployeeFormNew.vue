@@ -1882,10 +1882,7 @@ onMounted(reload)
 }
 .salary-parsed {
   width: 100%;
-  padding: 8px 10px;
-  background: #f0f7ff;
-  border-radius: 6px;
-  border: 1px solid #d9ecff;
+  padding: 4px 0 0;
 }
 .salary-parsed__loading {
   display: flex;

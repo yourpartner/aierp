@@ -5,88 +5,193 @@
         <div class="page-header">
           <div class="page-header-title">{{ navText.inventoryBatchNew }}</div>
           <div class="page-actions">
-            <el-button type="primary" :loading="saving" :disabled="!!errorMsg" @click="save">{{ commonText.save }}</el-button>
+            <el-button type="primary" :loading="saving" :disabled="!model.materialCode" @click="save">{{ commonText.save }}</el-button>
             <el-button @click="$router.push('/batches')">{{ commonText.backList }}</el-button>
           </div>
         </div>
       </template>
-      <el-form :model="model" label-width="120px" class="batch-form">
-        <el-alert v-if="errorMsg" :title="errorMsg" type="error" show-icon style="margin-bottom:12px" />
-        <DynamicForm v-if="!errorMsg" :ui="ui" :schema="schema" :model="model" />
+      <el-form :model="model" label-width="100px" class="batch-form">
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="品目コード" required>
+              <el-select
+                v-model="model.materialCode"
+                filterable
+                placeholder="品目を選択"
+                style="width: 100%"
+                @change="onMaterialChange"
+              >
+                <el-option
+                  v-for="m in materials"
+                  :key="m.code"
+                  :label="`${m.code} - ${m.name}`"
+                  :value="m.code"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="ロット番号">
+              <el-input v-model="batchNoPreview" disabled placeholder="自動採番" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="製造日">
+              <el-date-picker
+                v-model="model.mfgDate"
+                type="date"
+                value-format="YYYY-MM-DD"
+                placeholder="製造日を選択"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="有効期限">
+              <el-date-picker
+                v-model="model.expDate"
+                type="date"
+                value-format="YYYY-MM-DD"
+                placeholder="有効期限を選択"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
       </el-form>
     </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, computed } from 'vue'
 import api from '../api'
 import { ElMessage } from 'element-plus'
-import DynamicForm from '../components/DynamicForm.vue'
 import { useI18n } from '../i18n'
+import { useRouter } from 'vue-router'
 
-const { section, lang } = useI18n()
-const navText = section({ inventoryBatchNew:'' }, (msg) => msg.nav)
-const commonText = section({ backList:'', save:'', saved:'', loadFailed:'', saveFailed:'' }, (msg) => msg.common)
-const schemaText = section({ create:'', refresh:'', createTitle:'', loadFailed:'', layoutMissing:'' }, (msg) => msg.schemaList)
+const router = useRouter()
+const { section } = useI18n()
+const navText = section({ inventoryBatchNew: '' }, (msg) => msg.nav)
+const commonText = section({ backList: '', save: '', saved: '' }, (msg) => msg.common)
 
-const schema = ref<any>({})
-const ui = ref<any>({ form: { layout: [] } })
-const model = reactive<any>({})
+interface MaterialOption { code: string; name: string }
+const materials = ref<MaterialOption[]>([])
+const model = reactive<{ materialCode: string; mfgDate: string; expDate: string }>({
+  materialCode: '',
+  mfgDate: '',
+  expDate: ''
+})
 const saving = ref(false)
-const errorMsg = ref('')
+
+const batchNoPreview = computed(() => {
+  if (!model.materialCode) return ''
+  const today = new Date()
+  const yyyymmdd = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`
+  return `${model.materialCode}-${yyyymmdd}-***`
+})
+
+function onMaterialChange() {
+  // placeholder for future logic
+}
+
+async function loadMaterials() {
+  try {
+    const r = await api.post('/objects/material/search', {
+      page: 1,
+      pageSize: 500,
+      where: [],
+      orderBy: [{ field: 'payload.code', direction: 'asc' }]
+    })
+    const rows = Array.isArray(r.data?.data) ? r.data.data : []
+    materials.value = rows.map((row: any) => ({
+      code: row.payload?.code || '',
+      name: row.payload?.name || ''
+    })).filter((m: MaterialOption) => m.code)
+  } catch (e: any) {
+    console.error('Failed to load materials', e)
+  }
+}
+
+async function generateBatchNo(materialCode: string): Promise<string> {
+  const today = new Date()
+  const yyyymmdd = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`
+  const prefix = `${materialCode}-${yyyymmdd}-`
+
+  try {
+    const r = await api.post('/objects/batch/search', {
+      page: 1,
+      pageSize: 1000,
+      where: [{ field: 'payload.materialCode', op: 'eq', value: materialCode }],
+      orderBy: [{ field: 'payload.batchNo', direction: 'desc' }]
+    })
+    const rows = Array.isArray(r.data?.data) ? r.data.data : []
+    let maxSeq = 0
+    for (const row of rows) {
+      const no: string = row.payload?.batchNo || ''
+      if (no.startsWith(prefix)) {
+        const seqStr = no.substring(prefix.length)
+        const seq = parseInt(seqStr, 10)
+        if (!isNaN(seq) && seq > maxSeq) maxSeq = seq
+      }
+    }
+    return `${prefix}${String(maxSeq + 1).padStart(3, '0')}`
+  } catch {
+    return `${prefix}001`
+  }
+}
 
 async function save() {
+  if (!model.materialCode) {
+    ElMessage.warning('品目コードを選択してください')
+    return
+  }
   saving.value = true
   try {
-    await api.post('/objects/batch', { payload: model })
-    ElMessage.success(commonText.value.saved)
+    const batchNo = await generateBatchNo(model.materialCode)
+    const payload: any = {
+      materialCode: model.materialCode,
+      batchNo
+    }
+    if (model.mfgDate) payload.mfgDate = model.mfgDate
+    if (model.expDate) payload.expDate = model.expDate
+
+    await api.post('/objects/batch', { payload })
+    ElMessage.success(commonText.value.saved || '保存しました')
+    router.push('/batches')
+  } catch (e: any) {
+    const msg = e?.response?.data?.error || e?.message || '保存に失敗しました'
+    ElMessage.error(msg)
   } finally {
     saving.value = false
   }
 }
 
-async function loadSchema() {
-  try {
-    const r = await api.get('/schemas/batch', { params: { lang: lang.value } })
-    schema.value = r.data?.schema || {}
-    ui.value = r.data?.ui || { form: { layout: [] } }
-    const ok = Array.isArray((ui.value as any)?.form?.layout) && ((ui.value as any).form.layout.length > 0)
-    if (!ok) errorMsg.value = schemaText.value.layoutMissing
-  } catch (e: any) {
-    errorMsg.value = `${schemaText.value.loadFailed}: ${e?.message || ''}`
-  }
-}
-
-loadSchema()
+loadMaterials()
 </script>
 
 <style scoped>
 .page.page-medium {
   max-width: 900px;
 }
-
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
-
 .page-header-title {
   font-weight: 600;
   font-size: 15px;
   color: #303133;
 }
-
 .page-actions {
   display: flex;
   gap: 8px;
 }
-
 .batch-form {
-  max-width: 720px;
+  max-width: 760px;
   padding-top: 4px;
 }
 </style>
-
-
