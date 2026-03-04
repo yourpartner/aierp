@@ -119,7 +119,8 @@ ORDER BY e.employee_code";
             foreach (var emp in employees)
             {
                 var data = await GetEmployeeYearlyDataAsync(ds, companyCode, year, emp.Code, ct);
-                BuildSheet(wb, emp, data, year);
+                var attendance = await GetAttendanceDataAsync(ds, companyCode, year, emp.Code, ct);
+                BuildSheet(wb, emp, data, attendance, year);
             }
 
             using var ms = new MemoryStream();
@@ -164,6 +165,7 @@ ORDER BY e.employee_code";
     }
 
     record MonthData(int Month, string RunType, List<JsonElement> Items);
+    record AttendanceData(int WorkDays, decimal TotalHours, decimal OvertimeHours, decimal HolidayHours, decimal NightHours);
 
     static async Task<List<MonthData>> GetEmployeeYearlyDataAsync(
         NpgsqlDataSource ds, string companyCode, string year, string empCode, CancellationToken ct)
@@ -201,6 +203,81 @@ ORDER BY r.period_month, r.run_type";
         return list;
     }
 
+    /// <summary>
+    /// 勤怠データ取得: metadata->'workHours' を優先し、なければ timesheet_submissions から取得
+    /// </summary>
+    static async Task<Dictionary<int, AttendanceData>> GetAttendanceDataAsync(
+        NpgsqlDataSource ds, string companyCode, string year, string empCode, CancellationToken ct)
+    {
+        var result = new Dictionary<int, AttendanceData>();
+        await using var conn = await ds.OpenConnectionAsync(ct);
+
+        // Source 1: payroll_run_entries.metadata->'workHours'
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"
+SELECT r.period_month, e.metadata->'workHours' AS wh
+FROM payroll_run_entries e
+JOIN payroll_runs r ON r.id = e.run_id
+WHERE e.company_code = $1 AND r.period_month LIKE $2 AND e.employee_code = $3
+  AND r.status = 'completed' AND e.metadata->'workHours' IS NOT NULL";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue($"{year}-%");
+            cmd.Parameters.AddWithValue(empCode);
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            while (await rd.ReadAsync(ct))
+            {
+                var periodStr = rd.GetString(0);
+                if (!int.TryParse(periodStr.Split('-').LastOrDefault(), out var m)) continue;
+                var whJson = rd.IsDBNull(1) ? null : rd.GetString(1);
+                if (whJson == null) continue;
+                try
+                {
+                    using var doc = JsonDocument.Parse(whJson);
+                    var root = doc.RootElement;
+                    var workDays = root.TryGetProperty("lockedEntries", out var ld) && ld.TryGetInt32(out var ldv) ? ldv
+                                 : root.TryGetProperty("sourceEntries", out var se) && se.TryGetInt32(out var sev) ? sev : 0;
+                    var totalHours = root.TryGetProperty("totalHours", out var th) && th.TryGetDecimal(out var thv) ? thv : 0m;
+                    var otHours = root.TryGetProperty("overtimeHours", out var ot) && ot.TryGetDecimal(out var otv) ? otv : 0m;
+                    var holHours = root.TryGetProperty("holidayHours", out var hh) && hh.TryGetDecimal(out var hhv) ? hhv : 0m;
+                    var nightHours = root.TryGetProperty("lateNightHours", out var nh) && nh.TryGetDecimal(out var nhv) ? nhv : 0m;
+                    result[m] = new AttendanceData(workDays, totalHours, otHours, holHours, nightHours);
+                }
+                catch { /* ignore parse errors */ }
+            }
+        }
+
+        // Source 2: timesheet_submissions (fill gaps only)
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"
+SELECT month,
+       (payload->>'workDays')::int,
+       (payload->>'totalHours')::numeric,
+       COALESCE((payload->>'totalOvertime')::numeric, 0)
+FROM timesheet_submissions
+WHERE company_code = $1 AND month LIKE $2 AND employee_code = $3";
+            cmd.Parameters.AddWithValue(companyCode);
+            cmd.Parameters.AddWithValue($"{year}-%");
+            cmd.Parameters.AddWithValue(empCode);
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            while (await rd.ReadAsync(ct))
+            {
+                var monthStr = rd.GetString(0);
+                if (!int.TryParse(monthStr.Split('-').LastOrDefault(), out var m)) continue;
+                if (result.ContainsKey(m)) continue; // metadata takes priority
+                var workDays = rd.IsDBNull(1) ? 0 : rd.GetInt32(1);
+                var totalHours = rd.IsDBNull(2) ? 0m : rd.GetDecimal(2);
+                var otHours = rd.IsDBNull(3) ? 0m : rd.GetDecimal(3);
+                result[m] = new AttendanceData(workDays, totalHours, otHours, 0, 0);
+            }
+        }
+
+        return result;
+    }
+
     static async Task<(XLWorkbook? wb, string fileName)> BuildWageLedgerWorkbook(
         NpgsqlDataSource ds, string companyCode, string year, string empCode, CancellationToken ct)
     {
@@ -211,13 +288,14 @@ ORDER BY r.period_month, r.run_type";
         var data = await GetEmployeeYearlyDataAsync(ds, companyCode, year, empCode, ct);
         if (data.Count == 0) return (null, "");
 
+        var attendance = await GetAttendanceDataAsync(ds, companyCode, year, empCode, ct);
         var wb = new XLWorkbook();
-        BuildSheet(wb, emp, data, year);
+        BuildSheet(wb, emp, data, attendance, year);
         var safeCode = string.Concat(empCode.Where(c => !Path.GetInvalidFileNameChars().Contains(c)));
         return (wb, $"{safeCode}_{emp.Name}_賃金台帳_{year}.xlsx");
     }
 
-    static void BuildSheet(XLWorkbook wb, EmployeeInfo emp, List<MonthData> data, string year)
+    static void BuildSheet(XLWorkbook wb, EmployeeInfo emp, List<MonthData> data, Dictionary<int, AttendanceData> attendance, string year)
     {
         // シート名は社員コード+名前（Excelシート名は31文字以内）
         var sheetName = $"{emp.Code}_{emp.Name}";
@@ -335,7 +413,29 @@ ORDER BY r.period_month, r.run_type";
             FillDataColumn(ws, col, bonusRuns[bi].Items, rowDefs, true);
         }
 
-        // 行5〜9（勤怠）は数値データがない場合は空欄のままでよい
+        // 行5〜9: 勤怠データを metadata->workHours / timesheet_submissions から取得して設定
+        int totalWorkDays = 0; decimal totalWorkHours = 0, totalOtHours = 0, totalHolHours = 0, totalNightHours = 0;
+        for (int month = 1; month <= 12; month++)
+        {
+            if (!attendance.TryGetValue(month, out var att)) continue;
+            int col = month + 1;
+            SetAttendanceCell(ws, 5, col, att.WorkDays);
+            SetAttendanceCell(ws, 6, col, att.TotalHours);
+            SetAttendanceCell(ws, 7, col, att.OvertimeHours);
+            SetAttendanceCell(ws, 8, col, att.HolidayHours);
+            SetAttendanceCell(ws, 9, col, att.NightHours);
+            totalWorkDays += att.WorkDays;
+            totalWorkHours += att.TotalHours;
+            totalOtHours += att.OvertimeHours;
+            totalHolHours += att.HolidayHours;
+            totalNightHours += att.NightHours;
+        }
+        // 勤怠合計列
+        SetAttendanceCell(ws, 5, 17, totalWorkDays, true);
+        SetAttendanceCell(ws, 6, 17, totalWorkHours, true);
+        SetAttendanceCell(ws, 7, 17, totalOtHours, true);
+        SetAttendanceCell(ws, 8, 17, totalHolHours, true);
+        SetAttendanceCell(ws, 9, 17, totalNightHours, true);
 
         // 合計列
         FillTotalColumn(ws, 17, rowDefs, monthlyByMonth, bonusRuns);
@@ -432,6 +532,23 @@ ORDER BY r.period_month, r.run_type";
             cell.Style.Fill.BackgroundColor = XLColor.FromHtml("#EBF2D8");
         }
     }
+
+    static void SetAttendanceCell(IXLWorksheet ws, int row, int col, decimal value, bool bold = false)
+    {
+        if (value == 0) return;
+        var cell = ws.Cell(row, col);
+        cell.Value = value;
+        cell.Style.NumberFormat.Format = row == 5 ? "#,##0" : "#,##0.0";
+        cell.Style.Font.FontName = "MS P明朝";
+        cell.Style.Font.FontSize = 10;
+        cell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Right;
+        cell.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+        cell.Style.Border.OutsideBorderColor = XLColor.FromHtml("#9DB2BF");
+        if (bold) cell.Style.Font.Bold = true;
+    }
+
+    static void SetAttendanceCell(IXLWorksheet ws, int row, int col, int value, bool bold = false)
+        => SetAttendanceCell(ws, row, col, (decimal)value, bold);
 
     static void StyleInfoRow(IXLWorksheet ws, int row)
     {
