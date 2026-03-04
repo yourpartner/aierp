@@ -1005,16 +1005,12 @@ public static class SalesInvoiceModule
                         ["deliveryNoteIds"] = dnIdsJsonArr
                     };
 
+                    var batchInvoiceId = Guid.NewGuid();
                     await using var insCmd = new NpgsqlCommand(@"
-                        INSERT INTO sales_invoices (company_code, customer_code, customer_name, invoice_date, due_date, amount_total, tax_amount, status, payload)
-                        VALUES ($1,$2,$3,$4::date,$5::date,$6,$7,'issued',$8::jsonb)", conn, tx);
+                        INSERT INTO sales_invoices (id, company_code, payload)
+                        VALUES ($1, $2, $3::jsonb)", conn, tx);
+                    insCmd.Parameters.AddWithValue(batchInvoiceId);
                     insCmd.Parameters.AddWithValue(cc.ToString()!);
-                    insCmd.Parameters.AddWithValue(customerCode);
-                    insCmd.Parameters.AddWithValue(customerName ?? (object)DBNull.Value);
-                    insCmd.Parameters.AddWithValue(invoiceDate!);
-                    insCmd.Parameters.AddWithValue(dueDateStr);
-                    insCmd.Parameters.AddWithValue(totalAmount);
-                    insCmd.Parameters.AddWithValue(taxAmount);
                     insCmd.Parameters.AddWithValue(invoicePayload.ToJsonString());
                     await insCmd.ExecuteNonQueryAsync();
                     await tx.CommitAsync();
