@@ -50,146 +50,129 @@
 
       <el-dialog
         v-model="detailVisible"
-        title="受注詳細"
-        width="900px"
-        :style="{ maxWidth: '96vw' }"
+        width="auto"
+        :show-close="false"
         destroy-on-close
-        class="detail-dialog"
+        class="so-detail-dialog"
       >
-        <el-skeleton :loading="detailLoading" :rows="6" animated />
-        <template v-if="!detailLoading">
-          <div v-if="detail?.error" class="detail-error">{{ detail.error }}</div>
-          <div v-else-if="detail" class="detail-content">
-            <div class="so-detail-layout">
-              <!-- 左侧：订单详情 -->
-              <div class="so-detail-main">
-                <el-descriptions :column="2" border size="small">
-                  <el-descriptions-item :label="tableLabels.number">{{ detail?.soNo || detail?.so_no }}</el-descriptions-item>
-                  <el-descriptions-item :label="tableLabels.issueDate">{{ detail?.orderDate || detail?.order_date }}</el-descriptions-item>
-                  <el-descriptions-item :label="tableLabels.customer">
-                    {{ detail?.partnerName || detail?.partner_name || detail?.partnerCode || detail?.partner_code }}
-                  </el-descriptions-item>
-                  <el-descriptions-item :label="tableLabels.status">
-                    <el-tag :type="getStatusType(detail?.status)" size="small">{{ getStatusLabel(detail?.status) }}</el-tag>
-                  </el-descriptions-item>
-                </el-descriptions>
-
-                <el-divider content-position="left">明細</el-divider>
-                <el-table :data="detailLines(detail)" size="small" stripe border class="detail-table">
-                  <el-table-column label="#" width="40" align="center">
-                    <template #default="{ $index }">{{ $index + 1 }}</template>
-                  </el-table-column>
-                  <el-table-column label="品目" min-width="200">
-                    <template #default="{ row }">{{ row.materialName || row.materialCode }}</template>
-                  </el-table-column>
-                  <el-table-column label="数量" width="80" align="right">
-                    <template #default="{ row }">{{ row.quantity }} {{ row.uom || '' }}</template>
-                  </el-table-column>
-                  <el-table-column label="単価" width="80" align="right">
-                    <template #default="{ row }">{{ formatAmount(row.unitPrice) }}</template>
-                  </el-table-column>
-                  <el-table-column label="金額" width="90" align="right">
-                    <template #default="{ row }">{{ formatAmount(row.amount) }}</template>
-                  </el-table-column>
-                </el-table>
-
-                <div class="so-totals-inline">
-                  <span class="total-item">税抜: <strong>¥{{ formatAmount(calcSubtotal(detailLines(detail))) }}</strong></span>
-                  <span class="total-item">税: <strong>¥{{ formatAmount(detail?.taxAmountTotal) }}</strong></span>
-                  <span class="total-item total-grand">合計: <strong>¥{{ formatAmount(detail?.amountTotal || detail?.amount_total) }}</strong></span>
-                </div>
-
-                <div v-if="detail?.note" class="so-note">
-                  <strong>備考:</strong> {{ detail.note }}
-                </div>
+        <template #header></template>
+        <el-card class="so-detail-card">
+          <template #header>
+            <div class="page-header detail-header">
+              <div class="page-header-title">受注詳細</div>
+              <div class="detail-header-actions">
+                <el-tag v-if="detail?.soNo || detail?.so_no" type="info">{{ detail?.soNo || detail?.so_no }}</el-tag>
+                <el-button v-if="canEditCurrentOrder" size="small" type="primary" @click="openEditDialog">編集</el-button>
+                <el-button v-if="!hasDeliveryNote()" size="small" type="primary" @click="openDeliveryDialog" :disabled="!currentOrderId">納品書作成</el-button>
+                <el-button size="small" @click="detailVisible = false">閉じる</el-button>
               </div>
+            </div>
+          </template>
+          <el-skeleton :loading="detailLoading" :rows="6" animated />
+          <template v-if="!detailLoading">
+            <div v-if="detail?.error" class="detail-error">{{ detail.error }}</div>
+            <div v-else-if="detail" class="detail-content">
+              <div class="so-detail-layout">
+                <div class="so-detail-main">
+                  <el-descriptions :column="2" border size="small">
+                    <el-descriptions-item :label="tableLabels.number">{{ detail?.soNo || detail?.so_no }}</el-descriptions-item>
+                    <el-descriptions-item :label="tableLabels.issueDate">{{ detail?.orderDate || detail?.order_date }}</el-descriptions-item>
+                    <el-descriptions-item :label="tableLabels.customer">
+                      {{ detail?.partnerName || detail?.partner_name || detail?.partnerCode || detail?.partner_code }}
+                    </el-descriptions-item>
+                    <el-descriptions-item :label="tableLabels.status">
+                      <el-tag :type="getStatusType(detail?.status)" size="small">{{ getStatusLabel(detail?.status) }}</el-tag>
+                    </el-descriptions-item>
+                  </el-descriptions>
 
-              <!-- 右侧：进度追踪（时间线样式） -->
-              <div class="so-detail-progress">
-                <div class="progress-title">進捗</div>
-                
-                <div class="progress-timeline">
-                  <!-- 受注 -->
-                  <div class="timeline-item active">
-                    <div class="timeline-node">
-                      <el-icon><Document /></el-icon>
-                    </div>
-                    <div class="timeline-content">
-                      <div class="timeline-label">受注</div>
-                      <div class="timeline-value">{{ detail?.soNo || detail?.so_no }}</div>
-                      <div class="timeline-date">{{ detail?.orderDate || detail?.order_date }}</div>
-                    </div>
-                  </div>
-                  
-                  <!-- 纳品书 -->
-                  <div class="timeline-item" :class="{ active: isStageActive('DeliveryNote'), pending: !isStageActive('DeliveryNote') }">
-                    <div class="timeline-node">
-                      <el-icon><Document /></el-icon>
-                    </div>
-                    <div class="timeline-content">
-                      <div class="timeline-label">納品書作成</div>
-                      <template v-if="isStageActive('DeliveryNote')">
-                        <div class="timeline-value">{{ getStageDocNo('DeliveryNote') || '作成済' }}</div>
-                        <div class="timeline-date">{{ getStageLabel('DeliveryNote') }}</div>
-                      </template>
-                      <div v-else class="timeline-pending">未開始</div>
-                    </div>
-                  </div>
+                  <el-divider content-position="left">明細</el-divider>
+                  <el-table :data="detailLines(detail)" size="small" stripe border class="detail-table">
+                    <el-table-column label="#" width="40" align="center">
+                      <template #default="{ $index }">{{ $index + 1 }}</template>
+                    </el-table-column>
+                    <el-table-column label="品目" min-width="200">
+                      <template #default="{ row }">{{ row.materialName || row.materialCode }}</template>
+                    </el-table-column>
+                    <el-table-column label="数量" width="80" align="right">
+                      <template #default="{ row }">{{ row.quantity }} {{ row.uom || '' }}</template>
+                    </el-table-column>
+                    <el-table-column label="単価" width="80" align="right">
+                      <template #default="{ row }">{{ formatAmount(row.unitPrice) }}</template>
+                    </el-table-column>
+                    <el-table-column label="金額" width="90" align="right">
+                      <template #default="{ row }">{{ formatAmount(row.amount) }}</template>
+                    </el-table-column>
+                  </el-table>
 
-                  <!-- 出库 -->
-                  <div class="timeline-item" :class="{ active: isStageActive('Shipped'), pending: !isStageActive('Shipped') }">
-                    <div class="timeline-node">
-                      <el-icon><Box /></el-icon>
-                    </div>
-                    <div class="timeline-content">
-                      <div class="timeline-label">出庫</div>
-                      <template v-if="isStageActive('Shipped')">
-                        <div class="timeline-value">{{ getStageLabel('Shipped') }}</div>
-                      </template>
-                      <div v-else class="timeline-pending">{{ getStageLabel('Shipped') }}</div>
-                    </div>
+                  <div class="so-totals-inline">
+                    <span class="total-item">税抜: <strong>¥{{ formatAmount(calcSubtotal(detailLines(detail))) }}</strong></span>
+                    <span class="total-item">税: <strong>¥{{ formatAmount(detail?.taxAmountTotal) }}</strong></span>
+                    <span class="total-item total-grand">合計: <strong>¥{{ formatAmount(detail?.amountTotal || detail?.amount_total) }}</strong></span>
                   </div>
 
-                  <!-- 请求书 -->
-                  <div class="timeline-item" :class="{ active: isStageActive('Invoice'), pending: !isStageActive('Invoice') }">
-                    <div class="timeline-node">
-                      <el-icon><Tickets /></el-icon>
-                    </div>
-                    <div class="timeline-content">
-                      <div class="timeline-label">請求書 <span class="optional-badge">任意</span></div>
-                      <template v-if="isStageActive('Invoice')">
-                        <div class="timeline-value">{{ getStageDocNo('Invoice') || getStageLabel('Invoice') }}</div>
-                      </template>
-                      <div v-else class="timeline-pending">{{ getStageLabel('Invoice') }}</div>
-                    </div>
+                  <div v-if="detail?.note" class="so-note">
+                    <strong>備考:</strong> {{ detail.note }}
                   </div>
+                </div>
 
-                  <!-- 入金 -->
-                  <div class="timeline-item" :class="{ active: isStageActive('Payment'), pending: !isStageActive('Payment') }">
-                    <div class="timeline-node">
-                      <el-icon><Money /></el-icon>
+                <div class="so-detail-progress">
+                  <div class="progress-title">進捗</div>
+                  <div class="progress-timeline">
+                    <div class="timeline-item active">
+                      <div class="timeline-node"><el-icon><Document /></el-icon></div>
+                      <div class="timeline-content">
+                        <div class="timeline-label">受注</div>
+                        <div class="timeline-value">{{ detail?.soNo || detail?.so_no }}</div>
+                        <div class="timeline-date">{{ detail?.orderDate || detail?.order_date }}</div>
+                      </div>
                     </div>
-                    <div class="timeline-content">
-                      <div class="timeline-label">入金</div>
-                      <template v-if="isStageActive('Payment')">
-                        <div class="timeline-value">{{ getStageLabel('Payment') }}</div>
-                      </template>
-                      <div v-else class="timeline-pending">{{ getStageLabel('Payment') }}</div>
+                    <div class="timeline-item" :class="{ active: isStageActive('DeliveryNote'), pending: !isStageActive('DeliveryNote') }">
+                      <div class="timeline-node"><el-icon><Document /></el-icon></div>
+                      <div class="timeline-content">
+                        <div class="timeline-label">納品書作成</div>
+                        <template v-if="isStageActive('DeliveryNote')">
+                          <div class="timeline-value">{{ getStageDocNo('DeliveryNote') || '作成済' }}</div>
+                          <div class="timeline-date">{{ getStageLabel('DeliveryNote') }}</div>
+                        </template>
+                        <div v-else class="timeline-pending">未開始</div>
+                      </div>
+                    </div>
+                    <div class="timeline-item" :class="{ active: isStageActive('Shipped'), pending: !isStageActive('Shipped') }">
+                      <div class="timeline-node"><el-icon><Box /></el-icon></div>
+                      <div class="timeline-content">
+                        <div class="timeline-label">出庫</div>
+                        <template v-if="isStageActive('Shipped')">
+                          <div class="timeline-value">{{ getStageLabel('Shipped') }}</div>
+                        </template>
+                        <div v-else class="timeline-pending">{{ getStageLabel('Shipped') }}</div>
+                      </div>
+                    </div>
+                    <div class="timeline-item" :class="{ active: isStageActive('Invoice'), pending: !isStageActive('Invoice') }">
+                      <div class="timeline-node"><el-icon><Tickets /></el-icon></div>
+                      <div class="timeline-content">
+                        <div class="timeline-label">請求書 <span class="optional-badge">任意</span></div>
+                        <template v-if="isStageActive('Invoice')">
+                          <div class="timeline-value">{{ getStageDocNo('Invoice') || getStageLabel('Invoice') }}</div>
+                        </template>
+                        <div v-else class="timeline-pending">{{ getStageLabel('Invoice') }}</div>
+                      </div>
+                    </div>
+                    <div class="timeline-item" :class="{ active: isStageActive('Payment'), pending: !isStageActive('Payment') }">
+                      <div class="timeline-node"><el-icon><Money /></el-icon></div>
+                      <div class="timeline-content">
+                        <div class="timeline-label">入金</div>
+                        <template v-if="isStageActive('Payment')">
+                          <div class="timeline-value">{{ getStageLabel('Payment') }}</div>
+                        </template>
+                        <div v-else class="timeline-pending">{{ getStageLabel('Payment') }}</div>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-        </template>
-        <template #footer>
-          <div class="dialog-footer detail-footer">
-            <el-button @click="detailVisible = false">閉じる</el-button>
-            <div class="footer-spacer" />
-            <el-button v-if="canEditCurrentOrder" @click="openEditDialog">編集</el-button>
-            <el-button v-if="!hasDeliveryNote()" type="primary" @click="openDeliveryDialog" :disabled="!currentOrderId">納品書作成</el-button>
-          </div>
-        </template>
+          </template>
+        </el-card>
       </el-dialog>
 
       <!-- 受注編集ダイアログ -->
@@ -735,39 +718,38 @@ async function openDetail(row: any) {
 </script>
 
 <style scoped>
-.detail-dialog :deep(.el-dialog__body) {
-  max-height: 75vh;
+.so-detail-dialog :deep(.el-dialog__header) {
+  display: none;
+}
+.so-detail-dialog :deep(.el-dialog__body) {
+  padding: 0;
+}
+.so-detail-card {
+  max-width: 900px;
+  margin: 0 auto;
+}
+.so-detail-card :deep(.el-card__body) {
+  max-height: 70vh;
   overflow-y: auto;
-  padding: 16px 20px;
+}
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.detail-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .detail-content {
   display: block;
-  width: fit-content;
-  flex-direction: column;
-  gap: 16px;
-}
-.detail-descriptions :deep(.el-descriptions__body) {
-  word-break: break-word;
-}
-.detail-section-title {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-}
-.detail-table-wrapper {
-  max-height: 360px;
-  overflow-y: auto;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
 }
 .detail-table {
   min-width: 100%;
 }
 .detail-error {
   color: #ef4444;
-}
-.detail-dialog :deep(.el-descriptions__body) {
-  word-break: break-word;
 }
 .lifecycle-progress {
   display: flex;
