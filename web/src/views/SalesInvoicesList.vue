@@ -6,6 +6,7 @@
         <div class="page-header">
           <div class="page-header-title">{{ labels.title }}</div>
           <div class="page-actions">
+            <el-button @click="openBatchDialog">一括請求書作成</el-button>
             <el-button type="primary" @click="openCreateDialog">
               <el-icon><Plus /></el-icon> {{ labels.create }}
             </el-button>
@@ -74,67 +75,78 @@
   </div>
 
   <!-- 创建请求书对话框 -->
-    <el-dialog v-model="createDialog.visible" width="800px" append-to-body>
-      <template #header>
-        <div class="dialog-header">
-          <span class="dialog-title">{{ labels.createTitle }}</span>
-        </div>
-      </template>
-      <el-form :model="createDialog.form" label-width="120px">
+    <el-dialog
+      v-model="createDialog.visible"
+      :title="labels.createTitle"
+      width="760px"
+      append-to-body
+      destroy-on-close
+    >
+      <el-form :model="createDialog.form" label-width="80px" class="inv-create-form">
         <el-form-item :label="labels.customer" required>
-          <el-select 
-            v-model="createDialog.form.customerCode" 
-            :placeholder="labels.selectCustomer" 
+          <el-select
+            v-model="createDialog.form.customerCode"
+            :placeholder="labels.selectCustomer"
             filterable
-            clearable 
+            clearable
             style="width: 100%"
             @change="loadShippedDeliveryNotes"
           >
-            <el-option 
-              v-for="c in customerOptions" 
-              :key="c.partner_code" 
-              :label="`${c.name} (${c.partner_code})`" 
-              :value="c.partner_code" 
+            <el-option
+              v-for="c in customerOptions"
+              :key="c.partner_code"
+              :label="`${c.name} (${c.partner_code})`"
+              :value="c.partner_code"
             />
           </el-select>
         </el-form-item>
-        
+
         <el-form-item :label="labels.deliveryNotes" required>
-          <el-table 
+          <el-table
             ref="deliveryNoteTable"
-            :data="deliveryNoteOptions" 
+            :data="deliveryNoteOptions"
             v-loading="loadingDeliveryNotes"
+            size="small"
+            border
             style="width: 100%"
             @selection-change="onDeliveryNoteSelect"
           >
-            <el-table-column type="selection" width="50" />
-            <el-table-column prop="delivery_no" :label="labels.deliveryNo" width="140" />
-            <el-table-column prop="delivery_date" :label="labels.deliveryDate" width="110" />
-            <el-table-column prop="sales_order_no" :label="labels.salesOrder" width="140" />
-            <el-table-column :label="labels.amount" width="120" align="right">
-              <template #default="{ row }">
-                ¥{{ formatNumber(calculateDeliveryAmount(row)) }}
-              </template>
+            <el-table-column type="selection" width="44" />
+            <el-table-column prop="delivery_no" :label="labels.deliveryNo" width="130" />
+            <el-table-column prop="delivery_date" :label="labels.deliveryDate" width="100" />
+            <el-table-column prop="sales_order_no" :label="labels.salesOrder" width="130" />
+            <el-table-column :label="labels.amount" width="110" align="right">
+              <template #default="{ row }">¥{{ formatNumber(calculateDeliveryAmount(row)) }}</template>
             </el-table-column>
           </el-table>
+          <div v-if="!deliveryNoteOptions.length && !loadingDeliveryNotes && createDialog.form.customerCode" class="inv-no-dn">
+            請求対象の納品書がありません
+          </div>
         </el-form-item>
 
-        <el-form-item :label="labels.invoiceDate">
-          <el-date-picker v-model="createDialog.form.invoiceDate" type="date" value-format="YYYY-MM-DD" />
-        </el-form-item>
-
-        <el-form-item :label="labels.dueDate">
-          <el-date-picker v-model="createDialog.form.dueDate" type="date" value-format="YYYY-MM-DD" />
-          <span class="el-form-item__help">{{ labels.dueDateHelp }}</span>
-        </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item :label="labels.invoiceDate">
+              <el-date-picker v-model="createDialog.form.invoiceDate" type="date" value-format="YYYY-MM-DD" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item :label="labels.dueDate">
+              <el-date-picker v-model="createDialog.form.dueDate" type="date" value-format="YYYY-MM-DD" style="width:100%" />
+              <div class="inv-help-text">{{ labels.dueDateHelp }}</div>
+            </el-form-item>
+          </el-col>
+        </el-row>
 
         <el-form-item :label="labels.note">
           <el-input v-model="createDialog.form.note" type="textarea" :rows="2" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createDialog.visible = false">{{ labels.cancelBtn }}</el-button>
-        <el-button type="primary" :loading="createDialog.creating" @click="createInvoice">{{ labels.createBtn }}</el-button>
+        <div class="dialog-footer">
+          <el-button @click="createDialog.visible = false">{{ labels.cancelBtn }}</el-button>
+          <el-button type="primary" :loading="createDialog.creating" @click="createInvoice">{{ labels.createBtn }}</el-button>
+        </div>
       </template>
     </el-dialog>
 
@@ -199,6 +211,114 @@
       </template>
     </el-dialog>
 
+    <!-- 一括請求書作成ダイアログ -->
+    <el-dialog
+      v-model="batchDialog.visible"
+      title="一括請求書作成"
+      width="560px"
+      destroy-on-close
+    >
+      <div v-if="batchDialog.loading" class="batch-loading">
+        <el-icon class="is-loading" style="font-size:24px;color:#409eff"><Loading /></el-icon>
+        <span style="margin-left:10px;color:#606266">プレビュー取得中...</span>
+      </div>
+      <template v-else>
+        <div class="batch-suggestion">
+          <el-icon style="color:#409eff;margin-right:6px"><InfoFilled /></el-icon>
+          <span>{{ batchSuggestionText }}</span>
+        </div>
+
+        <el-divider />
+
+        <el-form label-width="80px" class="batch-form">
+          <el-row :gutter="16">
+            <el-col :span="10">
+              <el-form-item label="対象年月">
+                <el-date-picker
+                  v-model="batchDialog.yearMonth"
+                  type="month"
+                  value-format="YYYY-MM"
+                  style="width:100%"
+                  @change="loadBatchPreview"
+                />
+              </el-form-item>
+            </el-col>
+            <el-col :span="14">
+              <el-form-item label="請求日">
+                <el-date-picker v-model="batchDialog.invoiceDate" type="date" value-format="YYYY-MM-DD" style="width:100%" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-form-item label="作成対象">
+            <el-radio-group v-model="batchDialog.mode">
+              <el-radio value="missing_only">未作成のみ（{{ batchMissingCount }}件）</el-radio>
+              <el-radio value="all">全て（既存含む, {{ batchTotalDns }}件）</el-radio>
+            </el-radio-group>
+          </el-form-item>
+        </el-form>
+
+        <div v-if="batchDialog.preview?.customerGroups?.length" class="batch-preview-table">
+          <div class="batch-preview-title">対象顧客</div>
+          <el-table :data="batchDialog.preview.customerGroups" size="small" border>
+            <el-table-column label="得意先" prop="customerName" min-width="160" />
+            <el-table-column label="コード" prop="customerCode" width="100" />
+            <el-table-column label="未請求" prop="uninvoicedDns" width="70" align="center" />
+            <el-table-column label="合計" prop="totalDns" width="70" align="center" />
+          </el-table>
+        </div>
+        <div v-else class="batch-no-data">対象の納品書がありません</div>
+      </template>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="batchDialog.visible = false">キャンセル</el-button>
+          <el-button
+            type="primary"
+            :loading="batchDialog.running"
+            :disabled="batchDialog.loading || !batchHasTarget"
+            @click="runBatch"
+          >実行</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- 一括作成結果ダイアログ -->
+    <el-dialog
+      v-model="batchResult.visible"
+      title="一括作成結果"
+      width="640px"
+      destroy-on-close
+    >
+      <div class="batch-result-summary">
+        <el-tag type="success" size="large">成功: {{ batchResult.successCount }}件</el-tag>
+        <el-tag v-if="batchResult.failCount > 0" type="danger" size="large" style="margin-left:8px">
+          失敗: {{ batchResult.failCount }}件
+        </el-tag>
+      </div>
+      <el-table :data="batchResult.items" size="small" border style="margin-top:12px">
+        <el-table-column label="得意先" prop="customerName" min-width="140" />
+        <el-table-column label="請求書番号" prop="invoiceNo" width="150">
+          <template #default="{ row }">
+            <span v-if="row.success" class="batch-inv-no">{{ row.invoiceNo }}</span>
+            <el-tag v-else type="danger" size="small">失敗</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="納品書数" prop="dnCount" width="80" align="center" />
+        <el-table-column label="状態/原因" min-width="200">
+          <template #default="{ row }">
+            <span v-if="row.success" style="color:#67c23a">
+              作成完了<template v-if="row.voucherError"> <el-tag type="warning" size="small">伝票転記失敗</el-tag></template>
+            </span>
+            <span v-else style="color:#f56c6c;font-size:12px">{{ row.error }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button type="primary" @click="batchResult.visible = false">閉じる</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
     <!-- 取消对话框 -->
     <el-dialog v-model="cancelDialog.visible" :title="labels.cancelTitle" width="400px">
       <el-form :model="cancelDialog.form" label-width="80px">
@@ -236,7 +356,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Loading, InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import VouchersList from './VouchersList.vue'
@@ -578,6 +698,102 @@ function openVoucherDetail(voucherId?: string, voucherNo?: string) {
   voucherDialog.visible = true
 }
 
+// ── 一括請求書作成 ─────────────────────────────────
+const prevMonth = (() => {
+  const d = new Date()
+  d.setMonth(d.getMonth() - 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+})()
+
+const batchDialog = reactive({
+  visible: false,
+  loading: false,
+  running: false,
+  yearMonth: prevMonth,
+  invoiceDate: new Date().toISOString().slice(0, 10),
+  mode: 'missing_only' as 'missing_only' | 'all',
+  preview: null as any
+})
+
+const batchResult = reactive({
+  visible: false,
+  items: [] as any[],
+  successCount: 0,
+  failCount: 0
+})
+
+const batchMissingCount = computed(() => {
+  if (!batchDialog.preview?.customerGroups) return 0
+  return batchDialog.preview.customerGroups.reduce((s: number, g: any) => s + (g.uninvoicedDns || 0), 0)
+})
+
+const batchTotalDns = computed(() => {
+  if (!batchDialog.preview?.customerGroups) return 0
+  return batchDialog.preview.customerGroups.reduce((s: number, g: any) => s + (g.totalDns || 0), 0)
+})
+
+const batchHasTarget = computed(() => {
+  return batchDialog.mode === 'missing_only' ? batchMissingCount.value > 0 : batchTotalDns.value > 0
+})
+
+const batchSuggestionText = computed(() => {
+  if (!batchDialog.preview) return ''
+  const [y, m] = batchDialog.yearMonth.split('-')
+  const existing = batchDialog.preview.existingInvoiceCount || 0
+  const missing = batchMissingCount.value
+  const total = batchTotalDns.value
+  let text = `${y}年${Number(m)}月の請求書を一括作成します。`
+  text += `\n出荷済み納品書: ${total}件、未請求: ${missing}件`
+  if (existing > 0) text += `\n※この月に既存の請求書が${existing}件あります。モードを確認してください。`
+  return text
+})
+
+async function openBatchDialog() {
+  batchDialog.visible = true
+  batchDialog.mode = 'missing_only'
+  batchDialog.invoiceDate = new Date().toISOString().slice(0, 10)
+  await loadBatchPreview()
+}
+
+async function loadBatchPreview() {
+  if (!batchDialog.yearMonth) return
+  batchDialog.loading = true
+  batchDialog.preview = null
+  try {
+    const [y, m] = batchDialog.yearMonth.split('-')
+    const r = await api.get(`/sales-invoices/batch-preview?year=${y}&month=${m}`)
+    batchDialog.preview = r.data
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || 'プレビュー取得に失敗しました')
+  } finally {
+    batchDialog.loading = false
+  }
+}
+
+async function runBatch() {
+  batchDialog.running = true
+  try {
+    const [y, m] = batchDialog.yearMonth.split('-')
+    const r = await api.post('/sales-invoices/batch-create', {
+      year: Number(y),
+      month: Number(m),
+      mode: batchDialog.mode,
+      invoiceDate: batchDialog.invoiceDate
+    })
+    const results: any[] = r.data?.results || []
+    batchResult.items = results
+    batchResult.successCount = results.filter(r => r.success).length
+    batchResult.failCount = results.filter(r => !r.success).length
+    batchDialog.visible = false
+    batchResult.visible = true
+    load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '一括作成に失敗しました')
+  } finally {
+    batchDialog.running = false
+  }
+}
+
 onMounted(() => {
   load()
   if (props.autoOpenCreate) {
@@ -618,14 +834,81 @@ onMounted(() => {
   color: #909399;
   margin-left: 8px;
 }
-.dialog-header {
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.inv-create-form {
+  padding-right: 4px;
+}
+
+.inv-help-text {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.inv-no-dn {
+  font-size: 12px;
+  color: #909399;
+  padding: 8px 0;
+  text-align: center;
+}
+
+/* 一括作成ダイアログ */
+.batch-loading {
   display: flex;
   align-items: center;
+  padding: 16px 0;
 }
-.dialog-title {
-  font-size: 18px;
-  font-weight: 600;
+
+.batch-suggestion {
+  display: flex;
+  align-items: flex-start;
+  background: #f0f7ff;
+  border: 1px solid #c6e2ff;
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-size: 13px;
   color: #303133;
+  white-space: pre-line;
+  line-height: 1.7;
+}
+
+.batch-form {
+  margin-top: 4px;
+}
+
+.batch-preview-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #606266;
+  margin-bottom: 8px;
+}
+
+.batch-preview-table {
+  margin-top: 4px;
+}
+
+.batch-no-data {
+  text-align: center;
+  color: #909399;
+  font-size: 13px;
+  padding: 20px 0;
+}
+
+/* 結果ダイアログ */
+.batch-result-summary {
+  padding: 4px 0 8px;
+}
+
+.batch-inv-no {
+  font-family: monospace;
+  font-size: 13px;
+  color: #67c23a;
 }
 .voucher-dialog-card-wrap {
   min-width: 600px;

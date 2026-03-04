@@ -771,6 +771,266 @@ public static class SalesInvoiceModule
             var rows = await Crud.QueryJsonRows(ds, sql, new object?[] { cc.ToString(), customerCode });
             return Results.Text($"[{string.Join(",", rows)}]", "application/json");
         }).RequireAuthorization();
+
+        // GET /sales-invoices/batch-preview?year=2026&month=2
+        // 月次一括請求書作成のプレビュー情報を返す
+        app.MapGet("/sales-invoices/batch-preview", async (HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            if (!int.TryParse(req.Query["year"].FirstOrDefault(), out var year) ||
+                !int.TryParse(req.Query["month"].FirstOrDefault(), out var month))
+                return Results.BadRequest(new { error = "year and month are required" });
+
+            await using var conn = await ds.OpenConnectionAsync();
+
+            // 既存請求書件数（当月）
+            await using var invCountCmd = conn.CreateCommand();
+            invCountCmd.CommandText = @"
+                SELECT COUNT(*) FROM sales_invoices
+                WHERE company_code=$1
+                  AND EXTRACT(YEAR FROM invoice_date)=$2
+                  AND EXTRACT(MONTH FROM invoice_date)=$3
+                  AND status != 'cancelled'";
+            invCountCmd.Parameters.AddWithValue(cc.ToString()!);
+            invCountCmd.Parameters.AddWithValue(year);
+            invCountCmd.Parameters.AddWithValue(month);
+            var existingCount = (long)(await invCountCmd.ExecuteScalarAsync() ?? 0L);
+
+            // 顧客別の納品書グループ（出荷済み）
+            await using var grpCmd = conn.CreateCommand();
+            grpCmd.CommandText = @"
+                SELECT
+                    dn.customer_code,
+                    MAX(dn.customer_name) AS customer_name,
+                    COUNT(*) AS total_dns,
+                    COUNT(*) FILTER (WHERE NOT EXISTS (
+                        SELECT 1 FROM sales_invoices si
+                        WHERE si.company_code = dn.company_code
+                          AND si.status != 'cancelled'
+                          AND si.payload->'deliveryNoteIds' ? dn.id::text
+                    )) AS uninvoiced_dns
+                FROM delivery_notes dn
+                WHERE dn.company_code=$1
+                  AND dn.status IN ('shipped','delivered')
+                  AND EXTRACT(YEAR FROM dn.delivery_date)=$2
+                  AND EXTRACT(MONTH FROM dn.delivery_date)=$3
+                GROUP BY dn.customer_code
+                ORDER BY dn.customer_code";
+            grpCmd.Parameters.AddWithValue(cc.ToString()!);
+            grpCmd.Parameters.AddWithValue(year);
+            grpCmd.Parameters.AddWithValue(month);
+
+            var groups = new List<object>();
+            await using var rd = await grpCmd.ExecuteReaderAsync();
+            while (await rd.ReadAsync())
+            {
+                groups.Add(new
+                {
+                    customerCode = rd.IsDBNull(0) ? "" : rd.GetString(0),
+                    customerName = rd.IsDBNull(1) ? "" : rd.GetString(1),
+                    totalDns = rd.IsDBNull(2) ? 0 : (int)rd.GetInt64(2),
+                    uninvoicedDns = rd.IsDBNull(3) ? 0 : (int)rd.GetInt64(3)
+                });
+            }
+
+            return Results.Ok(new
+            {
+                year,
+                month,
+                existingInvoiceCount = (int)existingCount,
+                customerGroups = groups
+            });
+        }).RequireAuthorization();
+
+        // POST /sales-invoices/batch-create
+        // 月次一括請求書作成
+        // Body: { year, month, mode: "missing_only"|"all", invoiceDate? }
+        app.MapPost("/sales-invoices/batch-create", async (HttpRequest req, NpgsqlDataSource ds, AccountSelectionService? acctService) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            using var bodyDoc = await JsonDocument.ParseAsync(req.Body);
+            var body = bodyDoc.RootElement;
+            if (!body.TryGetProperty("year", out var yearEl) || !body.TryGetProperty("month", out var monthEl))
+                return Results.BadRequest(new { error = "year and month are required" });
+
+            var year = yearEl.GetInt32();
+            var month = monthEl.GetInt32();
+            var mode = body.TryGetProperty("mode", out var modeEl) ? modeEl.GetString() ?? "missing_only" : "missing_only";
+            var invoiceDate = body.TryGetProperty("invoiceDate", out var invDateEl) && invDateEl.ValueKind == JsonValueKind.String
+                ? invDateEl.GetString() : DateTime.Today.ToString("yyyy-MM-dd");
+            var currentUser = req.HttpContext.User?.FindFirst("employee_code")?.Value ?? "system";
+
+            await using var conn = await ds.OpenConnectionAsync();
+
+            // 顧客別 uninvoiced 納品書を取得
+            await using var grpCmd = conn.CreateCommand();
+            var whereInvoiced = mode == "all"
+                ? ""
+                : @" AND NOT EXISTS (
+                        SELECT 1 FROM sales_invoices si
+                        WHERE si.company_code = dn.company_code
+                          AND si.status != 'cancelled'
+                          AND si.payload->'deliveryNoteIds' ? dn.id::text
+                    )";
+            grpCmd.CommandText = $@"
+                SELECT dn.customer_code, MAX(dn.customer_name), ARRAY_AGG(dn.id::text)
+                FROM delivery_notes dn
+                WHERE dn.company_code=$1
+                  AND dn.status IN ('shipped','delivered')
+                  AND EXTRACT(YEAR FROM dn.delivery_date)=$2
+                  AND EXTRACT(MONTH FROM dn.delivery_date)=$3
+                  {whereInvoiced}
+                GROUP BY dn.customer_code
+                ORDER BY dn.customer_code";
+            grpCmd.Parameters.AddWithValue(cc.ToString()!);
+            grpCmd.Parameters.AddWithValue(year);
+            grpCmd.Parameters.AddWithValue(month);
+
+            var customerGroups = new List<(string Code, string Name, List<Guid> DnIds)>();
+            await using var grpRd = await grpCmd.ExecuteReaderAsync();
+            while (await grpRd.ReadAsync())
+            {
+                var code = grpRd.IsDBNull(0) ? "" : grpRd.GetString(0);
+                var name = grpRd.IsDBNull(1) ? code : grpRd.GetString(1);
+                var idsArr = grpRd.IsDBNull(2) ? Array.Empty<string>() : (string[])grpRd.GetValue(2);
+                var ids = idsArr.Select(s => Guid.TryParse(s, out var g) ? g : Guid.Empty).Where(g => g != Guid.Empty).ToList();
+                customerGroups.Add((code, name, ids));
+            }
+            await grpRd.CloseAsync();
+
+            if (customerGroups.Count == 0)
+                return Results.Ok(new { results = Array.Empty<object>(), message = "対象の納品書がありません" });
+
+            var results = new List<object>();
+            var batchAcctService = acctService ?? req.HttpContext.RequestServices.GetService<AccountSelectionService>();
+
+            foreach (var (customerCode, customerName, dnIds) in customerGroups)
+            {
+                await using var tx = await conn.BeginTransactionAsync();
+                try
+                {
+                    decimal totalAmount = 0m, taxAmount = 0m;
+                    var lines = new List<object>();
+                    var lineNo = 0;
+                    string? dueDateStr = null;
+
+                    foreach (var dnId in dnIds)
+                    {
+                        await using var dnCmd = new NpgsqlCommand(@"
+                            SELECT dn.delivery_no, dn.payload
+                            FROM delivery_notes dn
+                            WHERE dn.id=$1 AND dn.company_code=$2", conn, tx);
+                        dnCmd.Parameters.AddWithValue(dnId);
+                        dnCmd.Parameters.AddWithValue(cc.ToString()!);
+                        await using var dnRd = await dnCmd.ExecuteReaderAsync();
+                        if (!await dnRd.ReadAsync()) { await dnRd.CloseAsync(); continue; }
+
+                        var deliveryNo = dnRd.IsDBNull(0) ? null : dnRd.GetString(0);
+                        var payloadStr = dnRd.IsDBNull(1) ? "{}" : dnRd.GetString(1);
+                        await dnRd.CloseAsync();
+
+                        using var payDoc = JsonDocument.Parse(payloadStr);
+                        var payload = payDoc.RootElement;
+                        var soNo = payload.TryGetProperty("header", out var hdr) && hdr.TryGetProperty("salesOrderNo", out var snEl) ? snEl.GetString() : null;
+
+                        if (payload.TryGetProperty("lines", out var dnLines) && dnLines.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var line in dnLines.EnumerateArray())
+                            {
+                                lineNo++;
+                                var mc = line.TryGetProperty("materialCode", out var mcEl) ? mcEl.GetString() : "";
+                                var mn = line.TryGetProperty("materialName", out var mnEl) ? mnEl.GetString() : "";
+                                var qty = line.TryGetProperty("deliveryQty", out var qEl) && qEl.TryGetDecimal(out var qv) ? qv : 0m;
+                                var uom = line.TryGetProperty("uom", out var uomEl) ? uomEl.GetString() : "";
+                                var price = line.TryGetProperty("unitPrice", out var prEl) && prEl.TryGetDecimal(out var prv) ? prv : 0m;
+                                var taxRate = line.TryGetProperty("taxRate", out var trEl) && trEl.TryGetDecimal(out var trv) ? trv : 10m;
+                                var amt = qty * price;
+                                var lineTax = Math.Round(amt * taxRate / 100m, 0);
+                                totalAmount += amt + lineTax;
+                                taxAmount += lineTax;
+                                lines.Add(new { lineNo, soNo, deliveryNo, materialCode = mc, materialName = mn, quantity = qty, uom, unitPrice = price, amount = amt, taxRate, taxAmount = lineTax, amountWithTax = amt + lineTax });
+                            }
+                        }
+                    }
+
+                    // 支払期限
+                    await using var ptCmd = new NpgsqlCommand(@"
+                        SELECT COALESCE((payload->>'paymentTermDays')::int, 30)
+                        FROM businesspartners WHERE company_code=$1 AND (payload->>'code'=$2 OR partner_code=$2) LIMIT 1", conn, tx);
+                    ptCmd.Parameters.AddWithValue(cc.ToString()!);
+                    ptCmd.Parameters.AddWithValue(customerCode);
+                    var ptRes = await ptCmd.ExecuteScalarAsync();
+                    var termDays = ptRes is int td ? td : 30;
+                    var invDateOnly = DateOnly.Parse(invoiceDate!);
+                    dueDateStr = invDateOnly.AddDays(termDays).ToString("yyyy-MM-dd");
+
+                    var invoiceNo = await GenerateInvoiceNoAsync(conn, cc.ToString()!, tx);
+
+                    string? voucherNo = null, voucherError = null;
+                    Guid? voucherId = null;
+                    if (totalAmount > 0 && batchAcctService != null)
+                    {
+                        try
+                        {
+                            var vr = await batchAcctService.CreateSalesVoucherAsync(conn, tx, cc.ToString()!, customerCode, customerName, invoiceNo, invDateOnly, totalAmount, taxAmount, currentUser);
+                            if (vr.HasValue) { voucherId = vr.Value.VoucherId; voucherNo = vr.Value.VoucherNo; }
+                        }
+                        catch (Exception vex) { voucherError = vex.Message; }
+                    }
+
+                    var dnIdsJsonArr = new JsonArray();
+                    foreach (var id in dnIds) dnIdsJsonArr.Add(id.ToString());
+
+                    var invoicePayload = new JsonObject
+                    {
+                        ["header"] = new JsonObject
+                        {
+                            ["invoiceNo"] = invoiceNo,
+                            ["customerCode"] = customerCode,
+                            ["customerName"] = customerName,
+                            ["invoiceDate"] = invoiceDate,
+                            ["dueDate"] = dueDateStr,
+                            ["amountTotal"] = totalAmount,
+                            ["taxAmount"] = taxAmount,
+                            ["voucherNo"] = voucherNo,
+                            ["voucherId"] = voucherId?.ToString(),
+                            ["voucherError"] = voucherError,
+                            ["createdBy"] = currentUser
+                        },
+                        ["lines"] = JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(lines)),
+                        ["deliveryNoteIds"] = dnIdsJsonArr
+                    };
+
+                    await using var insCmd = new NpgsqlCommand(@"
+                        INSERT INTO sales_invoices (company_code, invoice_no, customer_code, customer_name, invoice_date, due_date, amount_total, tax_amount, status, payload)
+                        VALUES ($1,$2,$3,$4,$5::date,$6::date,$7,$8,'issued',$9::jsonb)", conn, tx);
+                    insCmd.Parameters.AddWithValue(cc.ToString()!);
+                    insCmd.Parameters.AddWithValue(invoiceNo);
+                    insCmd.Parameters.AddWithValue(customerCode);
+                    insCmd.Parameters.AddWithValue(customerName ?? (object)DBNull.Value);
+                    insCmd.Parameters.AddWithValue(invoiceDate!);
+                    insCmd.Parameters.AddWithValue(dueDateStr);
+                    insCmd.Parameters.AddWithValue(totalAmount);
+                    insCmd.Parameters.AddWithValue(taxAmount);
+                    insCmd.Parameters.AddWithValue(invoicePayload.ToJsonString());
+                    await insCmd.ExecuteNonQueryAsync();
+                    await tx.CommitAsync();
+
+                    results.Add(new { customerCode, customerName, invoiceNo, success = true, dnCount = dnIds.Count, voucherNo, voucherError });
+                }
+                catch (Exception ex)
+                {
+                    try { await tx.RollbackAsync(); } catch { }
+                    results.Add(new { customerCode, customerName, invoiceNo = (string?)null, success = false, dnCount = dnIds.Count, error = ex.Message });
+                }
+            }
+
+            return Results.Ok(new { results });
+        }).RequireAuthorization();
     }
 
     private static async Task<string> GenerateInvoiceNoAsync(NpgsqlConnection conn, string companyCode, NpgsqlTransaction tx)
