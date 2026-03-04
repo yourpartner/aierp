@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Npgsql;
@@ -7,6 +9,7 @@ using MailKit.Net.Imap;
 using MailKit.Search;
 using MailKit.Security;
 using MimeKit;
+using UglyToad.PdfPig;
 
 namespace Server.Modules;
 
@@ -445,6 +448,243 @@ WHERE company_code=$1 AND payload #>> string_to_array($3, '.') = $2 LIMIT 1";
             var obj = await cmd.ExecuteScalarAsync();
             return obj is not null;
         }
+
+        // POST /crm/sales-order/parse-document
+        // PDF または画像ファイルをアップロードし、LLM で受注内容を抽出して返す。
+        // multipart/form-data: file フィールド、またはバイナリ Body (X-File-Name ヘッダー必須)
+        // Returns: { partnerName, partnerCode, orderDate, requestedDeliveryDate, note, lines: [{...}] }
+        app.MapPost("/crm/sales-order/parse-document", async (HttpRequest req, IConfiguration cfg, IHttpClientFactory httpFactory, CancellationToken ct) =>
+        {
+            // ── ファイル読み取り ─────────────────────────────────────────
+            byte[] fileBytes;
+            string fileName;
+            string contentType;
+
+            if (req.HasFormContentType)
+            {
+                var form = await req.ReadFormAsync(ct);
+                var file = form.Files.Count > 0 ? form.Files[0] : null;
+                if (file == null) return Results.BadRequest(new { error = "file is required" });
+                await using var ms = new MemoryStream();
+                await file.CopyToAsync(ms, ct);
+                fileBytes = ms.ToArray();
+                fileName = file.FileName ?? "file";
+                contentType = file.ContentType ?? "application/octet-stream";
+            }
+            else
+            {
+                await using var ms = new MemoryStream();
+                await req.Body.CopyToAsync(ms, ct);
+                fileBytes = ms.ToArray();
+                fileName = req.Headers.TryGetValue("X-File-Name", out var fn) ? Uri.UnescapeDataString(fn.ToString()) : "file";
+                contentType = req.ContentType ?? "application/octet-stream";
+            }
+
+            if (fileBytes.Length == 0) return Results.BadRequest(new { error = "empty file" });
+
+            // ── テキスト抽出 (PDF) または base64 変換 (画像) ─────────────
+            string? extractedText = null;
+            string? imageBase64 = null;
+            var ext = Path.GetExtension(fileName).ToLowerInvariant();
+            var isPdf = ext == ".pdf" || contentType == "application/pdf";
+
+            if (isPdf)
+            {
+                try
+                {
+                    using var pdfDoc = PdfDocument.Open(fileBytes);
+                    var sb = new StringBuilder();
+                    foreach (var page in pdfDoc.GetPages())
+                        sb.AppendLine(page.Text);
+                    extractedText = sb.ToString().Trim();
+                }
+                catch
+                {
+                    extractedText = string.Empty;
+                }
+            }
+            else
+            {
+                // 画像: base64 エンコード
+                imageBase64 = Convert.ToBase64String(fileBytes);
+                // contentType を正規化
+                if (string.IsNullOrWhiteSpace(contentType) || contentType == "application/octet-stream")
+                    contentType = ext switch { ".png" => "image/png", ".gif" => "image/gif", ".webp" => "image/webp", _ => "image/jpeg" };
+            }
+
+            // ── LLM 呼び出し ─────────────────────────────────────────────
+            var apiKey = cfg["OpenAI:ApiKey"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+            if (string.IsNullOrWhiteSpace(apiKey))
+                return Results.BadRequest(new { error = "OpenAI API key is not configured" });
+
+            const string systemPrompt = @"あなたは受注書・注文書の解析専門家です。
+アップロードされた文書（発注書・注文書・見積書等）から受注情報を抽出し、以下のJSON形式のみで返してください。
+余計なテキストは不要です。
+
+{
+  ""partnerName"": ""得意先名 (string|null)"",
+  ""partnerCode"": ""得意先コード (string|null)"",
+  ""orderDate"": ""受注日 YYYY-MM-DD (string|null)"",
+  ""requestedDeliveryDate"": ""希望納期 YYYY-MM-DD (string|null)"",
+  ""note"": ""備考・特記事項 (string|null)"",
+  ""lines"": [
+    {
+      ""materialCode"": ""品目コード (string|null)"",
+      ""materialName"": ""品目名 (string|null)"",
+      ""quantity"": ""数量 (number|null)"",
+      ""uom"": ""単位 (string|null)"",
+      ""unitPrice"": ""単価 (number|null)""
+    }
+  ]
+}
+
+重要なルール:
+- 明確に読み取れない項目は null にする
+- 日付は必ず YYYY-MM-DD 形式に変換
+- 金額の「万」は×10000に変換（例：1万円→10000）
+- lines が空の場合でも空配列 [] を返す";
+
+            try
+            {
+                var http = httpFactory.CreateClient("openai");
+                http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+
+                object userContent;
+                if (imageBase64 != null)
+                {
+                    // Vision API: 画像をインライン base64 で送る
+                    userContent = new object[]
+                    {
+                        new { type = "text", text = "この注文書・発注書から受注情報を抽出してください。" },
+                        new { type = "image_url", image_url = new { url = $"data:{contentType};base64,{imageBase64}", detail = "high" } }
+                    };
+                }
+                else
+                {
+                    userContent = $"以下のテキストから受注情報を抽出してください。\n\n{extractedText}";
+                }
+
+                var requestBody = new
+                {
+                    model = "gpt-4o",
+                    temperature = 0.0,
+                    max_tokens = 2048,
+                    messages = new object[]
+                    {
+                        new { role = "system", content = systemPrompt },
+                        new { role = "user", content = userContent }
+                    },
+                    response_format = new { type = "json_object" }
+                };
+                var json = System.Text.Json.JsonSerializer.Serialize(requestBody);
+                using var resp = await http.PostAsync("chat/completions",
+                    new StringContent(json, Encoding.UTF8, "application/json"), ct);
+                var respText = await resp.Content.ReadAsStringAsync(ct);
+                if (!resp.IsSuccessStatusCode)
+                    return Results.Problem($"LLM error: {resp.StatusCode} - {respText}");
+
+                using var respDoc = JsonDocument.Parse(respText);
+                var llmContent = respDoc.RootElement
+                    .GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "{}";
+
+                using var resultDoc = JsonDocument.Parse(llmContent);
+                return Results.Json(resultDoc.RootElement);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem($"解析に失敗しました: {ex.Message}");
+            }
+        }).RequireAuthorization().DisableAntiforgery();
+
+        // POST /crm/sales-order/{id}/attachments
+        // 受注に添付ファイルをアップロードする（編集画面用、LLM認識なし）
+        // Body: バイナリ, X-File-Name ヘッダー必須
+        app.MapPost("/crm/sales-order/{id}/attachments", async (HttpRequest req, string id, NpgsqlDataSource ds, AzureBlobService blobService, CancellationToken ct) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            var originalName = req.Headers.TryGetValue("X-File-Name", out var fn)
+                ? Uri.UnescapeDataString(fn.ToString()) : $"attachment_{DateTime.UtcNow:yyyyMMddHHmmss}";
+            var contentType = req.ContentType ?? "application/octet-stream";
+
+            await using var buffer = new MemoryStream();
+            await req.Body.CopyToAsync(buffer, ct);
+            if (buffer.Length == 0) return Results.BadRequest(new { error = "empty file" });
+            buffer.Position = 0;
+
+            var extension = Path.GetExtension(originalName).ToLowerInvariant();
+            var blobName = $"crm/sales-orders/{cc}/{id}/{DateTime.UtcNow:yyyy/MM/dd}/{Guid.NewGuid():N}{extension}";
+
+            AzureBlobUploadResult uploadResult;
+            try
+            {
+                uploadResult = await blobService.UploadAsync(buffer, blobName, contentType, ct);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem($"ファイルアップロードに失敗しました: {ex.Message}");
+            }
+
+            // 受注 payload の attachments 配列を更新
+            var existingJson = await Crud.GetDetailJson(ds, "sales_orders", Guid.Parse(id), cc.ToString()!, string.Empty, Array.Empty<object?>());
+            if (existingJson is null) return Results.NotFound(new { error = "not found" });
+
+            JsonObject payloadObject;
+            try
+            {
+                var root = JsonNode.Parse(existingJson)?.AsObject() ?? new JsonObject();
+                payloadObject = root["payload"] as JsonObject ?? new JsonObject();
+            }
+            catch
+            {
+                payloadObject = new JsonObject();
+            }
+
+            if (payloadObject["attachments"] is not JsonArray attachmentsArray)
+            {
+                attachmentsArray = new JsonArray();
+                payloadObject["attachments"] = attachmentsArray;
+            }
+
+            var entry = new JsonObject
+            {
+                ["id"] = Guid.NewGuid().ToString(),
+                ["fileName"] = originalName,
+                ["blobName"] = uploadResult.BlobName,
+                ["contentType"] = uploadResult.ContentType,
+                ["size"] = uploadResult.Size,
+                ["uploadedAt"] = DateTimeOffset.UtcNow.ToString("O")
+            };
+            attachmentsArray.Add(entry);
+
+            var updatedPayloadJson = payloadObject.ToJsonString();
+            var updatedRowJson = await Crud.UpdateRawJson(ds, "sales_orders", Guid.Parse(id), cc.ToString()!, updatedPayloadJson);
+            if (updatedRowJson is null) return Results.NotFound(new { error = "update failed" });
+
+            // SAS URL を付与して返す
+            try
+            {
+                var updatedNode = JsonNode.Parse(updatedRowJson);
+                if (updatedNode is JsonObject obj &&
+                    obj["payload"] is JsonObject p &&
+                    p["attachments"] is JsonArray atts)
+                {
+                    foreach (var att in atts)
+                    {
+                        if (att is JsonObject a && a["blobName"]?.GetValue<string>() is string bn)
+                        {
+                            a["url"] = blobService.GetReadUri(bn);
+                        }
+                    }
+                }
+                return Results.Json(updatedNode);
+            }
+            catch
+            {
+                return Results.Json(JsonNode.Parse(updatedRowJson));
+            }
+        }).RequireAuthorization().DisableAntiforgery();
     }
 }
 

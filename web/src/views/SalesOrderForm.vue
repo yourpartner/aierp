@@ -1,7 +1,7 @@
 <template>
-  <div class="page page-wide">
-    <el-card>
-      <template #header>
+  <div :class="props.dialogMode ? 'so-form-dialog-body' : 'page page-wide'">
+    <el-card :class="{ 'so-dialog-card': props.dialogMode }">
+      <template v-if="!props.dialogMode" #header>
         <div class="page-header">
           <div class="page-header-title">{{ isEditMode ? '受注編集' : '受注登録' }}</div>
           <div class="page-actions">
@@ -10,7 +10,7 @@
           </div>
         </div>
       </template>
-      
+
       <el-form label-position="left" label-width="100px">
         <!-- 基本信息 -->
         <el-row :gutter="20">
@@ -42,7 +42,7 @@
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="isEditMode ? 4 : 6">
+          <el-col :span="4">
             <el-form-item label="ステータス">
               <el-select v-model="form.status" style="width:100%" :disabled="!isEditMode">
                 <el-option label="新規登録" value="new" />
@@ -54,7 +54,7 @@
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="4">
+          <el-col :span="6">
             <el-form-item label="希望納期">
               <el-date-picker v-model="form.requestedDeliveryDate" type="date" value-format="YYYY-MM-DD" style="width:100%" />
             </el-form-item>
@@ -120,12 +120,6 @@
               </template>
             </el-table-column>
             
-            <el-table-column label="品目名" min-width="150">
-              <template #default="{ row }">
-                <el-input v-model="row.materialName" disabled />
-              </template>
-            </el-table-column>
-            
             <el-table-column label="数量" width="100">
               <template #default="{ row }">
                 <el-input-number 
@@ -180,6 +174,12 @@
               </template>
             </el-table-column>
             
+            <el-table-column label="備考" min-width="120">
+              <template #default="{ row }">
+                <el-input v-model="row.note" placeholder="備考" size="small" />
+              </template>
+            </el-table-column>
+            
             <el-table-column label="操作" width="70" fixed="right">
               <template #default="{ $index }">
                 <el-button type="danger" text size="small" @click="removeLine($index)">削除</el-button>
@@ -208,6 +208,27 @@
         <el-form-item label="備考">
           <el-input v-model="form.note" type="textarea" :rows="2" />
         </el-form-item>
+
+        <!-- 添付ファイル（編集モードのみ） -->
+        <template v-if="isEditMode">
+          <div class="so-attachments-section">
+            <div class="so-attachments-header">
+              <span class="so-attachments-title">添付ファイル</span>
+              <el-button size="small" :loading="attUploading" @click="triggerAttUpload">
+                <el-icon><UploadFilled /></el-icon>アップロード
+              </el-button>
+              <input ref="attFileInputRef" type="file" style="display:none" @change="onAttFileSelected" />
+            </div>
+            <div v-if="!form.attachments?.length" class="so-att-empty">添付ファイルなし</div>
+            <div v-else class="so-att-list">
+              <div v-for="att in form.attachments" :key="att.id" class="so-att-item" @click="openAttachment(att)">
+                <el-icon class="so-att-icon"><DocIcon /></el-icon>
+                <span class="so-att-name">{{ att.fileName }}</span>
+                <span class="so-att-size">{{ att.size ? (att.size / 1024).toFixed(1) + ' KB' : '' }}</span>
+              </div>
+            </div>
+          </div>
+        </template>
       </el-form>
       
       <div class="form-messages">
@@ -221,9 +242,30 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, UploadFilled, Document as DocIcon } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import api from '../api'
 import { useI18n } from '../i18n'
+
+const props = defineProps<{
+  dialogMode?: boolean
+  editOrderId?: string
+  prefillData?: {
+    partnerName?: string
+    partnerCode?: string
+    orderDate?: string
+    requestedDeliveryDate?: string
+    note?: string
+    lines?: Array<{
+      materialCode?: string
+      materialName?: string
+      quantity?: number
+      uom?: string
+      unitPrice?: number
+    }>
+  } | null
+}>()
+const emit = defineEmits<{ (e: 'saved'): void; (e: 'cancel'): void }>()
 
 const route = useRoute()
 const editId = ref<string | null>(null)
@@ -255,8 +297,13 @@ const form = reactive<any>({
   amountTotal: 0,
   taxAmountTotal: 0,
   deliveryAddress: '',
-  note: ''
+  note: '',
+  attachments: [] as any[]
 })
+
+// 添付ファイルアップロード
+const attFileInputRef = ref<HTMLInputElement | null>(null)
+const attUploading = ref(false)
 
 // 配送先占位符
 const deliveryAddressPlaceholder = ref('配送先住所を入力してください')
@@ -280,7 +327,8 @@ function createEmptyLine() {
     unitPrice: 0,
     amount: 0,
     taxRate: 10,
-    taxAmount: 0
+    taxAmount: 0,
+    note: ''
   }
 }
 
@@ -426,6 +474,7 @@ async function loadEditData(id: string) {
     const data = resp.data
     if (data) {
       Object.assign(form, data)
+      if (!Array.isArray(form.attachments)) form.attachments = []
       if (form.partnerCode && form.partnerName) {
         partnerOptions.value = [{ label: `${form.partnerName} (${form.partnerCode})`, value: form.partnerCode, name: form.partnerName }]
       }
@@ -449,11 +498,57 @@ async function loadEditData(id: string) {
 onMounted(async () => {
   await searchCustomers('')
   await searchMaterials('')
-  
-  const id = route.params.id as string
+
+  // dialogModeの場合はrouteを使わずpropsを参照
+  const id = props.dialogMode ? (props.editOrderId || null) : (route.params.id as string || null)
   if (id) {
     editId.value = id
     await loadEditData(id)
+  }
+
+  // LLMで解析済みのprefillDataがある場合はフォームに適用
+  if (props.prefillData) {
+    const d = props.prefillData
+    if (d.partnerName) form.partnerName = d.partnerName
+    if (d.partnerCode) {
+      form.partnerCode = d.partnerCode
+      partnerOptions.value = [{ label: `${d.partnerName || d.partnerCode} (${d.partnerCode})`, value: d.partnerCode, name: d.partnerName || d.partnerCode }]
+    }
+    if (d.orderDate) form.orderDate = d.orderDate
+    if (d.requestedDeliveryDate) form.requestedDeliveryDate = d.requestedDeliveryDate
+    if (d.note) form.note = d.note
+    if (d.lines && d.lines.length > 0) {
+      const prefillLines = d.lines
+        .filter((l: any) => l.materialCode || l.materialName)
+        .map((l: any) => {
+          const line = createEmptyLine()
+          if (l.materialCode) {
+            line.materialCode = l.materialCode
+            line.materialName = l.materialName || l.materialCode
+            materialCache.set(l.materialCode, {
+              label: `${l.materialName || l.materialCode} (${l.materialCode})`,
+              value: l.materialCode,
+              name: l.materialName || l.materialCode,
+              uom: l.uom || '',
+              price: l.unitPrice || 0
+            })
+          } else {
+            // コードなし: 名称のみの場合は品目名欄に表示用途で使う
+            line.materialName = l.materialName || ''
+          }
+          if (l.quantity != null) line.quantity = Number(l.quantity)
+          if (l.uom) line.uom = l.uom
+          if (l.unitPrice != null) {
+            line.unitPrice = Number(l.unitPrice)
+            line.amount = line.quantity * line.unitPrice
+          }
+          return line
+        })
+      if (prefillLines.length > 0) {
+        form.lines.splice(0, form.lines.length, ...prefillLines)
+        recalcTotals()
+      }
+    }
   }
 })
 
@@ -477,20 +572,26 @@ async function save() {
     if (isEditMode.value) {
       await api.put(`/objects/sales_order/${editId.value}`, { payload })
       msg.value = '更新しました'
+      if (props.dialogMode) emit('saved')
     } else {
       // 新建时不传 soNo，由后端生成
       delete payload.soNo
       await api.post('/objects/sales_order', { payload })
       msg.value = commonText.value.saved || '保存しました'
-      
-      // 重置表单
-      form.soNo = ''
-      form.partnerCode = ''
-      form.partnerName = ''
-      form.lines.splice(0, form.lines.length, createEmptyLine())
-      form.note = ''
-      form.status = 'new'
-      recalcTotals()
+
+      if (props.dialogMode) {
+        // ダイアログモードは親に通知して閉じる
+        emit('saved')
+      } else {
+        // ページモードはフォームをリセット
+        form.soNo = ''
+        form.partnerCode = ''
+        form.partnerName = ''
+        form.lines.splice(0, form.lines.length, createEmptyLine())
+        form.note = ''
+        form.status = 'new'
+        recalcTotals()
+      }
     }
   } catch (e: any) {
     err.value = e?.response?.data?.error || e?.message || commonText.value.saveFailed || '保存に失敗しました'
@@ -498,11 +599,58 @@ async function save() {
     saving.value = false
   }
 }
+
+// 添付ファイル: クリックでinput起動
+function triggerAttUpload() {
+  attFileInputRef.value?.click()
+}
+
+async function onAttFileSelected(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !editId.value) return
+  attUploading.value = true
+  try {
+    const r = await api.post(`/crm/sales-order/${editId.value}/attachments`, file, {
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-File-Name': encodeURIComponent(file.name)
+      }
+    })
+    const payload = r.data?.payload || r.data
+    if (payload?.attachments) form.attachments = payload.attachments
+    ElMessage.success('アップロードしました')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || 'アップロードに失敗しました')
+  } finally {
+    attUploading.value = false
+  }
+}
+
+function openAttachment(att: any) {
+  if (att.url) window.open(att.url, '_blank')
+}
+
+defineExpose({ save, saving })
 </script>
 
 <style scoped>
 .page.page-wide {
   max-width: 1200px;
+}
+
+.so-form-dialog-body {
+  display: contents;
+}
+
+.so-dialog-card {
+  box-shadow: none;
+  border: none;
+}
+
+.so-dialog-card :deep(.el-card__body) {
+  padding: 16px 20px;
 }
 
 .page-header {
@@ -601,5 +749,73 @@ async function save() {
 
 .text-error {
   color: #f56c6c;
+}
+
+/* 添付ファイル */
+.so-attachments-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #ebeef5;
+}
+
+.so-attachments-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.so-attachments-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #606266;
+}
+
+.so-att-empty {
+  font-size: 12px;
+  color: #909399;
+  padding: 8px 0;
+}
+
+.so-att-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.so-att-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: #f5f7fa;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.so-att-item:hover {
+  background: #ecf5ff;
+}
+
+.so-att-icon {
+  color: #409eff;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.so-att-name {
+  font-size: 13px;
+  color: #303133;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.so-att-size {
+  font-size: 11px;
+  color: #909399;
+  flex-shrink: 0;
 }
 </style>

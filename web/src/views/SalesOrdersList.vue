@@ -5,13 +5,20 @@
         <div class="page-header">
           <div class="page-header-title">{{ tableLabels.title }}</div>
           <div class="page-actions">
-            <el-button type="primary" @click="$router.push('/crm/sales-order/new')">{{ tableLabels.new }}</el-button>
+            <el-button type="primary" @click="createVisible = true">{{ tableLabels.new }}</el-button>
           </div>
         </div>
       </template>
       <el-table :data="rows" stripe style="width: 100%" v-loading="loading">
         <el-table-column prop="so_no" :label="tableLabels.number" width="160" />
-        <el-table-column prop="partner_code" :label="tableLabels.customer" width="160" />
+        <el-table-column :label="tableLabels.customer" min-width="180">
+          <template #default="{ row }">
+            <div class="partner-cell">
+              <span class="partner-name">{{ row.payload?.partnerName || row.partner_name || row.partner_code }}</span>
+              <span class="partner-code">{{ row.partner_code }}</span>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="amount_total" :label="tableLabels.amount" width="120">
           <template #default="{ row }">{{ formatAmount(row.amount_total) }}</template>
         </el-table-column>
@@ -43,9 +50,9 @@
 
       <el-dialog
         v-model="detailVisible"
-        :title="tableLabels.detailTitle || '受注詳細'"
-        width="fit-content"
-        :style="{ maxWidth: '95vw' }"
+        title="受注詳細"
+        width="900px"
+        :style="{ maxWidth: '96vw' }"
         destroy-on-close
         class="detail-dialog"
       >
@@ -176,9 +183,35 @@
           </div>
         </template>
         <template #footer>
-          <div class="dialog-footer">
-            <el-button @click="detailVisible = false">{{ tableLabels.close || '閉じる' }}</el-button>
+          <div class="dialog-footer detail-footer">
+            <el-button @click="detailVisible = false">閉じる</el-button>
+            <div class="footer-spacer" />
+            <el-button v-if="canEditCurrentOrder" @click="openEditDialog">編集</el-button>
             <el-button v-if="!hasDeliveryNote()" type="primary" @click="openDeliveryDialog" :disabled="!currentOrderId">納品書作成</el-button>
+          </div>
+        </template>
+      </el-dialog>
+
+      <!-- 受注編集ダイアログ -->
+      <el-dialog
+        v-model="editDialogVisible"
+        title="受注編集"
+        width="1100px"
+        :style="{ maxWidth: '96vw' }"
+        destroy-on-close
+        class="edit-so-dialog"
+      >
+        <SalesOrderForm
+          ref="editFormRef"
+          dialog-mode
+          :edit-order-id="editingOrderId ?? undefined"
+          @saved="onEditSaved"
+          @cancel="editDialogVisible = false"
+        />
+        <template #footer>
+          <div class="dialog-footer">
+            <el-button @click="editDialogVisible = false">キャンセル</el-button>
+            <el-button type="primary" :loading="editFormRef?.saving" @click="editFormRef?.save()">保存</el-button>
           </div>
         </template>
       </el-dialog>
@@ -203,6 +236,70 @@
         </template>
       </el-dialog>
 
+      <!-- 受注登録ダイアログ（ウィザード形式） -->
+      <el-dialog
+        v-model="createVisible"
+        :title="createStep === 0 ? '受注登録 - ファイル読み込み' : '受注登録'"
+        :width="createStep === 0 ? '560px' : '1100px'"
+        :style="{ maxWidth: '96vw' }"
+        destroy-on-close
+        class="create-so-dialog"
+        @close="resetCreateDialog"
+      >
+        <!-- Step 0: ファイルアップロード -->
+        <div v-if="createStep === 0" class="upload-step">
+          <div
+            class="upload-drop-zone"
+            :class="{ 'is-dragover': isDragOver, 'is-parsing': isParsing }"
+            @dragover.prevent="isDragOver = true"
+            @dragleave.prevent="isDragOver = false"
+            @drop.prevent="onFileDrop"
+            @click="!isParsing && triggerFileInput()"
+          >
+            <input
+              ref="fileInputRef"
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,.gif,.webp"
+              style="display:none"
+              @change="onFileSelected"
+            />
+            <div v-if="isParsing" class="upload-parsing">
+              <el-icon class="is-loading upload-icon"><Loading /></el-icon>
+              <p class="upload-hint">読み込み中...</p>
+            </div>
+            <div v-else class="upload-idle">
+              <el-icon class="upload-icon"><Upload /></el-icon>
+              <p class="upload-label">PDFまたは画像をドロップ</p>
+              <p class="upload-hint">またはクリックしてファイルを選択</p>
+              <p class="upload-formats">対応形式: PDF, PNG, JPG, GIF, WebP</p>
+            </div>
+          </div>
+          <div v-if="parseError" class="upload-error">{{ parseError }}</div>
+        </div>
+
+        <!-- Step 1: 受注入力フォーム -->
+        <SalesOrderForm
+          v-if="createStep === 1"
+          ref="createFormRef"
+          dialog-mode
+          :prefill-data="parsedOrderData"
+          @saved="onCreateSaved"
+          @cancel="createVisible = false"
+        />
+
+        <template #footer>
+          <div class="dialog-footer">
+            <el-button @click="createVisible = false">キャンセル</el-button>
+            <template v-if="createStep === 0">
+              <el-button type="primary" @click="skipUpload">手動で入力</el-button>
+            </template>
+            <template v-else>
+              <el-button type="primary" :loading="createFormRef?.saving" @click="createFormRef?.save()">保存</el-button>
+            </template>
+          </div>
+        </template>
+      </el-dialog>
+
       <div class="page-pagination">
         <el-pagination
           background
@@ -218,13 +315,13 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, reactive, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted, ref, reactive, watch, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Document, Box, Tickets, Money } from '@element-plus/icons-vue'
+import { Document, Box, Tickets, Money, Upload, Loading } from '@element-plus/icons-vue'
 import api from '../api'
 import { useI18n } from '../i18n'
 import SalesOrderLifecycle from '../components/SalesOrderLifecycle.vue'
+import SalesOrderForm from './SalesOrderForm.vue'
 
 // 状态映射
 function getStatusType(status: string) {
@@ -257,8 +354,6 @@ function getStatusLabel(status: string) {
   return map[status] || status
 }
 
-const router = useRouter()
-
 const { section } = useI18n()
 const tableLabels = section(
   {
@@ -286,6 +381,90 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref<any | null>(null)
 const currentOrderId = ref<string | null>(null)
+
+// 受注編集ダイアログ
+const editDialogVisible = ref(false)
+const editingOrderId = ref<string | null>(null)
+const editFormRef = ref<any>(null)
+
+const canEditCurrentOrder = computed(() => {
+  return !hasDeliveryNote() && !isStageActive('Invoice')
+})
+
+function openEditDialog() {
+  if (!currentOrderId.value) return
+  editingOrderId.value = currentOrderId.value
+  detailVisible.value = false
+  editDialogVisible.value = true
+}
+
+function onEditSaved() {
+  editDialogVisible.value = false
+  load()
+}
+
+// 受注登録ダイアログ（ウィザード）
+const createVisible = ref(false)
+const createStep = ref(0)
+const createFormRef = ref<any>(null)
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const isDragOver = ref(false)
+const isParsing = ref(false)
+const parseError = ref('')
+const parsedOrderData = ref<any>(null)
+
+function resetCreateDialog() {
+  createStep.value = 0
+  isParsing.value = false
+  parseError.value = ''
+  parsedOrderData.value = null
+  isDragOver.value = false
+}
+
+function skipUpload() {
+  parsedOrderData.value = null
+  createStep.value = 1
+}
+
+function triggerFileInput() {
+  fileInputRef.value?.click()
+}
+
+function onFileDrop(e: DragEvent) {
+  isDragOver.value = false
+  const file = e.dataTransfer?.files?.[0]
+  if (file) parseFile(file)
+}
+
+function onFileSelected(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (file) parseFile(file)
+  input.value = ''
+}
+
+async function parseFile(file: File) {
+  isParsing.value = true
+  parseError.value = ''
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    const r = await api.post('/crm/sales-order/parse-document', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    parsedOrderData.value = r.data
+    createStep.value = 1
+  } catch (e: any) {
+    parseError.value = e?.response?.data?.error || e?.message || '解析に失敗しました'
+  } finally {
+    isParsing.value = false
+  }
+}
+
+function onCreateSaved() {
+  createVisible.value = false
+  load()
+}
 
 // 纳品书创建相关
 const deliveryDialogVisible = ref(false)
@@ -776,6 +955,14 @@ async function openDetail(row: any) {
   gap: 8px;
 }
 
+.detail-footer {
+  justify-content: flex-start;
+}
+
+.footer-spacer {
+  flex: 1;
+}
+
 /* 纳品书创建弹窗样式 */
 .delivery-dialog :deep(.el-dialog__body) {
   padding: 20px 24px;
@@ -798,6 +985,110 @@ async function openDetail(row: any) {
 .delivery-date {
   width: 100%;
   max-width: 200px;
+}
+
+.partner-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.4;
+}
+
+.partner-name {
+  font-size: 13px;
+  color: #303133;
+}
+
+.partner-code {
+  font-size: 11px;
+  color: #909399;
+}
+
+/* 受注編集ダイアログ */
+.edit-so-dialog :deep(.el-dialog__body) {
+  padding: 0;
+  overflow-y: auto;
+  max-height: 80vh;
+}
+
+/* 受注登録ダイアログ */
+.create-so-dialog :deep(.el-dialog__body) {
+  padding: 0;
+  overflow-y: auto;
+  max-height: 80vh;
+}
+
+/* アップロードステップ */
+.upload-step {
+  padding: 24px;
+}
+
+.upload-drop-zone {
+  border: 2px dashed #d0d7de;
+  border-radius: 8px;
+  padding: 48px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  user-select: none;
+}
+
+.upload-drop-zone:hover,
+.upload-drop-zone.is-dragover {
+  border-color: #409eff;
+  background: #f0f7ff;
+}
+
+.upload-drop-zone.is-parsing {
+  cursor: default;
+  background: #f5f7fa;
+}
+
+.upload-icon {
+  font-size: 48px;
+  color: #409eff;
+  margin-bottom: 12px;
+}
+
+.upload-icon.is-loading {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.upload-label {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+  margin: 0 0 4px;
+}
+
+.upload-hint {
+  font-size: 13px;
+  color: #606266;
+  margin: 0 0 8px;
+}
+
+.upload-formats {
+  font-size: 12px;
+  color: #909399;
+  margin: 0;
+}
+
+.upload-parsing .upload-hint {
+  font-size: 14px;
+  color: #409eff;
+  margin-top: 8px;
+}
+
+.upload-error {
+  margin-top: 12px;
+  color: #f56c6c;
+  font-size: 13px;
+  text-align: center;
 }
 </style>
 
