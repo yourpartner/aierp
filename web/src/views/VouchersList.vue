@@ -1302,10 +1302,18 @@ async function saveVoucherChanges(){
       }
     }
     if (failedUploads.length > 0) {
-      ElMessage.warning(`添付ファイルのアップロードに失敗しました: ${failedUploads.join(', ')}`)
+      try {
+        await ElMessageBox.confirm(
+          `添付ファイルのアップロードに失敗しました:\n${failedUploads.join(', ')}\n\nアップロードに失敗したファイルを除いて保存しますか？`,
+          '添付ファイルエラー',
+          { confirmButtonText: '保存する', cancelButtonText: 'キャンセル', type: 'warning' }
+        )
+      } catch {
+        editLoading.value = false
+        return
+      }
     }
     basePayload.attachments = uploadedAttachments
-    console.log('[voucher save] attachments to save:', uploadedAttachments)
     
     const resp = await api.put(`/vouchers/${detail.value.id}`, { payload: basePayload })
     const updated = resp.data
