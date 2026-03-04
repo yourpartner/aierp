@@ -184,24 +184,39 @@ p, h1, h2, h3, h4, h5, h6 {
   background-color: rgba(0, 0, 0, 0.25) !important;
 }
 
-/* 详情弹窗：移除 dialog 外层样式，让 el-card 成为唯一视觉容器 */
+/* 详情弹窗：移除 dialog 外层样式，让 el-card 成为唯一视觉容器
+   class 可能落在 .el-dialog 本身，也可能落在外层 overlay，需要两种选择器都覆盖 */
 .el-dialog.voucher-detail-dialog,
-.el-dialog.so-detail-dialog {
+.el-dialog.so-detail-dialog,
+.voucher-detail-dialog .el-dialog,
+.so-detail-dialog .el-dialog {
   background: transparent !important;
   box-shadow: none !important;
   border: none !important;
   padding: 0 !important;
+  border-radius: 0 !important;
 }
 
 .el-dialog.voucher-detail-dialog .el-dialog__header,
-.el-dialog.so-detail-dialog .el-dialog__header {
+.el-dialog.so-detail-dialog .el-dialog__header,
+.voucher-detail-dialog .el-dialog .el-dialog__header,
+.so-detail-dialog .el-dialog .el-dialog__header {
   display: none !important;
 }
 
 .el-dialog.voucher-detail-dialog .el-dialog__body,
-.el-dialog.so-detail-dialog .el-dialog__body {
+.el-dialog.so-detail-dialog .el-dialog__body,
+.voucher-detail-dialog .el-dialog .el-dialog__body,
+.so-detail-dialog .el-dialog .el-dialog__body {
   padding: 0 !important;
   background: transparent !important;
+}
+
+.el-dialog.voucher-detail-dialog .el-dialog__footer,
+.el-dialog.so-detail-dialog .el-dialog__footer,
+.voucher-detail-dialog .el-dialog .el-dialog__footer,
+.so-detail-dialog .el-dialog .el-dialog__footer {
+  display: none !important;
 }
 
 /* 凭证弹窗内容包装：确保无多余 padding */

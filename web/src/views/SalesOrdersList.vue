@@ -53,6 +53,7 @@
         width="auto"
         :show-close="false"
         destroy-on-close
+        append-to-body
         class="so-detail-dialog"
       >
         <template #header></template>
