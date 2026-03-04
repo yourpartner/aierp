@@ -1,11 +1,54 @@
 <template>
   <div :class="props.dialogMode ? 'so-form-dialog-body' : 'page page-wide'">
-    <el-card :class="{ 'so-dialog-card': props.dialogMode }">
+    <!-- 独立ページ: Step 0 ファイルアップロード（新規作成のみ） -->
+    <el-card v-if="showUploadStep" class="upload-card">
+      <template #header>
+        <div class="page-header">
+          <div class="page-header-title">受注登録 - ファイル読み込み</div>
+          <div class="page-actions">
+            <el-button @click="$router.back()">キャンセル</el-button>
+            <el-button type="primary" @click="skipUploadToForm">手動で入力</el-button>
+          </div>
+        </div>
+      </template>
+      <div class="upload-step">
+        <div
+          class="upload-drop-zone"
+          :class="{ 'is-dragover': isDragOver, 'is-parsing': isParsing }"
+          @dragover.prevent="isDragOver = true"
+          @dragleave.prevent="isDragOver = false"
+          @drop.prevent="onFileDrop"
+          @click="!isParsing && triggerParseFileInput()"
+        >
+          <input
+            ref="parseFileInputRef"
+            type="file"
+            accept=".pdf,.png,.jpg,.jpeg,.gif,.webp"
+            style="display:none"
+            @change="onParseFileSelected"
+          />
+          <div v-if="isParsing" class="upload-parsing">
+            <el-icon class="is-loading upload-icon"><Loading /></el-icon>
+            <p class="upload-hint">読み込み中...</p>
+          </div>
+          <div v-else class="upload-idle">
+            <el-icon class="upload-icon"><Upload /></el-icon>
+            <p class="upload-label">PDFまたは画像をドロップ</p>
+            <p class="upload-hint">またはクリックしてファイルを選択</p>
+            <p class="upload-formats">対応形式: PDF, PNG, JPG, GIF, WebP</p>
+          </div>
+        </div>
+        <div v-if="parseError" class="upload-error">{{ parseError }}</div>
+      </div>
+    </el-card>
+
+    <!-- 受注入力フォーム -->
+    <el-card v-show="showFormStep" :class="{ 'so-dialog-card': props.dialogMode }">
       <template v-if="!props.dialogMode" #header>
         <div class="page-header">
           <div class="page-header-title">{{ isEditMode ? '受注編集' : '受注登録' }}</div>
           <div class="page-actions">
-            <el-button @click="$router.back()">キャンセル</el-button>
+            <el-button @click="goBackOrUpload">キャンセル</el-button>
             <el-button type="primary" @click="save" :loading="saving">{{ commonText.save || '保存' }}</el-button>
           </div>
         </div>
@@ -240,9 +283,9 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, computed } from 'vue'
-import { useRoute } from 'vue-router'
-import { Plus, UploadFilled, Document as DocIcon } from '@element-plus/icons-vue'
+import { onMounted, reactive, ref, computed, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { Plus, UploadFilled, Upload, Loading, Document as DocIcon } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '../api'
 import { useI18n } from '../i18n'
@@ -268,8 +311,76 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'saved'): void; (e: 'cancel'): void }>()
 
 const route = useRoute()
+const router = useRouter()
 const editId = ref<string | null>(null)
 const isEditMode = computed(() => !!editId.value)
+
+// 独立ページモードの上传向导ステップ管理
+const pageStep = ref(0)
+const parseFileInputRef = ref<HTMLInputElement | null>(null)
+const isDragOver = ref(false)
+const isParsing = ref(false)
+const parseError = ref('')
+const localParsedData = ref<any>(null)
+
+const showUploadStep = computed(() =>
+  !props.dialogMode && !isEditMode.value && pageStep.value === 0
+)
+const showFormStep = computed(() =>
+  props.dialogMode || isEditMode.value || pageStep.value === 1
+)
+
+function skipUploadToForm() {
+  localParsedData.value = null
+  pageStep.value = 1
+}
+
+function goBackOrUpload() {
+  if (!props.dialogMode && !isEditMode.value && pageStep.value === 1) {
+    pageStep.value = 0
+    return
+  }
+  if (props.dialogMode) {
+    emit('cancel')
+  } else {
+    router.back()
+  }
+}
+
+function triggerParseFileInput() {
+  parseFileInputRef.value?.click()
+}
+
+function onFileDrop(e: DragEvent) {
+  isDragOver.value = false
+  const file = e.dataTransfer?.files?.[0]
+  if (file) parseUploadedFile(file)
+}
+
+function onParseFileSelected(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (file) parseUploadedFile(file)
+  input.value = ''
+}
+
+async function parseUploadedFile(file: File) {
+  isParsing.value = true
+  parseError.value = ''
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    const r = await api.post('/crm/sales-order/parse-document', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    localParsedData.value = r.data
+    pageStep.value = 1
+  } catch (e: any) {
+    parseError.value = e?.response?.data?.error || e?.message || '解析に失敗しました'
+  } finally {
+    isParsing.value = false
+  }
+}
 
 const { section, lang } = useI18n()
 const tableLabels = section({ title:'', new:'', number:'', customer:'', amount:'', status:'', issueDate:'' }, (msg) => msg.tables.salesOrders)
@@ -495,60 +606,65 @@ async function loadEditData(id: string) {
   }
 }
 
+function applyPrefillData(d: NonNullable<typeof props.prefillData>) {
+  if (d.partnerName) form.partnerName = d.partnerName
+  if (d.partnerCode) {
+    form.partnerCode = d.partnerCode
+    partnerOptions.value = [{ label: `${d.partnerName || d.partnerCode} (${d.partnerCode})`, value: d.partnerCode, name: d.partnerName || d.partnerCode }]
+  }
+  if (d.orderDate) form.orderDate = d.orderDate
+  if (d.requestedDeliveryDate) form.requestedDeliveryDate = d.requestedDeliveryDate
+  if (d.note) form.note = d.note
+  if (d.lines && d.lines.length > 0) {
+    const prefillLines = d.lines
+      .filter((l: any) => l.materialCode || l.materialName)
+      .map((l: any) => {
+        const line = createEmptyLine()
+        if (l.materialCode) {
+          line.materialCode = l.materialCode
+          line.materialName = l.materialName || l.materialCode
+          materialCache.set(l.materialCode, {
+            label: `${l.materialName || l.materialCode} (${l.materialCode})`,
+            value: l.materialCode,
+            name: l.materialName || l.materialCode,
+            uom: l.uom || '',
+            price: l.unitPrice || 0
+          })
+        } else {
+          line.materialName = l.materialName || ''
+        }
+        if (l.quantity != null) line.quantity = Number(l.quantity)
+        if (l.uom) line.uom = l.uom
+        if (l.unitPrice != null) {
+          line.unitPrice = Number(l.unitPrice)
+          line.amount = line.quantity * line.unitPrice
+        }
+        return line
+      })
+    if (prefillLines.length > 0) {
+      form.lines.splice(0, form.lines.length, ...prefillLines)
+      recalcTotals()
+    }
+  }
+}
+
+watch(localParsedData, (d) => {
+  if (d) applyPrefillData(d)
+})
+
 onMounted(async () => {
   await searchCustomers('')
   await searchMaterials('')
 
-  // dialogModeの場合はrouteを使わずpropsを参照
   const id = props.dialogMode ? (props.editOrderId || null) : (route.params.id as string || null)
   if (id) {
     editId.value = id
+    pageStep.value = 1
     await loadEditData(id)
   }
 
-  // LLMで解析済みのprefillDataがある場合はフォームに適用
   if (props.prefillData) {
-    const d = props.prefillData
-    if (d.partnerName) form.partnerName = d.partnerName
-    if (d.partnerCode) {
-      form.partnerCode = d.partnerCode
-      partnerOptions.value = [{ label: `${d.partnerName || d.partnerCode} (${d.partnerCode})`, value: d.partnerCode, name: d.partnerName || d.partnerCode }]
-    }
-    if (d.orderDate) form.orderDate = d.orderDate
-    if (d.requestedDeliveryDate) form.requestedDeliveryDate = d.requestedDeliveryDate
-    if (d.note) form.note = d.note
-    if (d.lines && d.lines.length > 0) {
-      const prefillLines = d.lines
-        .filter((l: any) => l.materialCode || l.materialName)
-        .map((l: any) => {
-          const line = createEmptyLine()
-          if (l.materialCode) {
-            line.materialCode = l.materialCode
-            line.materialName = l.materialName || l.materialCode
-            materialCache.set(l.materialCode, {
-              label: `${l.materialName || l.materialCode} (${l.materialCode})`,
-              value: l.materialCode,
-              name: l.materialName || l.materialCode,
-              uom: l.uom || '',
-              price: l.unitPrice || 0
-            })
-          } else {
-            // コードなし: 名称のみの場合は品目名欄に表示用途で使う
-            line.materialName = l.materialName || ''
-          }
-          if (l.quantity != null) line.quantity = Number(l.quantity)
-          if (l.uom) line.uom = l.uom
-          if (l.unitPrice != null) {
-            line.unitPrice = Number(l.unitPrice)
-            line.amount = line.quantity * line.unitPrice
-          }
-          return line
-        })
-      if (prefillLines.length > 0) {
-        form.lines.splice(0, form.lines.length, ...prefillLines)
-        recalcTotals()
-      }
-    }
+    applyPrefillData(props.prefillData)
   }
 })
 
@@ -817,5 +933,72 @@ defineExpose({ save, saving })
   font-size: 11px;
   color: #909399;
   flex-shrink: 0;
+}
+
+/* Upload wizard styles */
+.upload-card {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.upload-step {
+  padding: 24px;
+}
+
+.upload-drop-zone {
+  border: 2px dashed #d0d7de;
+  border-radius: 8px;
+  padding: 48px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.upload-drop-zone:hover,
+.upload-drop-zone.is-dragover {
+  border-color: #409eff;
+  background: #f0f7ff;
+}
+
+.upload-drop-zone.is-parsing {
+  cursor: default;
+  background: #f5f7fa;
+}
+
+.upload-icon {
+  font-size: 40px;
+  color: #409eff;
+  margin-bottom: 12px;
+}
+
+.upload-label {
+  font-size: 16px;
+  color: #303133;
+  margin: 0 0 6px;
+}
+
+.upload-hint {
+  font-size: 13px;
+  color: #909399;
+  margin: 0 0 4px;
+}
+
+.upload-formats {
+  font-size: 12px;
+  color: #c0c4cc;
+  margin: 0;
+}
+
+.upload-error {
+  color: #f56c6c;
+  font-size: 13px;
+  margin-top: 12px;
+  text-align: center;
+}
+
+.upload-parsing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 </style>
