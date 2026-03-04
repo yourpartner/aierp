@@ -718,12 +718,6 @@ async function openDetail(row: any) {
 </script>
 
 <style scoped>
-.so-detail-dialog :deep(.el-dialog__header) {
-  display: none;
-}
-.so-detail-dialog :deep(.el-dialog__body) {
-  padding: 0;
-}
 .so-detail-card {
   max-width: 900px;
   margin: 0 auto;
