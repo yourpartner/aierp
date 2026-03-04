@@ -937,8 +937,22 @@ defineExpose({ save, saving })
 
 /* Upload wizard styles */
 .upload-card {
-  max-width: 600px;
+  max-width: 680px;
   margin: 0 auto;
+}
+
+.upload-card :deep(.el-card__header) .page-header {
+  flex-wrap: nowrap;
+}
+
+.upload-card :deep(.el-card__header) .page-header-title {
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-size: 16px;
+}
+
+.upload-card :deep(.el-card__header) .page-actions {
+  flex-shrink: 0;
 }
 
 .upload-step {
