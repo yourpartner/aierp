@@ -996,13 +996,18 @@ public static class SalesInvoiceModule
                             ["dueDate"] = dueDateStr,
                             ["amountTotal"] = totalAmount,
                             ["taxAmount"] = taxAmount,
+                            ["currency"] = "JPY",
+                            ["status"] = "issued",
+                            ["createdBy"] = currentUser,
+                            ["createdAt"] = DateTime.UtcNow.ToString("o"),
+                            ["issuedAt"] = DateTime.UtcNow.ToString("o"),
+                            ["issuedBy"] = currentUser,
                             ["voucherNo"] = voucherNo,
                             ["voucherId"] = voucherId?.ToString(),
                             ["voucherError"] = voucherError,
-                            ["createdBy"] = currentUser
+                            ["deliveryNoteIds"] = dnIdsJsonArr
                         },
-                        ["lines"] = JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(lines)),
-                        ["deliveryNoteIds"] = dnIdsJsonArr
+                        ["lines"] = JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(lines))
                     };
 
                     var batchInvoiceId = Guid.NewGuid();
