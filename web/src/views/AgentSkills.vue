@@ -1,72 +1,66 @@
 <template>
-  <div class="page page-large agent-skills">
-    <!-- Header Card -->
-    <el-card class="header-card" :body-style="{ padding: '16px 20px' }">
-      <div class="page-header">
-        <div class="page-header-left">
-          <span class="page-header-title">AI技能管理</span>
-          <el-tag v-if="skills.length > 0" size="small" type="info">{{ skills.length }}</el-tag>
+  <div class="page page-wide agent-skills">
+    <el-card>
+      <template #header>
+        <div class="page-header">
+          <div class="page-header-title">Agent Skill設定</div>
+          <div class="page-actions">
+            <el-checkbox v-model="showAll" @change="loadSkills">無効も表示</el-checkbox>
+            <el-button :icon="Refresh" :loading="loading" @click="loadSkills">更新</el-button>
+            <el-button type="primary" :icon="Plus" @click="openCreate">新規作成</el-button>
+          </div>
         </div>
-        <div class="page-actions">
-          <el-checkbox v-model="showAll" @change="loadSkills">無効も表示</el-checkbox>
-          <el-button :icon="Refresh" :loading="loading" @click="loadSkills">更新</el-button>
-          <el-button type="primary" :icon="Plus" @click="openCreate">新規作成</el-button>
-        </div>
+      </template>
+
+      <el-empty v-if="skills.length === 0 && !loading" description="スキルが設定されていません">
+        <el-button type="primary" @click="openCreate">最初のスキルを作成</el-button>
+      </el-empty>
+
+      <div v-else class="skills-grid">
+        <el-card
+          v-for="skill in skills"
+          :key="skill.id"
+          class="skill-card"
+          :class="{ inactive: !skill.isActive }"
+          shadow="hover"
+          @click="openDetail(skill)"
+        >
+          <div class="skill-card-body">
+            <div class="skill-card-header">
+              <span class="skill-icon">{{ skill.icon || '🤖' }}</span>
+              <div class="skill-card-title-area">
+                <div class="skill-name">{{ skill.name }}</div>
+                <div class="skill-key">{{ skill.skillKey }}</div>
+              </div>
+              <div class="skill-card-actions" @click.stop>
+                <el-tag :type="categoryTagType(skill.category)" size="small">{{ skill.category || 'general' }}</el-tag>
+                <el-switch
+                  v-model="skill.isActive"
+                  size="small"
+                  @change="(val: boolean) => toggleSkillActive(skill, val)"
+                />
+              </div>
+            </div>
+            <div v-if="skill.description" class="skill-desc">{{ skill.description }}</div>
+            <div class="skill-meta">
+              <span v-if="skill.enabledTools?.length" class="meta-item">
+                🔧 {{ skill.enabledTools.slice(0, 3).join(', ') }}
+                <span v-if="skill.enabledTools.length > 3">+{{ skill.enabledTools.length - 3 }}</span>
+              </span>
+              <span class="meta-item">⚡ {{ skill.priority }}</span>
+              <span class="meta-item">{{ formatDate(skill.updatedAt) }}</span>
+            </div>
+          </div>
+        </el-card>
       </div>
     </el-card>
-
-    <!-- Empty State -->
-    <el-card v-if="skills.length === 0 && !loading" class="empty-card">
-      <el-empty description="技能が設定されていません">
-        <el-button type="primary" @click="openCreate">最初の技能を作成</el-button>
-      </el-empty>
-    </el-card>
-
-    <!-- Skills Grid -->
-    <div v-else class="skills-grid">
-      <el-card
-        v-for="skill in skills"
-        :key="skill.id"
-        class="skill-card"
-        :class="{ inactive: !skill.isActive }"
-        shadow="hover"
-        @click="openDetail(skill)"
-      >
-        <div class="skill-card-body">
-          <div class="skill-card-header">
-            <span class="skill-icon">{{ skill.icon || '🤖' }}</span>
-            <div class="skill-card-title-area">
-              <div class="skill-name">{{ skill.name }}</div>
-              <div class="skill-key">{{ skill.skillKey }}</div>
-            </div>
-            <div class="skill-card-actions" @click.stop>
-              <el-tag :type="categoryTagType(skill.category)" size="small">{{ skill.category || 'general' }}</el-tag>
-              <el-switch
-                v-model="skill.isActive"
-                size="small"
-                @change="(val: boolean) => toggleSkillActive(skill, val)"
-              />
-            </div>
-          </div>
-          <div v-if="skill.description" class="skill-desc">{{ skill.description }}</div>
-          <div class="skill-meta">
-            <span v-if="skill.enabledTools?.length" class="meta-item">
-              🔧 {{ skill.enabledTools.slice(0, 3).join(', ') }}
-              <span v-if="skill.enabledTools.length > 3">+{{ skill.enabledTools.length - 3 }}</span>
-            </span>
-            <span class="meta-item">⚡ {{ skill.priority }}</span>
-            <span class="meta-item">{{ formatDate(skill.updatedAt) }}</span>
-          </div>
-        </div>
-      </el-card>
-    </div>
 
     <!-- Skill Detail Dialog -->
     <el-dialog
       v-model="detail.visible"
-      :title="detail.isNew ? '技能作成' : `技能編集 - ${detail.form.name}`"
-      width="85%"
-      top="3vh"
+      :title="detail.isNew ? 'スキル作成' : `スキル編集 - ${detail.form.name}`"
+      width="860px"
+      append-to-body
       destroy-on-close
       class="skill-detail-dialog"
     >
@@ -75,11 +69,11 @@
         <el-tab-pane label="基本情報" name="basic">
           <el-form label-position="top" class="detail-form">
             <div class="form-grid">
-              <el-form-item label="技能キー (skill_key)" required>
+              <el-form-item label="スキルキー (skill_key)" required>
                 <el-input v-model="detail.form.skillKey" :disabled="!detail.isNew" placeholder="例：invoice.booking" />
               </el-form-item>
-              <el-form-item label="名称" required>
-                <el-input v-model="detail.form.name" placeholder="技能名" maxlength="120" show-word-limit />
+              <el-form-item label="名前" required>
+                <el-input v-model="detail.form.name" placeholder="スキル名" maxlength="120" show-word-limit />
               </el-form-item>
               <el-form-item label="カテゴリ">
                 <el-select v-model="detail.form.category" placeholder="カテゴリを選択">
@@ -101,7 +95,7 @@
               </el-form-item>
             </div>
             <el-form-item label="説明">
-              <el-input v-model="detail.form.description" type="textarea" :rows="2" placeholder="技能の説明" />
+              <el-input v-model="detail.form.description" type="textarea" :rows="2" placeholder="スキルの説明" />
             </el-form-item>
             <el-form-item label="トリガー条件 (triggers JSON)">
               <el-input
@@ -164,7 +158,7 @@
                 <el-option v-for="t in commonTools" :key="t" :label="t" :value="t" />
               </el-select>
             </el-form-item>
-            <div class="hint-text">設定済み {{ detail.form.enabledTools.length }} 個のツール</div>
+            <div class="hint-text">設定済み {{ detail.form.enabledTools.length }} 件のツール</div>
           </el-form>
         </el-tab-pane>
 
@@ -206,7 +200,7 @@
               <el-button type="primary" size="small" :icon="Plus" @click="openRuleEditor(null)">ルール追加</el-button>
             </div>
             <el-table :data="detail.rules" stripe size="small" v-loading="detail.rulesLoading" class="sub-table">
-              <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip />
+              <el-table-column prop="name" label="名前" min-width="160" show-overflow-tooltip />
               <el-table-column prop="ruleKey" label="Key" width="140" show-overflow-tooltip />
               <el-table-column prop="priority" label="優先度" width="80" align="center" />
               <el-table-column prop="isActive" label="有効" width="70" align="center">
@@ -214,7 +208,7 @@
                   <el-tag :type="row.isActive ? 'success' : 'info'" size="small">{{ row.isActive ? 'はい' : 'いいえ' }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="140" fixed="right">
+              <el-table-column label="アクション" width="140" fixed="right">
                 <template #default="{ row }">
                   <el-button size="small" type="primary" link @click="openRuleEditor(row)">編集</el-button>
                   <el-popconfirm title="このルールを削除しますか？" @confirm="deleteRule(row)">
@@ -236,7 +230,7 @@
               <el-button type="primary" size="small" :icon="Plus" @click="openExampleEditor(null)">サンプル追加</el-button>
             </div>
             <el-table :data="detail.examples" stripe size="small" v-loading="detail.examplesLoading" class="sub-table">
-              <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip />
+              <el-table-column prop="name" label="名前" min-width="160" show-overflow-tooltip />
               <el-table-column prop="inputType" label="入力タイプ" width="120" />
               <el-table-column prop="isActive" label="有効" width="70" align="center">
                 <template #default="{ row }">
@@ -246,7 +240,7 @@
               <el-table-column prop="createdAt" label="作成日時" width="160">
                 <template #default="{ row }">{{ formatDate(row.createdAt) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="140" fixed="right">
+              <el-table-column label="アクション" width="140" fixed="right">
                 <template #default="{ row }">
                   <el-button size="small" type="primary" link @click="openExampleEditor(row)">編集</el-button>
                   <el-popconfirm title="このサンプルを削除しますか？" @confirm="deleteExample(row)">
@@ -262,11 +256,9 @@
       </el-tabs>
 
       <template #footer>
-        <div class="dialog-footer">
-          <el-button @click="detail.visible = false">キャンセル</el-button>
-          <el-button v-if="!detail.isNew" type="danger" @click="deleteSkill">技能削除</el-button>
-          <el-button type="primary" :loading="detail.saving" @click="saveSkill">保存</el-button>
-        </div>
+        <el-button v-if="!detail.isNew" type="danger" @click="deleteSkill" style="margin-right: auto">スキル削除</el-button>
+        <el-button @click="detail.visible = false">キャンセル</el-button>
+        <el-button type="primary" :loading="detail.saving" @click="saveSkill">保存</el-button>
       </template>
     </el-dialog>
 
@@ -275,10 +267,12 @@
       v-model="ruleEditor.visible"
       :title="ruleEditor.isNew ? 'ルール追加' : 'ルール編集'"
       width="640px"
+      top="5vh"
       append-to-body
+      class="skill-sub-dialog"
     >
       <el-form label-position="top" class="detail-form">
-        <el-form-item label="名称" required>
+        <el-form-item label="名前" required>
           <el-input v-model="ruleEditor.form.name" placeholder="ルール名" maxlength="120" show-word-limit />
         </el-form-item>
         <el-form-item label="Key">
@@ -322,10 +316,12 @@
       v-model="exampleEditor.visible"
       :title="exampleEditor.isNew ? 'サンプル追加' : 'サンプル編集'"
       width="640px"
+      top="5vh"
       append-to-body
+      class="skill-sub-dialog"
     >
       <el-form label-position="top" class="detail-form">
-        <el-form-item label="名称">
+        <el-form-item label="名前">
           <el-input v-model="exampleEditor.form.name" placeholder="サンプル名" maxlength="120" show-word-limit />
         </el-form-item>
         <div class="form-grid-2">
@@ -541,7 +537,7 @@ async function loadSkills() {
     const resp = await api.get('/ai/agent/skills', { params })
     skills.value = Array.isArray(resp.data) ? resp.data : []
   } catch (err: any) {
-    handleError(err, '技能の読み込みに失敗しました')
+    handleError(err, 'スキルの読み込みに失敗しました')
   } finally {
     loading.value = false
   }
@@ -603,7 +599,7 @@ function resetDetailForm() {
 async function saveSkill() {
   const f = detail.form
   if (!f.skillKey.trim() || !f.name.trim()) {
-    ElMessage.warning('skill_keyと名称を入力してください')
+    ElMessage.warning('skill_keyと名前を入力してください')
     return
   }
 
@@ -659,7 +655,7 @@ async function saveSkill() {
 async function deleteSkill() {
   if (!detail.skillId) return
   try {
-    await ElMessageBox.confirm('この技能を削除しますか？この操作は元に戻せません。', '確認', { type: 'warning' })
+    await ElMessageBox.confirm('このスキルを削除しますか？この操作は元に戻せません。', '確認', { type: 'warning' })
   } catch { return }
 
   try {
@@ -843,8 +839,6 @@ onMounted(() => {
 <style scoped>
 .agent-skills {
   padding: 20px;
-  max-width: 1400px;
-  margin: 0 auto;
 }
 
 /* Header */
@@ -853,13 +847,8 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
 }
-.page-header-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
 .page-header-title {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--el-text-color-primary);
 }
@@ -869,17 +858,11 @@ onMounted(() => {
   gap: 12px;
 }
 
-/* Empty */
-.empty-card {
-  margin-top: 16px;
-}
-
 /* Skills Grid */
 .skills-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: 16px;
-  margin-top: 16px;
 }
 
 .skill-card {
@@ -957,21 +940,22 @@ onMounted(() => {
   gap: 4px;
 }
 
-/* Detail Dialog */
-.skill-detail-dialog :deep(.el-dialog) {
-  max-width: 1100px;
-}
+/* Detail Dialog - 会計モジュールと同様のスタイル */
 .skill-detail-dialog :deep(.el-dialog__body) {
-  padding: 0 20px;
-  max-height: calc(100vh - 3vh - 3vh - 120px);
+  max-height: calc(100vh - 200px);
   overflow-y: auto;
+}
+.skill-detail-dialog :deep(.el-tabs__header) {
+  margin: 0 0 20px 0;
+}
+.skill-detail-dialog :deep(.el-tabs__content) {
+  padding: 0;
 }
 .detail-tabs {
   min-height: 400px;
 }
 .detail-form {
-  max-width: 800px;
-  padding-bottom: 16px;
+  width: 100%;
 }
 .form-grid {
   display: grid;
@@ -1018,13 +1002,5 @@ onMounted(() => {
   width: 100%;
 }
 
-/* Footer */
-.dialog-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.dialog-footer .el-button--danger {
-  margin-right: auto;
-}
+/* Footer は Element Plus デフォルト（右寄せ） */
 </style>

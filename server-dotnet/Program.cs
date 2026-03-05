@@ -768,8 +768,8 @@ app.Lifetime.ApplicationStarted.Register(async () =>
         await using var conn = await ds.OpenConnectionAsync();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = @"INSERT INTO permission_menus (module_code, menu_key, menu_name, menu_path, caps_required, display_order)
-VALUES ('system', 'ai.agentSkills', '{""ja"":""AI技能"",""zh"":""AI技能"",""en"":""AI Skills""}'::jsonb, '/ai/agent-skills', ARRAY['ai:scenarios'], 9)
-ON CONFLICT (menu_key) DO NOTHING";
+VALUES ('system', 'ai.agentSkills', '{""ja"":""Agent Skill設定"",""zh"":""Agent Skill設定"",""en"":""Agent Skill""}'::jsonb, '/ai/agent-skills', ARRAY['ai:scenarios'], 9)
+ON CONFLICT (menu_key) DO UPDATE SET menu_name = EXCLUDED.menu_name";
         await cmd.ExecuteNonQueryAsync();
     }
     catch (Exception ex) { Console.WriteLine("[startup] agentSkills menu init: " + ex.Message); }
