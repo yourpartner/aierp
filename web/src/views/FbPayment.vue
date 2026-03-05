@@ -77,9 +77,10 @@
     <el-dialog
       v-model="createDialogVisible"
       :title="labels.createTitle"
-      width="860px"
+      width="1030px"
       append-to-body
       destroy-on-close
+      top="5vh"
       class="create-dialog"
     >
       <!-- 筛选条件 -->
@@ -452,14 +453,15 @@ async function createFbFile() {
   }
   
   try {
-    const bankInfo = senderBankInfo.value || {}
+    const acctPayload = senderBankInfo.value || {}
+    const bi = acctPayload.bankInfo || {}
     const items = selectedItems.value.map(item => ({
       voucherId: item.voucherId,
       voucherNo: item.voucherNo,
       lineNo: item.lineNo,
       amount: item.residualAmount || item.amount,
       bankCode: item.bankCode || '',
-      bankName: '', // TODO: 从银行主数据获取
+      bankName: '',
       branchCode: item.branchCode || '',
       branchName: '',
       depositType: item.depositType || '1',
@@ -469,13 +471,13 @@ async function createFbFile() {
     
     const r = await api.post('/fb-payment/create', {
       paymentDate: createFilters.paymentDate,
-      bankCode: createFilters.senderBankCode,
-      bankName: bankInfo.name || '',
-      branchCode: bankInfo.branchCode || '',
-      branchName: bankInfo.branchName || '',
-      depositType: bankInfo.depositType || '1',
-      accountNumber: bankInfo.accountNumber || '',
-      accountHolder: bankInfo.accountHolder || '',
+      bankCode: bi.bankCode || bi.bankName || createFilters.senderBankCode,
+      bankName: acctPayload.name || '',
+      branchCode: bi.branchCode || bi.branchName || '',
+      branchName: '',
+      depositType: bi.accountType === '当座' ? '2' : '1',
+      accountNumber: bi.accountNo || '',
+      accountHolder: bi.holder || '',
       items
     })
     
@@ -541,7 +543,7 @@ function getDepositTypeName(type: string): string {
 
 <style scoped>
 .page {
-  padding: 20px;
+  padding: 16px 20px;
 }
 
 .page-header {
@@ -603,6 +605,20 @@ function getDepositTypeName(type: string): string {
 }
 
 /* 弹窗样式 */
+:deep(.create-dialog .el-dialog) {
+  border-radius: 8px;
+}
+:deep(.create-dialog .el-dialog__header) {
+  border-bottom: 1px solid #e4e7ed;
+  padding: 16px 20px;
+  margin: 0;
+}
+:deep(.create-dialog .el-dialog__body) {
+  padding: 16px 20px;
+  max-height: calc(100vh - 180px);
+  overflow-y: auto;
+}
+
 .dialog-filters {
   margin-bottom: 16px;
 }
@@ -610,36 +626,37 @@ function getDepositTypeName(type: string): string {
 .filter-section {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
-  margin-bottom: 12px;
+  gap: 12px;
+  margin-bottom: 10px;
   align-items: flex-end;
 }
 
 .filter-select-wide {
-  width: 300px;
+  width: 320px;
 }
 
 .filter-select {
-  width: 180px;
+  width: 200px;
 }
 
 .filter-date {
-  width: 140px;
+  width: 150px;
 }
 
 .dialog-footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid #e5e7eb;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #e4e7ed;
 }
 
 .summary {
   display: flex;
-  gap: 24px;
+  gap: 20px;
   font-size: 14px;
+  color: #606266;
 }
 
 .summary-amount {
@@ -661,15 +678,7 @@ function getDepositTypeName(type: string): string {
 :deep(.el-table th.el-table__cell .cell) {
   color: #fff;
 }
-
-:deep(.create-dialog .el-dialog__body) {
-  padding-top: 10px;
-}
 </style>
-
-
-
-
 
 
 
