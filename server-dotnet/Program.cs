@@ -753,16 +753,24 @@ CREATE TABLE IF NOT EXISTS warehouse_sequences (
             try { await Server.Domain.SchemasService.SaveAndActivate(ds, "scheduler_task", doc.RootElement, null); } catch { }
         }
 
-        // Ensure ai.agentSkills menu exists
-        await using (var menuCmd = conn2.CreateCommand())
-        {
-            menuCmd.CommandText = @"INSERT INTO permission_menus (module_code, menu_key, menu_name, menu_path, caps_required, display_order)
-VALUES ('system', 'ai.agentSkills', '{""ja"":""AI技能"",""zh"":""AI技能"",""en"":""AI Skills""}'::jsonb, '/ai/agent-skills', ARRAY['ai:scenarios'], 9)
-ON CONFLICT (menu_key) DO NOTHING";
-            try { await menuCmd.ExecuteNonQueryAsync(); } catch { }
-        }
     }
     catch { }
+});
+
+// Always ensure ai.agentSkills menu exists (not gated by YANXIA_RUN_MIGRATE)
+app.Lifetime.ApplicationStarted.Register(async () =>
+{
+    try
+    {
+        var ds = app.Services.GetRequiredService<NpgsqlDataSource>();
+        await using var conn = await ds.OpenConnectionAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"INSERT INTO permission_menus (module_code, menu_key, menu_name, menu_path, caps_required, display_order)
+VALUES ('system', 'ai.agentSkills', '{""ja"":""AI技能"",""zh"":""AI技能"",""en"":""AI Skills""}'::jsonb, '/ai/agent-skills', ARRAY['ai:scenarios'], 9)
+ON CONFLICT (menu_key) DO NOTHING";
+        await cmd.ExecuteNonQueryAsync();
+    }
+    catch (Exception ex) { Console.WriteLine("[startup] agentSkills menu init: " + ex.Message); }
 });
 
 if (runMigrate)
