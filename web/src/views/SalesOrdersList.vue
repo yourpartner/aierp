@@ -179,12 +179,20 @@
       <!-- 受注編集ダイアログ -->
       <el-dialog
         v-model="editDialogVisible"
-        title="受注編集"
         width="1100px"
         :style="{ maxWidth: '96vw' }"
         destroy-on-close
         class="edit-so-dialog"
       >
+        <template #header>
+          <div class="page-header">
+            <div class="page-header-title">受注編集</div>
+            <div class="page-actions">
+              <el-button @click="editDialogVisible = false">キャンセル</el-button>
+              <el-button type="primary" :loading="editFormRef?.saving" @click="editFormRef?.save()">保存</el-button>
+            </div>
+          </div>
+        </template>
         <SalesOrderForm
           ref="editFormRef"
           dialog-mode
@@ -192,12 +200,6 @@
           @saved="onEditSaved"
           @cancel="editDialogVisible = false"
         />
-        <template #footer>
-          <div class="dialog-footer">
-            <el-button @click="editDialogVisible = false">キャンセル</el-button>
-            <el-button type="primary" :loading="editFormRef?.saving" @click="editFormRef?.save()">保存</el-button>
-          </div>
-        </template>
       </el-dialog>
 
       <!-- 创建纳品书对话框 -->
@@ -223,13 +225,27 @@
       <!-- 受注登録ダイアログ（ウィザード形式） -->
       <el-dialog
         v-model="createVisible"
-        :title="createStep === 0 ? '受注登録 - ファイル読み込み' : '受注登録'"
         :width="createStep === 0 ? '560px' : '1100px'"
         :style="{ maxWidth: '96vw' }"
         destroy-on-close
         class="create-so-dialog"
         @close="resetCreateDialog"
       >
+        <template #header>
+          <div class="page-header">
+            <div class="page-header-title">{{ createStep === 0 ? '受注登録 - ファイル読み込み' : '受注登録' }}</div>
+            <div class="page-actions">
+              <el-button @click="createVisible = false">キャンセル</el-button>
+              <template v-if="createStep === 0">
+                <el-button type="primary" @click="skipUpload">手動で入力</el-button>
+              </template>
+              <template v-else>
+                <el-button type="primary" :loading="createFormRef?.saving" @click="createFormRef?.save()">保存</el-button>
+              </template>
+            </div>
+          </div>
+        </template>
+
         <!-- Step 0: ファイルアップロード -->
         <div v-if="createStep === 0" class="upload-step">
           <div
@@ -270,18 +286,6 @@
           @saved="onCreateSaved"
           @cancel="createVisible = false"
         />
-
-        <template #footer>
-          <div class="dialog-footer">
-            <el-button @click="createVisible = false">キャンセル</el-button>
-            <template v-if="createStep === 0">
-              <el-button type="primary" @click="skipUpload">手動で入力</el-button>
-            </template>
-            <template v-else>
-              <el-button type="primary" :loading="createFormRef?.saving" @click="createFormRef?.save()">保存</el-button>
-            </template>
-          </div>
-        </template>
       </el-dialog>
 
       <div class="page-pagination">
@@ -949,7 +953,48 @@ async function openDetail(row: any) {
   flex: 1;
 }
 
-/* 纳品书创建弹窗样式 */
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+.page-header-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+.page-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 受注編集ダイアログ */
+.edit-so-dialog :deep(.el-dialog__header) {
+  border-bottom: 1px solid #e4e7ed;
+  padding: 14px 20px;
+  margin-right: 0;
+}
+.edit-so-dialog :deep(.el-dialog__body) {
+  padding: 20px 24px;
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.create-so-dialog :deep(.el-dialog__header) {
+  border-bottom: 1px solid #e4e7ed;
+  padding: 14px 20px;
+  margin-right: 0;
+}
+.create-so-dialog :deep(.el-dialog__body) {
+  padding: 20px 24px;
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+/* 纳品书创建弹窗様式 */
 .delivery-dialog :deep(.el-dialog__body) {
   padding: 20px 24px;
   overflow: visible;
