@@ -77,7 +77,7 @@
     <el-dialog
       v-model="createDialogVisible"
       :title="labels.createTitle"
-      width="95%"
+      width="860px"
       append-to-body
       destroy-on-close
       class="create-dialog"
@@ -188,15 +188,6 @@
         </el-table-column>
       </el-table>
 
-      <!-- AI 建议区域 -->
-      <div class="ai-suggestion" v-if="aiSuggestion">
-        <el-alert :title="labels.aiSuggestion" type="info" :closable="false">
-          <template #default>
-            <div class="ai-content">{{ aiSuggestion }}</div>
-          </template>
-        </el-alert>
-      </div>
-
       <!-- 汇总和操作 -->
       <div class="dialog-footer">
         <div class="summary">
@@ -232,7 +223,7 @@ const labels = section(
     paymentDateLabel: '', selectDate: '', postingDate: '', dueDate: '', search: '',
     payee: '', accountName: '', dueDateCol: '', amount: '', remarks: '', voucherNo: '',
     selectedCount: '', totalAmountLabel: '', cancel: '', createFile: '',
-    aiSuggestion: '', noData: ''
+    noData: ''
   },
   (msg) => ({
     title: msg.fbPayment?.title || '自動支払',
@@ -271,7 +262,6 @@ const labels = section(
     totalAmountLabel: msg.fbPayment?.totalAmountLabel || '合計金額',
     cancel: msg.common?.cancel || 'キャンセル',
     createFile: msg.fbPayment?.createFile || '自動支払ファイル提案',
-    aiSuggestion: msg.fbPayment?.aiSuggestion || 'AI 提案',
     noData: msg.common?.noData || 'データなし'
   })
 )
@@ -293,8 +283,6 @@ const debtTableRef = ref<any>(null)
 const pendingDebts = ref<any[]>([])
 const debtLoading = ref(false)
 const selectedItems = ref<any[]>([])
-const aiSuggestion = ref('')
-
 const createFilters = reactive({
   accountCodes: [] as string[],
   senderBankCode: '',
@@ -414,7 +402,6 @@ function openCreateDialog() {
   createDialogVisible.value = true
   pendingDebts.value = []
   selectedItems.value = []
-  aiSuggestion.value = ''
 }
 
 // 加载待支付债务
@@ -435,59 +422,11 @@ async function loadPendingDebts() {
     }
     const r = await api.post('/fb-payment/pending-debts', params)
     pendingDebts.value = r.data?.data || []
-    
-    // AI 建议：检测异常
-    generateAiSuggestion()
   } catch (e) {
     console.error('加载待支付债务失败', e)
   } finally {
     debtLoading.value = false
   }
-}
-
-// 生成 AI 建议
-function generateAiSuggestion() {
-  if (pendingDebts.value.length === 0) {
-    aiSuggestion.value = ''
-    return
-  }
-  
-  const suggestions: string[] = []
-  
-  // 检测重复支付风险
-  const payeeGroups = new Map<string, any[]>()
-  pendingDebts.value.forEach(item => {
-    const payee = item.vendorName || item.employeeName || 'unknown'
-    if (!payeeGroups.has(payee)) payeeGroups.set(payee, [])
-    payeeGroups.get(payee)!.push(item)
-  })
-  
-  payeeGroups.forEach((items, payee) => {
-    if (items.length > 3) {
-      suggestions.push(`「${payee}」への支払いが ${items.length} 件あります。まとめて処理することを推奨します。`)
-    }
-  })
-  
-  // 检测大额支付
-  const largePayments = pendingDebts.value.filter(item => (item.residualAmount || item.amount) > 1000000)
-  if (largePayments.length > 0) {
-    suggestions.push(`100万円以上の高額支払いが ${largePayments.length} 件あります。承認フローをご確認ください。`)
-  }
-  
-  // 检测过期支付
-  const today = new Date().toISOString().slice(0, 10)
-  const overduePayments = pendingDebts.value.filter(item => item.dueDate && item.dueDate < today)
-  if (overduePayments.length > 0) {
-    suggestions.push(`支払期限を過ぎた債務が ${overduePayments.length} 件あります。優先的に処理してください。`)
-  }
-  
-  // 检测银行信息缺失
-  const missingBankInfo = pendingDebts.value.filter(item => !item.bankCode || !item.accountNumber)
-  if (missingBankInfo.length > 0) {
-    suggestions.push(`${missingBankInfo.length} 件の支払先で銀行口座情報が不足しています。取引先マスタをご確認ください。`)
-  }
-  
-  aiSuggestion.value = suggestions.join(' ')
 }
 
 // 选择变更
@@ -677,24 +616,15 @@ function getDepositTypeName(type: string): string {
 }
 
 .filter-select-wide {
-  width: 400px;
+  width: 300px;
 }
 
 .filter-select {
-  width: 200px;
+  width: 180px;
 }
 
 .filter-date {
-  width: 150px;
-}
-
-.ai-suggestion {
-  margin-top: 16px;
-}
-
-.ai-content {
-  font-size: 13px;
-  line-height: 1.6;
+  width: 140px;
 }
 
 .dialog-footer {
