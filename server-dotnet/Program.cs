@@ -773,6 +773,21 @@ ON CONFLICT (menu_key) DO NOTHING";
     catch (Exception ex) { Console.WriteLine("[startup] agentSkills menu init: " + ex.Message); }
 });
 
+app.Lifetime.ApplicationStarted.Register(async () =>
+{
+    try
+    {
+        var ds = app.Services.GetRequiredService<NpgsqlDataSource>();
+        await using var conn = await ds.OpenConnectionAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"INSERT INTO permission_menus (module_code, menu_key, menu_name, menu_path, caps_required, display_order)
+VALUES ('hr', 'hr.withholdingSlip', '{""ja"":""源泉徴収票"",""zh"":""源泉徴収票"",""en"":""Withholding Tax Certificate""}'::jsonb, '/hr/withholding-slip', ARRAY['payroll:view'], 15)
+ON CONFLICT (menu_key) DO NOTHING";
+        await cmd.ExecuteNonQueryAsync();
+    }
+    catch (Exception ex) { Console.WriteLine("[startup] withholdingSlip menu init: " + ex.Message); }
+});
+
 if (runMigrate)
 {
 // Additional fallback: create inventory/material tables if the main migration failed (idempotent).

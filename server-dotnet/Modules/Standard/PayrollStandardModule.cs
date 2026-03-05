@@ -37,6 +37,7 @@ public class PayrollStandardModule : ModuleBase
     {
         app.MapHrPayrollModule();
         app.MapWageLedgerModule();
+        app.MapWithholdingSlipModule();
     }
 }
 
