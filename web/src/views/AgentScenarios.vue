@@ -434,17 +434,15 @@ function buildMetadataFromSimple(trigger: string, action: string): any {
   const metadata: any = {}
   const matcher: any = {}
   
-  // triggerテキストからmatcherを推定
   const triggerLower = trigger.toLowerCase()
   
-  // ファイル種別の推定
-  if (triggerLower.includes('发票') || triggerLower.includes('請求書') || triggerLower.includes('invoice')) {
+  if (triggerLower.includes('請求書') || triggerLower.includes('invoice')) {
     matcher.contentContains = ['請求書', '税額', 'invoice']
   }
-  if (triggerLower.includes('收据') || triggerLower.includes('領収書') || triggerLower.includes('receipt')) {
+  if (triggerLower.includes('領収書') || triggerLower.includes('receipt')) {
     matcher.contentContains = [...(matcher.contentContains || []), '領収書', 'receipt']
   }
-  if (triggerLower.includes('图片') || triggerLower.includes('画像') || triggerLower.includes('アップロード') || triggerLower.includes('上传')) {
+  if (triggerLower.includes('画像') || triggerLower.includes('アップロード') || triggerLower.includes('upload')) {
     matcher.mimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
   }
   
@@ -464,12 +462,10 @@ function buildMetadataFromSimple(trigger: string, action: string): any {
 function extractKeywords(text: string): string[] {
   const keywords: string[] = []
   const patterns = [
-    /发票/g, /收据/g, /报销/g, /凭证/g,
-    /订单/g, /销售/g, /采购/g,
-    /交通/g, /餐饮/g, /会议/g,
     /請求書/g, /領収書/g, /精算/g, /仕訳/g,
     /受注/g, /売上/g, /仕入/g,
-    /交通費/g, /飲食/g, /会議費/g
+    /交通費/g, /飲食/g, /会議費/g,
+    /経費/g, /伝票/g, /勘定/g
   ]
   patterns.forEach(p => {
     const match = text.match(p)
@@ -482,37 +478,37 @@ function inferToolHints(action: string): string[] {
   const hints: string[] = []
   const actionLower = action.toLowerCase()
   
-  if (actionLower.includes('凭证') || actionLower.includes('仕訳') || actionLower.includes('voucher')) {
+  if (actionLower.includes('仕訳') || actionLower.includes('伝票') || actionLower.includes('voucher')) {
     hints.push('create_voucher')
   }
-  if (actionLower.includes('识别') || actionLower.includes('認識') || actionLower.includes('提取') || actionLower.includes('抽出') || actionLower.includes('解析')) {
+  if (actionLower.includes('認識') || actionLower.includes('抽出') || actionLower.includes('解析')) {
     hints.push('extract_invoice_data')
   }
-  if (actionLower.includes('订单') || actionLower.includes('受注') || actionLower.includes('order')) {
+  if (actionLower.includes('受注') || actionLower.includes('order')) {
     hints.push('create_sales_order')
   }
-  if (actionLower.includes('客户') || actionLower.includes('得意先')) {
+  if (actionLower.includes('得意先') || actionLower.includes('顧客')) {
     hints.push('lookup_customer')
   }
-  if (actionLower.includes('物料') || actionLower.includes('品目')) {
+  if (actionLower.includes('品目') || actionLower.includes('材料')) {
     hints.push('lookup_material')
   }
-  if (actionLower.includes('科目') || actionLower.includes('勘定科目')) {
+  if (actionLower.includes('勘定科目') || actionLower.includes('科目')) {
     hints.push('lookup_account')
   }
-  if (actionLower.includes('发票登记') || actionLower.includes('インボイス')) {
+  if (actionLower.includes('インボイス') || actionLower.includes('適格請求書')) {
     hints.push('verify_invoice_registration')
   }
-  if (actionLower.includes('会计期间') || actionLower.includes('会計期間')) {
+  if (actionLower.includes('会計期間') || actionLower.includes('期間')) {
     hints.push('check_accounting_period')
   }
-  if (actionLower.includes('凭证号') || actionLower.includes('伝票番号')) {
+  if (actionLower.includes('伝票番号')) {
     hints.push('get_voucher_by_number')
   }
-  if (actionLower.includes('取引先') || actionLower.includes('业务伙伴') || actionLower.includes('business partner')) {
+  if (actionLower.includes('取引先') || actionLower.includes('business partner')) {
     hints.push('create_business_partner')
   }
-  if (actionLower.includes('网址') || actionLower.includes('url') || actionLower.includes('website') || actionLower.includes('网站')) {
+  if (actionLower.includes('url') || actionLower.includes('website')) {
     hints.push('fetch_webpage')
   }
   
@@ -771,6 +767,12 @@ onMounted(loadScenarios)
   display: flex;
   gap: 8px;
   margin-left: 16px;
+}
+
+/* ダイアログボディ溢れ防止 */
+.agent-scenarios :deep(.el-dialog__body) {
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
 }
 
 /* 編集フォーム */
