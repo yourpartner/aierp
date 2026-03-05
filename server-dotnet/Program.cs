@@ -37,6 +37,8 @@ using ClosedXML.Excel;
 // - jsonstructures.auth.scopes produces parameterized row-level filters
 // We reference Server.Infrastructure.Auth instead of redefining helpers here.
 
+System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Force backend to listen on port 5179 unless ASPNETCORE_URLS explicitly overrides it.
