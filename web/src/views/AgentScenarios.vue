@@ -1,12 +1,12 @@
 <template>
   <div class="page page-large agent-scenarios">
-    <!-- 快速创建卡片 -->
+    <!-- クイック作成カード -->
     <el-card class="quick-create-card" shadow="hover">
       <div class="quick-create-header">
         <div class="quick-create-icon">✨</div>
         <div class="quick-create-text">
-          <h3>{{ text.tables.agentScenarios.quickCreateTitle || '快速创建场景' }}</h3>
-          <p>{{ text.tables.agentScenarios.quickCreateDesc || '用自然语言描述你想要的功能，AI 会自动配置' }}</p>
+          <h3>{{ text.tables.agentScenarios.quickCreateTitle || 'シナリオを素早く作成' }}</h3>
+          <p>{{ text.tables.agentScenarios.quickCreateDesc || '自然言語で機能を説明すると、AIが自動設定します' }}</p>
         </div>
       </div>
       <div class="quick-create-input">
@@ -14,7 +14,7 @@
           v-model="quickPrompt"
           type="textarea"
           :rows="2"
-          :placeholder="text.tables.agentScenarios.quickPlaceholder || '例如：当用户上传餐饮发票时，自动识别金额并创建会议费凭证'"
+          :placeholder="text.tables.agentScenarios.quickPlaceholder || '例：飲食店の領収書をアップロードすると、自動的に金額を認識して会議費の仕訳を作成'"
           resize="none"
         />
         <el-button 
@@ -25,13 +25,13 @@
           @click="quickCreate"
         >
           <el-icon class="btn-icon"><MagicStick /></el-icon>
-          {{ text.tables.agentScenarios.quickCreateBtn || '智能创建' }}
+          {{ text.tables.agentScenarios.quickCreateBtn || 'AI作成' }}
         </el-button>
       </div>
       
-      <!-- 常用模板 -->
+      <!-- テンプレート -->
       <div class="templates-section">
-        <div class="templates-label">{{ text.tables.agentScenarios.templatesLabel || '或选择常用模板：' }}</div>
+        <div class="templates-label">{{ text.tables.agentScenarios.templatesLabel || 'またはテンプレートを選択：' }}</div>
         <div class="templates-grid">
           <div 
             v-for="tpl in templates" 
@@ -46,12 +46,12 @@
       </div>
     </el-card>
 
-    <!-- 已有场景列表 -->
+    <!-- シナリオ一覧 -->
     <el-card class="scenarios-card">
       <template #header>
         <div class="panel-header">
           <div class="panel-title">
-            {{ text.tables.agentScenarios.listTitle || '已配置的场景' }}
+            {{ text.tables.agentScenarios.listTitle || '設定済みのシナリオ' }}
             <el-tag size="small" type="info">{{ scenarios.length }}</el-tag>
           </div>
           <div class="panel-actions">
@@ -63,8 +63,8 @@
       </template>
 
       <div v-if="scenarios.length === 0 && !loading" class="empty-state">
-        <el-empty :description="text.tables.agentScenarios.emptyDesc || '还没有配置任何场景'">
-          <el-button type="primary" @click="openSimpleCreate">{{ text.tables.agentScenarios.createFirst || '创建第一个场景' }}</el-button>
+        <el-empty :description="text.tables.agentScenarios.emptyDesc || 'シナリオが設定されていません'">
+          <el-button type="primary" @click="openSimpleCreate">{{ text.tables.agentScenarios.createFirst || '最初のシナリオを作成' }}</el-button>
         </el-empty>
       </div>
 
@@ -78,7 +78,7 @@
           <div class="scenario-main">
             <div class="scenario-header">
               <span class="scenario-title">{{ item.title }}</span>
-              <el-tag v-if="!item.isActive" size="small" type="info">{{ text.common.disabled || '已禁用' }}</el-tag>
+              <el-tag v-if="!item.isActive" size="small" type="info">{{ text.common.disabled || '無効' }}</el-tag>
             </div>
             <div class="scenario-desc" v-if="item.description">{{ item.description }}</div>
             <div class="scenario-meta">
@@ -101,7 +101,7 @@
               <el-icon><component :is="item.isActive ? 'VideoPause' : 'VideoPlay'" /></el-icon>
             </el-button>
             <el-popconfirm 
-              :title="text.tables.agentScenarios.deleteConfirm || '确定删除此场景？'" 
+              :title="text.tables.agentScenarios.deleteConfirm || 'このシナリオを削除しますか？'" 
               @confirm="removeScenario(item)"
             >
               <template #reference>
@@ -115,10 +115,10 @@
       </div>
     </el-card>
 
-    <!-- 极简创建/编辑弹窗 -->
+    <!-- 作成/編集ダイアログ -->
     <el-dialog 
       v-model="editor.visible" 
-      :title="editor.isNew ? (text.tables.agentScenarios.createTitle || '创建场景') : (text.tables.agentScenarios.editTitle || '编辑场景')"
+      :title="editor.isNew ? (text.tables.agentScenarios.createTitle || 'シナリオ作成') : (text.tables.agentScenarios.editTitle || 'シナリオ編集')"
       width="600px"
     >
       <el-form 
@@ -127,70 +127,70 @@
         label-position="top" 
         class="simple-form"
       >
-        <!-- 场景名称 -->
+        <!-- シナリオ名 -->
         <el-form-item 
-          :label="text.tables.agentScenarios.fieldName || '场景名称'"
+          :label="text.tables.agentScenarios.fieldName || 'シナリオ名'"
           prop="title"
-          :rules="[{ required: true, message: text.tables.agentScenarios.nameRequired || '请输入场景名称' }]"
+          :rules="[{ required: true, message: text.tables.agentScenarios.nameRequired || 'シナリオ名を入力してください' }]"
         >
           <el-input 
             v-model="form.title" 
-            :placeholder="text.tables.agentScenarios.namePlaceholder || '例如：餐饮发票识别'"
+            :placeholder="text.tables.agentScenarios.namePlaceholder || '例：飲食店領収書の認識'"
             maxlength="60"
             show-word-limit
           />
         </el-form-item>
 
-        <!-- 触发条件 -->
+        <!-- トリガー条件 -->
         <el-form-item 
-          :label="text.tables.agentScenarios.fieldTrigger || '什么时候触发？'"
+          :label="text.tables.agentScenarios.fieldTrigger || 'いつトリガーしますか？'"
           prop="trigger"
         >
           <el-input 
             v-model="form.trigger" 
             type="textarea"
             :rows="2"
-            :placeholder="text.tables.agentScenarios.triggerPlaceholder || '例如：用户上传餐厅收据或发票时'"
+            :placeholder="text.tables.agentScenarios.triggerPlaceholder || '例：ユーザーが領収書や請求書をアップロードした時'"
           />
-          <div class="field-hint">{{ text.tables.agentScenarios.triggerHint || '描述什么情况下应该使用这个场景' }}</div>
+          <div class="field-hint">{{ text.tables.agentScenarios.triggerHint || 'このシナリオを使用する条件を説明' }}</div>
         </el-form-item>
 
-        <!-- 执行动作 -->
+        <!-- 実行アクション -->
         <el-form-item 
-          :label="text.tables.agentScenarios.fieldAction || 'AI 应该做什么？'"
+          :label="text.tables.agentScenarios.fieldAction || 'AIは何をすべきですか？'"
           prop="action"
         >
           <el-input 
             v-model="form.action" 
             type="textarea"
             :rows="3"
-            :placeholder="text.tables.agentScenarios.actionPlaceholder || '例如：识别发票上的金额、日期、店铺名称，然后创建一张会议费的会计凭证'"
+            :placeholder="text.tables.agentScenarios.actionPlaceholder || '例：請求書の金額・日付・店舗名を認識し、会議費の仕訳伝票を作成'"
           />
-          <div class="field-hint">{{ text.tables.agentScenarios.actionHint || '描述 AI 需要完成的具体任务' }}</div>
+          <div class="field-hint">{{ text.tables.agentScenarios.actionHint || 'AIが実行すべき具体的なタスクを記述' }}</div>
         </el-form-item>
 
-        <!-- 高级选项（折叠） -->
+        <!-- 詳細オプション（折りたたみ） -->
         <el-collapse v-model="advancedOpen" class="advanced-collapse">
           <el-collapse-item name="advanced">
             <template #title>
               <span class="advanced-title">
                 <el-icon><Setting /></el-icon>
-                {{ text.tables.agentScenarios.advancedOptions || '高级选项' }}
+                {{ text.tables.agentScenarios.advancedOptions || '詳細オプション' }}
               </span>
             </template>
             <div class="advanced-content">
-              <el-form-item :label="text.tables.agentScenarios.fieldKey || '场景键（唯一标识）'">
+              <el-form-item :label="text.tables.agentScenarios.fieldKey || 'シナリオキー（一意識別子）'">
                 <el-input 
                   v-model="form.scenarioKey" 
                   :disabled="!editor.isNew"
-                  :placeholder="text.tables.agentScenarios.keyPlaceholder || '自动生成，也可手动指定'"
+                  :placeholder="text.tables.agentScenarios.keyPlaceholder || '自動生成、手動指定も可能'"
                 />
               </el-form-item>
               <div class="inline-fields">
-                <el-form-item :label="text.tables.agentScenarios.fieldPriority || '优先级'">
+                <el-form-item :label="text.tables.agentScenarios.fieldPriority || '優先度'">
                   <el-input-number v-model="form.priority" :min="1" :max="999" />
                 </el-form-item>
-                <el-form-item :label="text.tables.agentScenarios.fieldActive || '启用'">
+                <el-form-item :label="text.tables.agentScenarios.fieldActive || '有効'">
                   <el-switch v-model="form.isActive" />
                 </el-form-item>
               </div>
@@ -201,7 +201,7 @@
 
       <template #footer>
         <div class="dialog-footer">
-          <el-button @click="editor.visible = false">{{ text.common.cancel || '取消' }}</el-button>
+          <el-button @click="editor.visible = false">{{ text.common.cancel || 'キャンセル' }}</el-button>
           <el-button type="primary" :loading="editor.saving" @click="saveScenario">
             <el-icon class="btn-icon"><Check /></el-icon>
             {{ text.common.save || '保存' }}
@@ -233,7 +233,7 @@ import {
 
 const { text } = useI18n()
 
-// 状态
+// 状態
 const loading = ref(false)
 const scenarios = ref<AgentScenario[]>([])
 const quickPrompt = ref('')
@@ -241,15 +241,15 @@ const quickLoading = ref(false)
 const advancedOpen = ref<string[]>([])
 const formRef = ref()
 
-// 常用模板
+// テンプレート
 const templates = [
-  { key: 'invoice', icon: '🧾', name: '发票识别', prompt: '当用户上传发票图片时，自动识别发票内容（金额、日期、供应商），并创建对应的会计凭证' },
-  { key: 'receipt', icon: '🍽️', name: '餐饮报销', prompt: '当用户上传餐厅收据时，识别消费金额和店铺信息，创建会议费或交际费凭证' },
-  { key: 'transport', icon: '🚗', name: '交通费', prompt: '当用户上传出租车票、火车票或机票时，识别交通费用并创建旅费凭证' },
-  { key: 'sales', icon: '📦', name: '销售订单', prompt: '当用户用自然语言描述订单需求时（如"给张三公司下10个产品A的订单"），自动创建销售订单' }
+  { key: 'invoice', icon: '🧾', name: '請求書認識', prompt: 'ユーザーが請求書画像をアップロードした時、請求書の内容（金額、日付、仕入先）を自動認識し、対応する仕訳伝票を作成' },
+  { key: 'receipt', icon: '🍽️', name: '飲食費精算', prompt: 'ユーザーが飲食店の領収書をアップロードした時、消費金額と店舗情報を認識し、会議費または交際費の仕訳を作成' },
+  { key: 'transport', icon: '🚗', name: '交通費', prompt: 'ユーザーがタクシー・電車・航空券をアップロードした時、交通費を認識し、旅費の仕訳を作成' },
+  { key: 'sales', icon: '📦', name: '受注', prompt: 'ユーザーが自然言語で注文内容を記述した時（例：「A社にB製品10個の受注」）、自動的に受注伝票を作成' }
 ]
 
-// 编辑器状态
+// エディター状態
 const editor = reactive({
   visible: false,
   isNew: true,
@@ -257,7 +257,7 @@ const editor = reactive({
   originalKey: ''
 })
 
-// 表单
+// フォーム
 const form = reactive({
   scenarioKey: '',
   title: '',
@@ -267,7 +267,7 @@ const form = reactive({
   isActive: true
 })
 
-// 方法
+// メソッド
 function formatDate(value: string | null | undefined) {
   if (!value) return '-'
   return dayjs(value).format('MM-DD HH:mm')
@@ -289,7 +289,7 @@ async function loadScenarios() {
     const resp = await listAgentScenarios(true)
     scenarios.value = (resp.data as AgentScenario[]) || []
   } catch (err: any) {
-    ElMessage.error(err?.response?.data?.error || err?.message || '加载失败')
+    ElMessage.error(err?.response?.data?.error || err?.message || '読み込み失敗')
   } finally {
     loading.value = false
   }
@@ -312,7 +312,7 @@ function openEdit(item: AgentScenario) {
   form.priority = item.priority ?? 100
   form.isActive = item.isActive ?? true
   
-  // 从 instructions 和 description 还原 trigger 和 action
+  // instructionsとdescriptionからtriggerとactionを復元
   form.trigger = extractTrigger(item)
   form.action = item.instructions || item.description || ''
   
@@ -320,19 +320,19 @@ function openEdit(item: AgentScenario) {
 }
 
 function extractTrigger(item: AgentScenario): string {
-  // 尝试从 metadata.matcher 提取触发条件描述
+  // metadata.matcherからトリガー条件を抽出
   const metadata = item.metadata as any
   const matcher = metadata?.matcher
   if (matcher) {
     const parts: string[] = []
     if (matcher.messageContains?.length) {
-      parts.push(`消息包含：${matcher.messageContains.join('、')}`)
+      parts.push(`メッセージに含む：${matcher.messageContains.join('、')}`)
     }
     if (matcher.mimeTypes?.length) {
-      parts.push(`文件类型：${matcher.mimeTypes.join('、')}`)
+      parts.push(`ファイル種別：${matcher.mimeTypes.join('、')}`)
     }
     if (matcher.contentContains?.length) {
-      parts.push(`内容包含：${matcher.contentContains.join('、')}`)
+      parts.push(`内容に含む：${matcher.contentContains.join('、')}`)
     }
     if (parts.length) return parts.join('；')
   }
@@ -347,7 +347,7 @@ async function quickCreate() {
     const resp = await interpretAgentScenario(quickPrompt.value.trim())
     const data = resp.data as ScenarioInterpretResult
     
-    // 填充表单
+    // フォームに入力
     resetForm()
     form.scenarioKey = data.scenarioKey || ''
     form.title = data.title || ''
@@ -360,10 +360,10 @@ async function quickCreate() {
     editor.originalKey = ''
     editor.visible = true
     
-    ElMessage.success(text.value.tables.agentScenarios.generateSuccess || 'AI 已生成配置，请确认后保存')
+    ElMessage.success(text.value.tables.agentScenarios.generateSuccess || 'AIが設定を生成しました。確認後保存してください')
     quickPrompt.value = ''
   } catch (err: any) {
-    ElMessage.error(err?.response?.data?.error || err?.message || '生成失败')
+    ElMessage.error(err?.response?.data?.error || err?.message || '生成失敗')
   } finally {
     quickLoading.value = false
   }
@@ -385,10 +385,10 @@ async function saveScenario() {
   
   editor.saving = true
   try {
-    // 构建完整的场景配置
+    // シナリオ設定を構築
     const scenarioKey = form.scenarioKey.trim() || generateKey(form.title)
     
-    // 从 trigger 和 action 构建 metadata
+    // triggerとactionからmetadataを構築
     const metadata = buildMetadataFromSimple(form.trigger, form.action)
     
     const payload = {
@@ -404,26 +404,26 @@ async function saveScenario() {
     
     if (editor.isNew) {
       await createAgentScenario(payload)
-      ElMessage.success(text.value.common.saved || '保存成功')
+      ElMessage.success(text.value.common.saved || '保存しました')
     } else {
       await updateAgentScenario(editor.originalKey, payload)
-      ElMessage.success(text.value.common.saved || '保存成功')
+      ElMessage.success(text.value.common.saved || '保存しました')
     }
     
     editor.visible = false
     await loadScenarios()
   } catch (err: any) {
-    ElMessage.error(err?.response?.data?.error || err?.message || '保存失败')
+    ElMessage.error(err?.response?.data?.error || err?.message || '保存失敗')
   } finally {
     editor.saving = false
   }
 }
 
 function generateKey(title: string): string {
-  // 从标题生成 key
+  // タイトルからキーを生成
   const base = title
     .toLowerCase()
-    .replace(/[^\w\u4e00-\u9fa5]/g, '.')
+    .replace(/[^\w\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fa5]/g, '.')
     .replace(/\.+/g, '.')
     .replace(/^\.|\.$/, '')
     .slice(0, 32)
@@ -434,21 +434,21 @@ function buildMetadataFromSimple(trigger: string, action: string): any {
   const metadata: any = {}
   const matcher: any = {}
   
-  // 从 trigger 文本推断 matcher
+  // triggerテキストからmatcherを推定
   const triggerLower = trigger.toLowerCase()
   
-  // 文件类型推断
-  if (triggerLower.includes('发票') || triggerLower.includes('invoice')) {
-    matcher.contentContains = ['发票', '税额', 'invoice']
+  // ファイル種別の推定
+  if (triggerLower.includes('发票') || triggerLower.includes('請求書') || triggerLower.includes('invoice')) {
+    matcher.contentContains = ['請求書', '税額', 'invoice']
   }
-  if (triggerLower.includes('收据') || triggerLower.includes('receipt')) {
-    matcher.contentContains = [...(matcher.contentContains || []), '收据', 'receipt']
+  if (triggerLower.includes('收据') || triggerLower.includes('領収書') || triggerLower.includes('receipt')) {
+    matcher.contentContains = [...(matcher.contentContains || []), '領収書', 'receipt']
   }
-  if (triggerLower.includes('图片') || triggerLower.includes('上传')) {
+  if (triggerLower.includes('图片') || triggerLower.includes('画像') || triggerLower.includes('アップロード') || triggerLower.includes('上传')) {
     matcher.mimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
   }
   
-  // 消息关键词
+  // メッセージキーワード
   const keywords = extractKeywords(trigger)
   if (keywords.length) {
     matcher.messageContains = keywords
@@ -466,7 +466,10 @@ function extractKeywords(text: string): string[] {
   const patterns = [
     /发票/g, /收据/g, /报销/g, /凭证/g,
     /订单/g, /销售/g, /采购/g,
-    /交通/g, /餐饮/g, /会议/g
+    /交通/g, /餐饮/g, /会议/g,
+    /請求書/g, /領収書/g, /精算/g, /仕訳/g,
+    /受注/g, /売上/g, /仕入/g,
+    /交通費/g, /飲食/g, /会議費/g
   ]
   patterns.forEach(p => {
     const match = text.match(p)
@@ -482,7 +485,7 @@ function inferToolHints(action: string): string[] {
   if (actionLower.includes('凭证') || actionLower.includes('仕訳') || actionLower.includes('voucher')) {
     hints.push('create_voucher')
   }
-  if (actionLower.includes('识别') || actionLower.includes('提取') || actionLower.includes('解析')) {
+  if (actionLower.includes('识别') || actionLower.includes('認識') || actionLower.includes('提取') || actionLower.includes('抽出') || actionLower.includes('解析')) {
     hints.push('extract_invoice_data')
   }
   if (actionLower.includes('订单') || actionLower.includes('受注') || actionLower.includes('order')) {
@@ -522,20 +525,20 @@ async function toggleActive(item: AgentScenario) {
       ...item,
       isActive: !item.isActive
     })
-    ElMessage.success(item.isActive ? '已禁用' : '已启用')
+    ElMessage.success(item.isActive ? '無効にしました' : '有効にしました')
     await loadScenarios()
   } catch (err: any) {
-    ElMessage.error(err?.response?.data?.error || err?.message || '操作失败')
+    ElMessage.error(err?.response?.data?.error || err?.message || '操作失敗')
   }
 }
 
 async function removeScenario(item: AgentScenario) {
   try {
     await deleteAgentScenario(item.scenarioKey)
-    ElMessage.success(text.value.common.deleted || '已删除')
+    ElMessage.success(text.value.common.deleted || '削除しました')
     await loadScenarios()
   } catch (err: any) {
-    ElMessage.error(err?.response?.data?.error || err?.message || '删除失败')
+    ElMessage.error(err?.response?.data?.error || err?.message || '削除失敗')
   }
 }
 
@@ -551,7 +554,7 @@ onMounted(loadScenarios)
   margin: 0 auto;
 }
 
-/* 快速创建卡片 */
+/* クイック作成カード */
 .quick-create-card {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border: none;
@@ -624,7 +627,7 @@ onMounted(loadScenarios)
   margin-right: 6px;
 }
 
-/* 模板区域 */
+/* テンプレートエリア */
 .templates-section {
   margin-top: 24px;
   padding-top: 20px;
@@ -670,7 +673,7 @@ onMounted(loadScenarios)
   font-weight: 500;
 }
 
-/* 场景列表卡片 */
+/* シナリオ一覧カード */
 .scenarios-card {
   border-radius: 16px;
 }
@@ -699,7 +702,7 @@ onMounted(loadScenarios)
   padding: 40px 0;
 }
 
-/* 场景列表 */
+/* シナリオリスト */
 .scenarios-list {
   display: flex;
   flex-direction: column;
@@ -770,7 +773,7 @@ onMounted(loadScenarios)
   margin-left: 16px;
 }
 
-/* 简化的编辑表单 */
+/* 編集フォーム */
 .simple-form {
   padding: 0 4px;
 }
@@ -792,7 +795,7 @@ onMounted(loadScenarios)
   color: #9ca3af;
 }
 
-/* 高级选项折叠 */
+/* 詳細オプション折りたたみ */
 .advanced-collapse {
   margin-top: 16px;
   border: 1px dashed #e5e7eb;
@@ -827,14 +830,14 @@ onMounted(loadScenarios)
   gap: 16px;
 }
 
-/* 弹窗底部 */
+/* ダイアログフッター */
 .dialog-footer {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
 }
 
-/* 响应式 */
+/* レスポンシブ */
 @media (max-width: 640px) {
   .templates-grid {
     grid-template-columns: repeat(2, 1fr);

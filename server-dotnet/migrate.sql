@@ -2922,3 +2922,12 @@ ALTER TABLE stf_juchuu_detail  ADD COLUMN IF NOT EXISTS settlement_rate NUMERIC;
 ALTER TABLE stf_juchuu_detail  ADD COLUMN IF NOT EXISTS deduction_rate NUMERIC;
 ALTER TABLE stf_hatchuu_detail ADD COLUMN IF NOT EXISTS settlement_rate NUMERIC;
 ALTER TABLE stf_hatchuu_detail ADD COLUMN IF NOT EXISTS deduction_rate NUMERIC;
+
+-- AI技能メニューを追加
+INSERT INTO permission_menus (module_code, menu_key, menu_name, menu_path, caps_required, display_order)
+VALUES ('system', 'ai.agentSkills', '{"ja":"AI技能","zh":"AI技能","en":"AI Skills"}', '/ai/agent-skills', ARRAY['ai:scenarios'], 9)
+ON CONFLICT (menu_key) DO UPDATE SET
+  menu_name = EXCLUDED.menu_name,
+  menu_path = EXCLUDED.menu_path,
+  caps_required = EXCLUDED.caps_required,
+  display_order = EXCLUDED.display_order;

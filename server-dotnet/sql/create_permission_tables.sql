@@ -400,7 +400,8 @@ INSERT INTO permission_menus (module_code, menu_key, menu_name, menu_path, caps_
 ('system', 'notif.logs', '{"ja":"通知ログ","zh":"通知日志","en":"Notification Logs"}', '/notifications/logs', ARRAY['workflow:read'], 6),
 ('system', 'ai.workflowRules', '{"ja":"ワークフロールール","zh":"工作流规则","en":"Workflow Rules"}', '/workflow/rules', ARRAY['workflow:manage'], 7),
 ('system', 'ai.agentScenarios', '{"ja":"AIシナリオ","zh":"AI场景","en":"AI Scenarios"}', '/ai/agent-scenarios', ARRAY['ai:scenarios'], 8),
-('system', 'user.management', '{"ja":"ユーザー管理","zh":"用户管理","en":"User Management"}', '/system/users', ARRAY['user:manage'], 9),
+('system', 'ai.agentSkills', '{"ja":"AI技能","zh":"AI技能","en":"AI Skills"}', '/ai/agent-skills', ARRAY['ai:scenarios'], 9),
+('system', 'user.management', '{"ja":"ユーザー管理","zh":"用户管理","en":"User Management"}', '/system/users', ARRAY['user:manage'], 10),
 ('system', 'role.management', '{"ja":"ロール管理","zh":"角色管理","en":"Role Management"}', '/system/roles', ARRAY['roles:manage'], 10)
 ON CONFLICT (menu_key) DO UPDATE SET
   module_code = EXCLUDED.module_code,

@@ -4,21 +4,21 @@
     <el-card class="header-card" :body-style="{ padding: '16px 20px' }">
       <div class="page-header">
         <div class="page-header-left">
-          <span class="page-header-title">AI 技能管理</span>
+          <span class="page-header-title">AI技能管理</span>
           <el-tag v-if="skills.length > 0" size="small" type="info">{{ skills.length }}</el-tag>
         </div>
         <div class="page-actions">
-          <el-checkbox v-model="showAll" @change="loadSkills">显示已禁用</el-checkbox>
-          <el-button :icon="Refresh" :loading="loading" @click="loadSkills">刷新</el-button>
-          <el-button type="primary" :icon="Plus" @click="openCreate">新建技能</el-button>
+          <el-checkbox v-model="showAll" @change="loadSkills">無効も表示</el-checkbox>
+          <el-button :icon="Refresh" :loading="loading" @click="loadSkills">更新</el-button>
+          <el-button type="primary" :icon="Plus" @click="openCreate">新規作成</el-button>
         </div>
       </div>
     </el-card>
 
     <!-- Empty State -->
     <el-card v-if="skills.length === 0 && !loading" class="empty-card">
-      <el-empty description="还没有配置任何技能">
-        <el-button type="primary" @click="openCreate">创建第一个技能</el-button>
+      <el-empty description="技能が設定されていません">
+        <el-button type="primary" @click="openCreate">最初の技能を作成</el-button>
       </el-empty>
     </el-card>
 
@@ -64,25 +64,25 @@
     <!-- Skill Detail Dialog -->
     <el-dialog
       v-model="detail.visible"
-      :title="detail.isNew ? '新建技能' : `编辑技能 - ${detail.form.name}`"
-      width="90%"
+      :title="detail.isNew ? '技能作成' : `技能編集 - ${detail.form.name}`"
+      width="85%"
       top="3vh"
       destroy-on-close
       class="skill-detail-dialog"
     >
       <el-tabs v-model="detail.activeTab" class="detail-tabs">
         <!-- Tab 1: Basic -->
-        <el-tab-pane label="基本信息" name="basic">
+        <el-tab-pane label="基本情報" name="basic">
           <el-form label-position="top" class="detail-form">
             <div class="form-grid">
-              <el-form-item label="技能键 (skill_key)" required>
-                <el-input v-model="detail.form.skillKey" :disabled="!detail.isNew" placeholder="例如：invoice.booking" />
+              <el-form-item label="技能キー (skill_key)" required>
+                <el-input v-model="detail.form.skillKey" :disabled="!detail.isNew" placeholder="例：invoice.booking" />
               </el-form-item>
               <el-form-item label="名称" required>
-                <el-input v-model="detail.form.name" placeholder="技能名称" maxlength="120" show-word-limit />
+                <el-input v-model="detail.form.name" placeholder="技能名" maxlength="120" show-word-limit />
               </el-form-item>
-              <el-form-item label="类别">
-                <el-select v-model="detail.form.category" placeholder="选择类别">
+              <el-form-item label="カテゴリ">
+                <el-select v-model="detail.form.category" placeholder="カテゴリを選択">
                   <el-option label="general" value="general" />
                   <el-option label="finance" value="finance" />
                   <el-option label="hr" value="hr" />
@@ -90,25 +90,25 @@
                   <el-option label="approval" value="approval" />
                 </el-select>
               </el-form-item>
-              <el-form-item label="图标">
-                <el-input v-model="detail.form.icon" placeholder="例如：📊 或 emoji" />
+              <el-form-item label="アイコン">
+                <el-input v-model="detail.form.icon" placeholder="例：📊 等の絵文字" />
               </el-form-item>
-              <el-form-item label="优先级">
+              <el-form-item label="優先度">
                 <el-input-number v-model="detail.form.priority" :min="1" :max="9999" />
               </el-form-item>
-              <el-form-item label="启用">
+              <el-form-item label="有効">
                 <el-switch v-model="detail.form.isActive" />
               </el-form-item>
             </div>
-            <el-form-item label="描述">
-              <el-input v-model="detail.form.description" type="textarea" :rows="2" placeholder="技能描述" />
+            <el-form-item label="説明">
+              <el-input v-model="detail.form.description" type="textarea" :rows="2" placeholder="技能の説明" />
             </el-form-item>
-            <el-form-item label="触发条件 (triggers JSON)">
+            <el-form-item label="トリガー条件 (triggers JSON)">
               <el-input
                 v-model="detail.form.triggersText"
                 type="textarea"
                 :rows="5"
-                placeholder='{"keywords": ["发票", "记账"], "intents": ["invoice_booking"]}'
+                placeholder='{"keywords": ["請求書", "仕訳"], "intents": ["invoice_booking"]}'
                 class="json-textarea"
               />
             </el-form-item>
@@ -116,32 +116,32 @@
         </el-tab-pane>
 
         <!-- Tab 2: Prompts -->
-        <el-tab-pane label="Prompt 配置" name="prompts">
+        <el-tab-pane label="プロンプト設定" name="prompts">
           <el-form label-position="top" class="detail-form">
-            <el-form-item label="System Prompt">
+            <el-form-item label="システムプロンプト">
               <el-input
                 v-model="detail.form.systemPrompt"
                 type="textarea"
                 :rows="8"
-                placeholder="系统提示词..."
+                placeholder="システムプロンプトを入力..."
                 class="prompt-textarea"
               />
             </el-form-item>
-            <el-form-item label="Extraction Prompt">
+            <el-form-item label="抽出プロンプト">
               <el-input
                 v-model="detail.form.extractionPrompt"
                 type="textarea"
                 :rows="6"
-                placeholder="数据提取提示词..."
+                placeholder="データ抽出プロンプトを入力..."
                 class="prompt-textarea"
               />
             </el-form-item>
-            <el-form-item label="Followup Prompt">
+            <el-form-item label="フォローアッププロンプト">
               <el-input
                 v-model="detail.form.followupPrompt"
                 type="textarea"
                 :rows="4"
-                placeholder="跟进提示词..."
+                placeholder="フォローアッププロンプトを入力..."
                 class="prompt-textarea"
               />
             </el-form-item>
@@ -149,29 +149,29 @@
         </el-tab-pane>
 
         <!-- Tab 3: Tools -->
-        <el-tab-pane label="工具配置" name="tools">
+        <el-tab-pane label="ツール設定" name="tools">
           <el-form label-position="top" class="detail-form">
-            <el-form-item label="启用的工具 (enabled_tools)">
+            <el-form-item label="有効なツール (enabled_tools)">
               <el-select
                 v-model="detail.form.enabledTools"
                 multiple
                 filterable
                 allow-create
                 default-first-option
-                placeholder="输入工具名并回车添加"
+                placeholder="ツール名を入力してEnterで追加"
                 style="width: 100%"
               >
                 <el-option v-for="t in commonTools" :key="t" :label="t" :value="t" />
               </el-select>
             </el-form-item>
-            <div class="hint-text">已配置 {{ detail.form.enabledTools.length }} 个工具</div>
+            <div class="hint-text">設定済み {{ detail.form.enabledTools.length }} 個のツール</div>
           </el-form>
         </el-tab-pane>
 
         <!-- Tab 4: Model Config -->
-        <el-tab-pane label="模型配置" name="model">
+        <el-tab-pane label="モデル設定" name="model">
           <el-form label-position="top" class="detail-form">
-            <el-form-item label="模型配置 (modelConfig JSON)">
+            <el-form-item label="モデル設定 (modelConfig JSON)">
               <el-input
                 v-model="detail.form.modelConfigText"
                 type="textarea"
@@ -184,9 +184,9 @@
         </el-tab-pane>
 
         <!-- Tab 5: Behavior -->
-        <el-tab-pane label="行为配置" name="behavior">
+        <el-tab-pane label="動作設定" name="behavior">
           <el-form label-position="top" class="detail-form">
-            <el-form-item label="行为配置 (behaviorConfig JSON)">
+            <el-form-item label="動作設定 (behaviorConfig JSON)">
               <el-input
                 v-model="detail.form.behaviorConfigText"
                 type="textarea"
@@ -199,27 +199,27 @@
         </el-tab-pane>
 
         <!-- Tab 6: Rules -->
-        <el-tab-pane label="业务规则" name="rules">
+        <el-tab-pane label="ビジネスルール" name="rules">
           <div class="sub-section">
             <div class="sub-header">
-              <span>规则列表</span>
-              <el-button type="primary" size="small" :icon="Plus" @click="openRuleEditor(null)">添加规则</el-button>
+              <span>ルール一覧</span>
+              <el-button type="primary" size="small" :icon="Plus" @click="openRuleEditor(null)">ルール追加</el-button>
             </div>
             <el-table :data="detail.rules" stripe size="small" v-loading="detail.rulesLoading" class="sub-table">
               <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip />
               <el-table-column prop="ruleKey" label="Key" width="140" show-overflow-tooltip />
-              <el-table-column prop="priority" label="优先级" width="80" align="center" />
-              <el-table-column prop="isActive" label="启用" width="70" align="center">
+              <el-table-column prop="priority" label="優先度" width="80" align="center" />
+              <el-table-column prop="isActive" label="有効" width="70" align="center">
                 <template #default="{ row }">
-                  <el-tag :type="row.isActive ? 'success' : 'info'" size="small">{{ row.isActive ? '是' : '否' }}</el-tag>
+                  <el-tag :type="row.isActive ? 'success' : 'info'" size="small">{{ row.isActive ? 'はい' : 'いいえ' }}</el-tag>
                 </template>
               </el-table-column>
               <el-table-column label="操作" width="140" fixed="right">
                 <template #default="{ row }">
-                  <el-button size="small" type="primary" link @click="openRuleEditor(row)">编辑</el-button>
-                  <el-popconfirm title="确定删除此规则？" @confirm="deleteRule(row)">
+                  <el-button size="small" type="primary" link @click="openRuleEditor(row)">編集</el-button>
+                  <el-popconfirm title="このルールを削除しますか？" @confirm="deleteRule(row)">
                     <template #reference>
-                      <el-button size="small" type="danger" link>删除</el-button>
+                      <el-button size="small" type="danger" link>削除</el-button>
                     </template>
                   </el-popconfirm>
                 </template>
@@ -229,29 +229,29 @@
         </el-tab-pane>
 
         <!-- Tab 7: Examples -->
-        <el-tab-pane label="示例库" name="examples">
+        <el-tab-pane label="サンプル" name="examples">
           <div class="sub-section">
             <div class="sub-header">
-              <span>示例列表</span>
-              <el-button type="primary" size="small" :icon="Plus" @click="openExampleEditor(null)">添加示例</el-button>
+              <span>サンプル一覧</span>
+              <el-button type="primary" size="small" :icon="Plus" @click="openExampleEditor(null)">サンプル追加</el-button>
             </div>
             <el-table :data="detail.examples" stripe size="small" v-loading="detail.examplesLoading" class="sub-table">
               <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip />
-              <el-table-column prop="inputType" label="输入类型" width="120" />
-              <el-table-column prop="isActive" label="启用" width="70" align="center">
+              <el-table-column prop="inputType" label="入力タイプ" width="120" />
+              <el-table-column prop="isActive" label="有効" width="70" align="center">
                 <template #default="{ row }">
-                  <el-tag :type="row.isActive ? 'success' : 'info'" size="small">{{ row.isActive ? '是' : '否' }}</el-tag>
+                  <el-tag :type="row.isActive ? 'success' : 'info'" size="small">{{ row.isActive ? 'はい' : 'いいえ' }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column prop="createdAt" label="创建时间" width="160">
+              <el-table-column prop="createdAt" label="作成日時" width="160">
                 <template #default="{ row }">{{ formatDate(row.createdAt) }}</template>
               </el-table-column>
               <el-table-column label="操作" width="140" fixed="right">
                 <template #default="{ row }">
-                  <el-button size="small" type="primary" link @click="openExampleEditor(row)">编辑</el-button>
-                  <el-popconfirm title="确定删除此示例？" @confirm="deleteExample(row)">
+                  <el-button size="small" type="primary" link @click="openExampleEditor(row)">編集</el-button>
+                  <el-popconfirm title="このサンプルを削除しますか？" @confirm="deleteExample(row)">
                     <template #reference>
-                      <el-button size="small" type="danger" link>删除</el-button>
+                      <el-button size="small" type="danger" link>削除</el-button>
                     </template>
                   </el-popconfirm>
                 </template>
@@ -263,8 +263,8 @@
 
       <template #footer>
         <div class="dialog-footer">
-          <el-button @click="detail.visible = false">取消</el-button>
-          <el-button v-if="!detail.isNew" type="danger" @click="deleteSkill">删除技能</el-button>
+          <el-button @click="detail.visible = false">キャンセル</el-button>
+          <el-button v-if="!detail.isNew" type="danger" @click="deleteSkill">技能削除</el-button>
           <el-button type="primary" :loading="detail.saving" @click="saveSkill">保存</el-button>
         </div>
       </template>
@@ -273,22 +273,22 @@
     <!-- Rule Editor Dialog -->
     <el-dialog
       v-model="ruleEditor.visible"
-      :title="ruleEditor.isNew ? '添加规则' : '编辑规则'"
+      :title="ruleEditor.isNew ? 'ルール追加' : 'ルール編集'"
       width="640px"
       append-to-body
     >
       <el-form label-position="top" class="detail-form">
         <el-form-item label="名称" required>
-          <el-input v-model="ruleEditor.form.name" placeholder="规则名称" maxlength="120" show-word-limit />
+          <el-input v-model="ruleEditor.form.name" placeholder="ルール名" maxlength="120" show-word-limit />
         </el-form-item>
         <el-form-item label="Key">
-          <el-input v-model="ruleEditor.form.ruleKey" placeholder="规则键（可选）" />
+          <el-input v-model="ruleEditor.form.ruleKey" placeholder="ルールキー（任意）" />
         </el-form-item>
         <div class="form-grid-2">
-          <el-form-item label="优先级">
+          <el-form-item label="優先度">
             <el-input-number v-model="ruleEditor.form.priority" :min="1" :max="9999" />
           </el-form-item>
-          <el-form-item label="启用">
+          <el-form-item label="有効">
             <el-switch v-model="ruleEditor.form.isActive" />
           </el-form-item>
         </div>
@@ -301,7 +301,7 @@
             class="json-textarea"
           />
         </el-form-item>
-        <el-form-item label="动作 (actions JSON)">
+        <el-form-item label="アクション (actions JSON)">
           <el-input
             v-model="ruleEditor.form.actionsText"
             type="textarea"
@@ -312,7 +312,7 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="ruleEditor.visible = false">取消</el-button>
+        <el-button @click="ruleEditor.visible = false">キャンセル</el-button>
         <el-button type="primary" :loading="ruleEditor.saving" @click="saveRule">保存</el-button>
       </template>
     </el-dialog>
@@ -320,37 +320,37 @@
     <!-- Example Editor Dialog -->
     <el-dialog
       v-model="exampleEditor.visible"
-      :title="exampleEditor.isNew ? '添加示例' : '编辑示例'"
+      :title="exampleEditor.isNew ? 'サンプル追加' : 'サンプル編集'"
       width="640px"
       append-to-body
     >
       <el-form label-position="top" class="detail-form">
         <el-form-item label="名称">
-          <el-input v-model="exampleEditor.form.name" placeholder="示例名称" maxlength="120" show-word-limit />
+          <el-input v-model="exampleEditor.form.name" placeholder="サンプル名" maxlength="120" show-word-limit />
         </el-form-item>
         <div class="form-grid-2">
-          <el-form-item label="输入类型">
-            <el-select v-model="exampleEditor.form.inputType" placeholder="选择类型">
+          <el-form-item label="入力タイプ">
+            <el-select v-model="exampleEditor.form.inputType" placeholder="タイプを選択">
               <el-option label="text" value="text" />
               <el-option label="image" value="image" />
               <el-option label="file" value="file" />
               <el-option label="structured" value="structured" />
             </el-select>
           </el-form-item>
-          <el-form-item label="启用">
+          <el-form-item label="有効">
             <el-switch v-model="exampleEditor.form.isActive" />
           </el-form-item>
         </div>
-        <el-form-item label="输入数据 (inputData JSON)">
+        <el-form-item label="入力データ (inputData JSON)">
           <el-input
             v-model="exampleEditor.form.inputDataText"
             type="textarea"
             :rows="6"
-            placeholder='{"message": "请帮我记账，金额1000日元"}'
+            placeholder='{"message": "仕訳を作成してください。金額1000円"}'
             class="json-textarea"
           />
         </el-form-item>
-        <el-form-item label="期望输出 (expectedOutput JSON)">
+        <el-form-item label="期待出力 (expectedOutput JSON)">
           <el-input
             v-model="exampleEditor.form.expectedOutputText"
             type="textarea"
@@ -361,7 +361,7 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="exampleEditor.visible = false">取消</el-button>
+        <el-button @click="exampleEditor.visible = false">キャンセル</el-button>
         <el-button type="primary" :loading="exampleEditor.saving" @click="saveExample">保存</el-button>
       </template>
     </el-dialog>
@@ -525,7 +525,7 @@ function safeJsonParse(text: string): Record<string, any> | null {
   try { return JSON.parse(trimmed) } catch { return null }
 }
 
-function handleError(err: any, fallback = '操作失败') {
+function handleError(err: any, fallback = '操作に失敗しました') {
   const msg = err?.response?.data?.error || err?.message || fallback
   ElMessage.error(msg)
 }
@@ -541,7 +541,7 @@ async function loadSkills() {
     const resp = await api.get('/ai/agent/skills', { params })
     skills.value = Array.isArray(resp.data) ? resp.data : []
   } catch (err: any) {
-    handleError(err, '加载技能失败')
+    handleError(err, '技能の読み込みに失敗しました')
   } finally {
     loading.value = false
   }
@@ -603,22 +603,22 @@ function resetDetailForm() {
 async function saveSkill() {
   const f = detail.form
   if (!f.skillKey.trim() || !f.name.trim()) {
-    ElMessage.warning('请填写 skill_key 和名称')
+    ElMessage.warning('skill_keyと名称を入力してください')
     return
   }
 
   // Validate JSON fields
   if (f.triggersText.trim()) {
     const parsed = safeJsonParse(f.triggersText)
-    if (!parsed) { ElMessage.warning('triggers JSON 格式错误'); return }
+    if (!parsed) { ElMessage.warning('triggers JSONの形式が不正です'); return }
   }
   if (f.modelConfigText.trim()) {
     const parsed = safeJsonParse(f.modelConfigText)
-    if (!parsed) { ElMessage.warning('modelConfig JSON 格式错误'); return }
+    if (!parsed) { ElMessage.warning('modelConfig JSONの形式が不正です'); return }
   }
   if (f.behaviorConfigText.trim()) {
     const parsed = safeJsonParse(f.behaviorConfigText)
-    if (!parsed) { ElMessage.warning('behaviorConfig JSON 格式错误'); return }
+    if (!parsed) { ElMessage.warning('behaviorConfig JSONの形式が不正です'); return }
   }
 
   detail.saving = true
@@ -647,10 +647,10 @@ async function saveSkill() {
       detail.skillId = resp.data.id
       detail.isNew = false
     }
-    ElMessage.success('保存成功')
+    ElMessage.success('保存しました')
     await loadSkills()
   } catch (err: any) {
-    handleError(err, '保存失败')
+    handleError(err, '保存に失敗しました')
   } finally {
     detail.saving = false
   }
@@ -659,16 +659,16 @@ async function saveSkill() {
 async function deleteSkill() {
   if (!detail.skillId) return
   try {
-    await ElMessageBox.confirm('确定删除此技能？此操作不可恢复。', '确认', { type: 'warning' })
+    await ElMessageBox.confirm('この技能を削除しますか？この操作は元に戻せません。', '確認', { type: 'warning' })
   } catch { return }
 
   try {
     await api.delete(`/ai/agent/skills/${detail.skillId}`)
-    ElMessage.success('已删除')
+    ElMessage.success('削除しました')
     detail.visible = false
     await loadSkills()
   } catch (err: any) {
-    handleError(err, '删除失败')
+    handleError(err, '削除に失敗しました')
   }
 }
 
@@ -680,10 +680,10 @@ async function toggleSkillActive(skill: Skill, val: boolean) {
       name: skill.name,
       isActive: val
     })
-    ElMessage.success(val ? '已启用' : '已禁用')
+    ElMessage.success(val ? '有効にしました' : '無効にしました')
   } catch (err: any) {
     skill.isActive = !val
-    handleError(err, '操作失败')
+    handleError(err, '操作に失敗しました')
   }
 }
 
@@ -696,7 +696,7 @@ async function loadRules() {
     const resp = await api.get(`/ai/agent/skills/${detail.skillId}/rules`)
     detail.rules = Array.isArray(resp.data) ? resp.data : []
   } catch (err: any) {
-    handleError(err, '加载规则失败')
+    handleError(err, 'ルールの読み込みに失敗しました')
   } finally {
     detail.rulesLoading = false
   }
@@ -717,15 +717,15 @@ function openRuleEditor(rule: SkillRule | null) {
 async function saveRule() {
   const f = ruleEditor.form
   if (!f.name.trim()) {
-    ElMessage.warning('请填写规则名称')
+    ElMessage.warning('ルール名を入力してください')
     return
   }
   if (f.conditionsText.trim() && !safeJsonParse(f.conditionsText)) {
-    ElMessage.warning('conditions JSON 格式错误')
+    ElMessage.warning('conditions JSONの形式が不正です')
     return
   }
   if (f.actionsText.trim() && !safeJsonParse(f.actionsText)) {
-    ElMessage.warning('actions JSON 格式错误')
+    ElMessage.warning('actions JSONの形式が不正です')
     return
   }
 
@@ -743,11 +743,11 @@ async function saveRule() {
       payload.id = ruleEditor.id
     }
     await api.post(`/ai/agent/skills/${detail.skillId}/rules`, payload)
-    ElMessage.success('保存成功')
+    ElMessage.success('保存しました')
     ruleEditor.visible = false
     await loadRules()
   } catch (err: any) {
-    handleError(err, '保存规则失败')
+    handleError(err, 'ルールの保存に失敗しました')
   } finally {
     ruleEditor.saving = false
   }
@@ -756,10 +756,10 @@ async function saveRule() {
 async function deleteRule(rule: SkillRule) {
   try {
     await api.delete(`/ai/agent/skills/rules/${rule.id}`)
-    ElMessage.success('已删除')
+    ElMessage.success('削除しました')
     await loadRules()
   } catch (err: any) {
-    handleError(err, '删除规则失败')
+    handleError(err, 'ルールの削除に失敗しました')
   }
 }
 
@@ -772,7 +772,7 @@ async function loadExamples() {
     const resp = await api.get(`/ai/agent/skills/${detail.skillId}/examples`)
     detail.examples = Array.isArray(resp.data) ? resp.data : []
   } catch (err: any) {
-    handleError(err, '加载示例失败')
+    handleError(err, 'サンプルの読み込みに失敗しました')
   } finally {
     detail.examplesLoading = false
   }
@@ -792,11 +792,11 @@ function openExampleEditor(example: SkillExample | null) {
 async function saveExample() {
   const f = exampleEditor.form
   if (f.inputDataText.trim() && !safeJsonParse(f.inputDataText)) {
-    ElMessage.warning('inputData JSON 格式错误')
+    ElMessage.warning('inputData JSONの形式が不正です')
     return
   }
   if (f.expectedOutputText.trim() && !safeJsonParse(f.expectedOutputText)) {
-    ElMessage.warning('expectedOutput JSON 格式错误')
+    ElMessage.warning('expectedOutput JSONの形式が不正です')
     return
   }
 
@@ -813,11 +813,11 @@ async function saveExample() {
       payload.id = exampleEditor.id
     }
     await api.post(`/ai/agent/skills/${detail.skillId}/examples`, payload)
-    ElMessage.success('保存成功')
+    ElMessage.success('保存しました')
     exampleEditor.visible = false
     await loadExamples()
   } catch (err: any) {
-    handleError(err, '保存示例失败')
+    handleError(err, 'サンプルの保存に失敗しました')
   } finally {
     exampleEditor.saving = false
   }
@@ -826,10 +826,10 @@ async function saveExample() {
 async function deleteExample(example: SkillExample) {
   try {
     await api.delete(`/ai/agent/skills/examples/${example.id}`)
-    ElMessage.success('已删除')
+    ElMessage.success('削除しました')
     await loadExamples()
   } catch (err: any) {
-    handleError(err, '删除示例失败')
+    handleError(err, 'サンプルの削除に失敗しました')
   }
 }
 
@@ -958,14 +958,20 @@ onMounted(() => {
 }
 
 /* Detail Dialog */
-.skill-detail-dialog .el-dialog__body {
+.skill-detail-dialog :deep(.el-dialog) {
+  max-width: 1100px;
+}
+.skill-detail-dialog :deep(.el-dialog__body) {
   padding: 0 20px;
+  max-height: calc(100vh - 3vh - 3vh - 120px);
+  overflow-y: auto;
 }
 .detail-tabs {
   min-height: 400px;
 }
 .detail-form {
   max-width: 800px;
+  padding-bottom: 16px;
 }
 .form-grid {
   display: grid;
