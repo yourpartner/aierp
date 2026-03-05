@@ -752,6 +752,15 @@ CREATE TABLE IF NOT EXISTS warehouse_sequences (
             using var doc = System.Text.Json.JsonDocument.Parse(json);
             try { await Server.Domain.SchemasService.SaveAndActivate(ds, "scheduler_task", doc.RootElement, null); } catch { }
         }
+
+        // Ensure ai.agentSkills menu exists
+        await using (var menuCmd = conn2.CreateCommand())
+        {
+            menuCmd.CommandText = @"INSERT INTO permission_menus (module_code, menu_key, menu_name, menu_path, caps_required, display_order)
+VALUES ('system', 'ai.agentSkills', '{""ja"":""AI技能"",""zh"":""AI技能"",""en"":""AI Skills""}'::jsonb, '/ai/agent-skills', ARRAY['ai:scenarios'], 9)
+ON CONFLICT (menu_key) DO NOTHING";
+            try { await menuCmd.ExecuteNonQueryAsync(); } catch { }
+        }
     }
     catch { }
 });
