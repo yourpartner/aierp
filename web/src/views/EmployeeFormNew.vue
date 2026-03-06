@@ -91,7 +91,7 @@
                 <label>社員コード</label>
                 <el-input v-model="model.code" disabled />
               </div>
-              <div class="emp-field" style="flex:0 0 180px">
+              <div class="emp-field" style="flex:0 0 180px" v-if="canViewMyNumber">
                 <label>マイナンバー</label>
                 <el-input v-model="model.myNumber" placeholder="12桁数字" maxlength="12" />
               </div>
@@ -807,6 +807,10 @@ const id = computed(() => props.empId || (route.params as any).id)
 const empId = computed(() => id.value)
 const bare = computed(() => props.bare === true)
 const isReadonly = computed(() => props.readonly === true)
+const canViewMyNumber = computed(() => {
+  const caps = (sessionStorage.getItem('userCaps') || '').split(',').filter(Boolean)
+  return caps.includes('employee:mynumber') || caps.includes('roles:manage')
+})
 
 const loading = ref(false)
 const saving = ref(false)

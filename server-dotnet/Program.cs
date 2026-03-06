@@ -2210,6 +2210,15 @@ async Task<IResult> HandleObjectSearch(HttpRequest req, string entity, NpgsqlDat
     if (string.Equals(entity, "employee", StringComparison.OrdinalIgnoreCase))
     {
         await EnrichEmployeeDepartmentsAsync(ds, result.Data);
+        // Strip myNumber from search results unless user has employee:mynumber cap
+        if (!user.Caps.Contains("employee:mynumber"))
+        {
+            foreach (var row in result.Data)
+            {
+                if (row?.TryGetPropertyValue("payload", out var pNode) == true && pNode is JsonObject pObj)
+                    pObj.Remove("myNumber");
+            }
+        }
     }
         // Restore legacy behavior: voucher payload attachments should include a resolvable url for preview.
         // FinanceService strips url/previewUrl when persisting (SAS URLs expire), so we enrich on read.
@@ -5426,6 +5435,13 @@ app.MapGet("/objects/employee/{id:guid}", async (Guid id, HttpRequest req, Npgsq
     {
         var node = JsonNode.Parse(json);
         AddAttachmentUrlsPreserveBlob(node, blobService);
+        // Strip myNumber unless user has employee:mynumber cap
+        if (!user.Caps.Contains("employee:mynumber"))
+        {
+            var payload = node?["payload"];
+            if (payload is JsonObject payloadObj)
+                payloadObj.Remove("myNumber");
+        }
         return Results.Text(node?.ToJsonString() ?? json, "application/json");
     }
     catch
