@@ -117,7 +117,7 @@
     </el-card>
 
     <!-- 新建/编辑弹窗 -->
-    <el-dialog v-model="showDialog" :title="dialogTitle" width="660px" destroy-on-close top="5vh">
+    <el-dialog v-model="showDialog" :title="dialogTitle" width="460px" destroy-on-close top="5vh">
       <div class="dialog-content asset-dialog">
         <h4 class="section-title">資産マスタ</h4>
         
