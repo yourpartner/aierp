@@ -43,24 +43,24 @@
       </div>
 
       <el-table :data="rows" border stripe highlight-current-row class="assets-table" v-loading="loading">
-        <el-table-column label="資産番号" prop="asset_no" width="100" />
+        <el-table-column label="資産番号" prop="asset_no" width="85" />
         <el-table-column label="資産クラス" min-width="140">
           <template #default="{ row }">
-            {{ getAssetClassName(row.asset_class_id) }}
+            {{ row.asset_class_name || getAssetClassName(row.asset_class_id) }}
           </template>
         </el-table-column>
         <el-table-column label="資産名称" prop="asset_name" min-width="200" />
-        <el-table-column label="資本化日付" width="120">
+        <el-table-column label="資本化日付" width="100">
           <template #default="{ row }">
             {{ row.capitalization_date }}
           </template>
         </el-table-column>
-        <el-table-column label="償却開始日" width="120">
+        <el-table-column label="償却開始日" width="100">
           <template #default="{ row }">
             {{ row.depreciation_start_date }}
           </template>
         </el-table-column>
-        <el-table-column label="耐用年数" width="100">
+        <el-table-column label="耐用年数" width="75">
           <template #default="{ row }">
             {{ row.useful_life }}
           </template>
@@ -117,7 +117,7 @@
     </el-card>
 
     <!-- 新建/编辑弹窗 -->
-    <el-dialog v-model="showDialog" :title="dialogTitle" width="760px" destroy-on-close top="5vh">
+    <el-dialog v-model="showDialog" :title="dialogTitle" width="660px" destroy-on-close top="5vh">
       <div class="dialog-content asset-dialog">
         <h4 class="section-title">資産マスタ</h4>
         
