@@ -83,12 +83,33 @@
     </el-card>
 
     <!-- 新建/编辑弹窗 -->
-    <el-dialog 
-      v-model="showForm" 
-      :title="editingId ? '請求書編集' : '請求書登録'" 
+    <el-dialog
+      v-model="showForm"
       width="1000px"
       destroy-on-close
     >
+      <template #header>
+        <div class="dialog-header">
+          <span class="dialog-header-title">{{ editingId ? '請求書編集' : '請求書登録' }}</span>
+          <div class="dialog-header-actions">
+            <el-upload
+              v-if="!editingId"
+              ref="formUploadRef"
+              :show-file-list="false"
+              :auto-upload="false"
+              :on-change="onFileSelected"
+              accept=".pdf,.png,.jpg,.jpeg,.gif,.webp"
+              style="display:inline-block"
+            >
+              <el-button size="small" :loading="recognizing">
+                <el-icon><Upload /></el-icon> AI識別
+              </el-button>
+            </el-upload>
+            <el-button type="primary" size="small" :loading="formRef?.saving" @click="formRef?.save()">保存</el-button>
+            <el-button size="small" @click="showForm = false">キャンセル</el-button>
+          </div>
+        </div>
+      </template>
       <VendorInvoiceForm
         ref="formRef"
         :dialog-mode="true"
@@ -97,14 +118,19 @@
         @saved="onFormSaved"
         @cancel="showForm = false"
       />
-      <template #footer>
-        <el-button @click="showForm = false">キャンセル</el-button>
-        <el-button type="primary" :loading="formRef?.saving" @click="formRef?.save()">保存</el-button>
-      </template>
     </el-dialog>
 
     <!-- 详情弹窗 -->
-    <el-dialog v-model="showDetail" title="請求書詳細" width="fit-content" style="min-width: 700px; max-width: 95vw;" destroy-on-close>
+    <el-dialog v-model="showDetail" width="fit-content" :style="{ minWidth: '700px', maxWidth: '95vw' }" destroy-on-close>
+      <template #header>
+        <div class="dialog-header">
+          <span class="dialog-header-title">請求書詳細</span>
+          <div class="dialog-header-actions">
+            <el-button v-if="detailData && canEditInvoice(detailData)" type="primary" size="small" @click="editInvoice(detailData)">編集</el-button>
+            <el-button size="small" @click="showDetail = false">閉じる</el-button>
+          </div>
+        </div>
+      </template>
       <div v-if="detailData">
         <el-descriptions :column="3" border size="small">
           <el-descriptions-item label="請求書番号">{{ detailData.invoice_no }}</el-descriptions-item>
@@ -165,10 +191,6 @@
           <strong>備考:</strong> {{ detailData.payload.memo }}
         </div>
       </div>
-      <template #footer>
-        <el-button @click="showDetail = false">閉じる</el-button>
-        <el-button v-if="detailData?.status === 'draft'" type="primary" @click="editInvoice(detailData)">編集</el-button>
-      </template>
     </el-dialog>
 
     <!-- 会计凭证弹窗 -->
@@ -222,6 +244,7 @@ const formRef = ref<InstanceType<typeof VendorInvoiceForm> | null>(null)
 // AI識別
 const recognizing = ref(false)
 const uploadRef = ref<any>(null)
+const formUploadRef = ref<any>(null)
 const recognizedData = ref<any>(null)
 
 // 会计凭证弹窗
@@ -327,6 +350,10 @@ function openCreateDialog() {
   editingId.value = ''
   recognizedData.value = null
   showForm.value = true
+}
+
+function canEditInvoice(row: any): boolean {
+  return row?.status === 'draft' || row?.status === 'pending_post'
 }
 
 function editInvoice(row: any) {
@@ -442,6 +469,21 @@ onMounted(() => {
 .page-header-title {
   font-size: 18px;
   font-weight: 600;
+}
+
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-right: 32px;
+}
+.dialog-header-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.dialog-header-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .search-bar {

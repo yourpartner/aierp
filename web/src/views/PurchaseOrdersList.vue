@@ -75,7 +75,22 @@
     </el-card>
 
     <!-- 详情/编辑弹窗 -->
-    <el-dialog v-model="showDetail" :title="isEditMode ? '発注編集' : '発注詳細'" width="fit-content" :style="{ maxWidth: '95vw' }" destroy-on-close>
+    <el-dialog v-model="showDetail" width="fit-content" :style="{ maxWidth: '95vw' }" destroy-on-close>
+      <template #header>
+        <div class="dialog-header">
+          <span class="dialog-header-title">{{ isEditMode ? '発注編集' : '発注詳細' }}</span>
+          <div class="dialog-header-actions">
+            <template v-if="!isEditMode">
+              <el-button v-if="canEditPO" type="primary" size="small" @click="switchToEditMode">編集</el-button>
+              <el-button size="small" @click="showDetail = false">閉じる</el-button>
+            </template>
+            <template v-else>
+              <el-button type="primary" size="small" :loading="saving" @click="saveEdit">保存</el-button>
+              <el-button size="small" @click="cancelEdit">キャンセル</el-button>
+            </template>
+          </div>
+        </div>
+      </template>
       <div v-if="detailData" class="po-detail">
         <!-- 查看模式 -->
         <template v-if="!isEditMode">
@@ -299,16 +314,6 @@
           </el-form>
         </template>
       </div>
-      <template #footer>
-        <template v-if="!isEditMode">
-          <el-button @click="showDetail = false">閉じる</el-button>
-          <el-button v-if="detailData?.status === 'new'" type="primary" @click="switchToEditMode">編集</el-button>
-        </template>
-        <template v-else>
-          <el-button @click="cancelEdit">キャンセル</el-button>
-          <el-button type="primary" :loading="saving" @click="saveEdit">保存</el-button>
-        </template>
-      </template>
     </el-dialog>
 
     <!-- 入库弹窗 -->
@@ -442,6 +447,12 @@ const editForm = reactive<any>({
   amountTotal: 0,
   taxAmountTotal: 0,
   note: ''
+})
+
+// 编辑可能な状態かどうか（new, partial_received は編集可）
+const canEditPO = computed(() => {
+  const s = detailData.value?.status
+  return s === 'new' || s === 'partial_received'
 })
 
 // 供应商和物料搜索
@@ -994,6 +1005,21 @@ onMounted(() => {
 .page-header-title {
   font-size: 18px;
   font-weight: 600;
+}
+
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-right: 32px;
+}
+.dialog-header-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.dialog-header-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .search-bar {
