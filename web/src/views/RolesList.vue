@@ -15,9 +15,9 @@
           </div>
         </div>
       </template>
-      
+
       <!-- 审计结果 -->
-      <el-alert v-if="auditResult" :type="auditResult.highRiskCount > 0 ? 'error' : (auditResult.mediumRiskCount > 0 ? 'warning' : 'success')" 
+      <el-alert v-if="auditResult" :type="auditResult.highRiskCount > 0 ? 'error' : (auditResult.mediumRiskCount > 0 ? 'warning' : 'success')"
                 :title="`${text.auditResult}: ロール${auditResult.totalRoles}件、高リスク${auditResult.highRiskCount}件、中リスク${auditResult.mediumRiskCount}件`"
                 show-icon closable @close="auditResult=null" style="margin-bottom:12px" />
 
@@ -54,7 +54,7 @@
     </el-card>
 
     <!-- 作成/編集ロールダイアログ -->
-    <el-dialog v-model="showCreate" :title="editId ? text.editRole : text.createRole" width="480px" destroy-on-close>
+    <el-dialog v-model="showCreate" :title="editId ? text.editRole : text.createRole" width="640px" destroy-on-close @closed="resetForm">
       <el-form :model="form" label-width="100px" size="small">
         <el-form-item :label="text.roleCode" required>
           <el-input v-model="form.roleCode" :disabled="!!editId" :placeholder="text.roleCodePlaceholder" />
@@ -65,19 +65,59 @@
         <el-form-item :label="text.description">
           <el-input v-model="form.description" type="textarea" :rows="2" />
         </el-form-item>
-        <el-form-item :label="text.caps">
-          <div class="caps-selector">
-            <div v-for="mod in modules" :key="mod.moduleCode" class="caps-module">
-              <div class="caps-module-title">{{ getModuleName(mod) }}</div>
-              <el-checkbox-group v-model="form.caps">
-                <el-checkbox v-for="cap in getModuleCaps(mod.moduleCode)" :key="cap.capCode" :label="cap.capCode" class="cap-checkbox">
-                  <span>{{ getCapName(cap) }}</span>
-                  <el-tag v-if="cap.isSensitive" type="danger" size="small" style="margin-left:4px">{{ text.sensitive }}</el-tag>
-                </el-checkbox>
-              </el-checkbox-group>
+
+        <!-- メニュー構成 (Tree with drag-and-drop) -->
+        <el-form-item :label="text.menuConfig">
+          <div class="menu-tree-container">
+            <div class="menu-tree-toolbar">
+              <el-button size="small" text @click="checkAllMenus">{{ text.selectAll }}</el-button>
+              <el-button size="small" text @click="uncheckAllMenus">{{ text.deselectAll }}</el-button>
+              <span class="menu-tree-hint">{{ text.dragHint }}</span>
             </div>
+            <el-tree
+              ref="menuTreeRef"
+              :data="menuTreeData"
+              :props="treeProps"
+              node-key="id"
+              show-checkbox
+              draggable
+              :allow-drop="allowDrop"
+              :default-expand-all="true"
+              check-strictly
+              @check="onMenuCheck"
+              @node-drop="onNodeDrop"
+              class="menu-tree"
+            >
+              <template #default="{ node, data }">
+                <span class="menu-tree-node">
+                  <el-icon v-if="data.icon" style="margin-right:4px"><component :is="data.icon" /></el-icon>
+                  <span>{{ node.label }}</span>
+                  <el-tag v-if="data.isParent" type="info" size="small" style="margin-left:6px">{{ data.children?.length || 0 }}</el-tag>
+                </span>
+              </template>
+            </el-tree>
           </div>
         </el-form-item>
+
+        <!-- 詳細権限 (collapsible) -->
+        <el-form-item>
+          <el-collapse class="caps-collapse">
+            <el-collapse-item :title="text.detailedCaps" name="caps">
+              <div class="caps-selector">
+                <div v-for="mod in modules" :key="mod.moduleCode" class="caps-module">
+                  <div class="caps-module-title">{{ getModuleName(mod) }}</div>
+                  <el-checkbox-group v-model="form.caps">
+                    <el-checkbox v-for="cap in getModuleCaps(mod.moduleCode)" :key="cap.capCode" :label="cap.capCode" class="cap-checkbox">
+                      <span>{{ getCapName(cap) }}</span>
+                      <el-tag v-if="cap.isSensitive" type="danger" size="small" style="margin-left:4px">{{ text.sensitive }}</el-tag>
+                    </el-checkbox>
+                  </el-checkbox-group>
+                </div>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+        </el-form-item>
+
         <el-form-item :label="text.dataScopes">
           <div class="data-scopes">
             <div v-for="(scope, idx) in form.dataScopes" :key="idx" class="data-scope-row">
@@ -110,14 +150,14 @@
         <el-alert type="info" :closable="false" style="margin-bottom:16px">
           <template #title>{{ text.aiHint }}</template>
         </el-alert>
-        
+
         <el-input v-model="aiPrompt" type="textarea" :rows="5" :placeholder="text.aiPlaceholder" />
-        
+
         <div v-if="aiGenerating" style="text-align:center;padding:20px">
           <el-icon class="is-loading" :size="32"><Loading /></el-icon>
           <div>{{ text.aiGenerating }}</div>
         </div>
-        
+
         <div v-if="aiResult" class="ai-result">
           <el-divider>{{ text.aiResult }}</el-divider>
           <el-descriptions :column="1" border size="small">
@@ -131,7 +171,7 @@
               <span v-for="ds in aiResult.dataScopes" :key="ds.entityType">{{ ds.entityType }}:{{ ds.scopeType }} </span>
             </el-descriptions-item>
           </el-descriptions>
-          
+
           <el-alert v-if="aiResult.warnings?.length" type="warning" style="margin-top:12px">
             <template #title>{{ text.aiWarnings }}</template>
             <ul style="margin:0;padding-left:20px">
@@ -159,19 +199,19 @@
           <el-descriptions-item :label="text.capsCount">{{ checkResult.capsCount }}</el-descriptions-item>
           <el-descriptions-item :label="text.sensitiveCaps">{{ checkResult.sensitiveCapsCount }}</el-descriptions-item>
         </el-descriptions>
-        
+
         <div v-if="checkResult.issues?.length" style="margin-top:16px">
           <div style="font-weight:600;margin-bottom:8px">{{ text.issues }}:</div>
-          <el-alert v-for="(issue, i) in checkResult.issues" :key="i" 
-                    :type="issue.severity === 'warning' ? 'warning' : 'info'" 
+          <el-alert v-for="(issue, i) in checkResult.issues" :key="i"
+                    :type="issue.severity === 'warning' ? 'warning' : 'info'"
                     :title="issue.message" show-icon style="margin-bottom:8px" />
         </div>
-        
+
         <div v-if="checkResult.aiAnalysis" style="margin-top:16px">
           <div style="font-weight:600;margin-bottom:8px">{{ text.aiAnalysis }}:</div>
           <el-card shadow="never">{{ checkResult.aiAnalysis }}</el-card>
         </div>
-        
+
         <el-alert v-if="!checkResult.issues?.length" type="success" :title="text.noIssues" style="margin-top:16px" />
       </div>
     </el-dialog>
@@ -179,13 +219,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Warning, MagicStick, Loading } from '@element-plus/icons-vue'
+import type { ElTree } from 'element-plus'
+import type Node from 'element-plus/es/components/tree/src/model/node'
 import api from '../api'
 import { useI18n } from '../i18n'
 
-const { lang } = useI18n()
+useI18n()
 const texts: Record<string, Record<string, string>> = {
   ja: {
     title: 'ロール管理',
@@ -206,6 +248,11 @@ const texts: Record<string, Record<string, string>> = {
     createRole: 'ロール作成',
     editRole: 'ロール編集',
     caps: '権限',
+    menuConfig: 'メニュー構成',
+    selectAll: '全選択',
+    deselectAll: '全解除',
+    dragHint: 'ドラッグで並べ替え可能',
+    detailedCaps: '詳細権限設定（上級）',
     dataScopes: 'データ範囲',
     cancel: 'キャンセル',
     save: '保存',
@@ -261,6 +308,11 @@ const texts: Record<string, Record<string, string>> = {
     createRole: '创建角色',
     editRole: '编辑角色',
     caps: '权限',
+    menuConfig: '菜单构成',
+    selectAll: '全选',
+    deselectAll: '全部取消',
+    dragHint: '拖拽可调整顺序',
+    detailedCaps: '详细权限设置（高级）',
     dataScopes: '数据范围',
     cancel: '取消',
     save: '保存',
@@ -316,6 +368,11 @@ const texts: Record<string, Record<string, string>> = {
     createRole: 'Create Role',
     editRole: 'Edit Role',
     caps: 'Capabilities',
+    menuConfig: 'Menu Config',
+    selectAll: 'Select All',
+    deselectAll: 'Deselect All',
+    dragHint: 'Drag to reorder',
+    detailedCaps: 'Detailed Permissions (Advanced)',
     dataScopes: 'Data Scopes',
     cancel: 'Cancel',
     save: 'Save',
@@ -359,6 +416,7 @@ const text = computed(() => texts.ja)
 const rows = ref<any[]>([])
 const modules = ref<any[]>([])
 const caps = ref<any[]>([])
+const allMenus = ref<any[]>([])
 
 const showCreate = ref(false)
 const editId = ref<string>('')
@@ -370,6 +428,239 @@ const form = ref({
   caps: [] as string[],
   dataScopes: [] as { entityType: string; scopeType: string }[]
 })
+
+const menuTreeRef = ref<InstanceType<typeof ElTree>>()
+const treeProps = { children: 'children', label: 'label' }
+
+// Build tree data from permission_menus
+interface TreeNode {
+  id: string
+  label: string
+  icon?: string
+  isParent?: boolean
+  menuKey?: string
+  capsRequired?: string[]
+  children?: TreeNode[]
+}
+
+const menuTreeData = ref<TreeNode[]>([])
+
+function buildMenuTree(menus: any[]) {
+  // Group by module_code
+  const groups: Record<string, { label: string; menus: any[] }> = {}
+  for (const m of menus) {
+    if (!groups[m.moduleCode]) {
+      // Try to find module name
+      const mod = modules.value.find((mod: any) => mod.moduleCode === m.moduleCode)
+      const modLabel = mod ? getModuleName(mod) : m.moduleCode
+      groups[m.moduleCode] = { label: modLabel, menus: [] }
+    }
+    groups[m.moduleCode].menus.push(m)
+  }
+
+  const tree: TreeNode[] = []
+  for (const [moduleCode, group] of Object.entries(groups)) {
+    // Sort children by display_order
+    group.menus.sort((a: any, b: any) => (a.displayOrder || 0) - (b.displayOrder || 0))
+
+    const children: TreeNode[] = group.menus
+      .filter((m: any) => m.menuPath) // Only show menus with paths (not parent-only nodes)
+      .map((m: any) => {
+        const name = typeof m.menuName === 'string'
+          ? (() => { try { const p = JSON.parse(m.menuName); return p.ja || p.en || p.zh || m.menuKey } catch { return m.menuName } })()
+          : (m.menuName?.ja || m.menuName?.en || m.menuName?.zh || m.menuKey)
+        return {
+          id: m.menuKey,
+          label: name,
+          menuKey: m.menuKey,
+          capsRequired: m.capsRequired || [],
+          isParent: false
+        }
+      })
+
+    if (children.length > 0) {
+      tree.push({
+        id: `module_${moduleCode}`,
+        label: group.label,
+        isParent: true,
+        children
+      })
+    }
+  }
+
+  menuTreeData.value = tree
+}
+
+function syncTreeChecks() {
+  nextTick(() => {
+    if (!menuTreeRef.value) return
+    const checkedKeys: string[] = []
+    for (const group of menuTreeData.value) {
+      let allChildrenChecked = true
+      for (const child of (group.children || [])) {
+        if (!child.capsRequired?.length) {
+          // No caps required = always accessible, check it
+          checkedKeys.push(child.id)
+        } else if (child.capsRequired.some((c: string) => form.value.caps.includes(c))) {
+          checkedKeys.push(child.id)
+        } else {
+          allChildrenChecked = false
+        }
+      }
+      if (allChildrenChecked && (group.children?.length || 0) > 0) {
+        checkedKeys.push(group.id)
+      }
+    }
+    menuTreeRef.value.setCheckedKeys(checkedKeys)
+  })
+}
+
+function onMenuCheck(data: TreeNode, { checkedKeys }: { checkedKeys: string[] }) {
+  if (data.isParent) {
+    // Parent node toggled - toggle all children
+    const isChecked = checkedKeys.includes(data.id)
+    for (const child of (data.children || [])) {
+      if (isChecked) {
+        // Add all required caps for children
+        for (const cap of (child.capsRequired || [])) {
+          if (!form.value.caps.includes(cap)) {
+            form.value.caps.push(cap)
+          }
+        }
+      } else {
+        // Remove caps that are only used by this module's children
+        const otherMenuCaps = getOtherModuleCaps(data.id)
+        for (const cap of (child.capsRequired || [])) {
+          if (!otherMenuCaps.has(cap)) {
+            const idx = form.value.caps.indexOf(cap)
+            if (idx >= 0) form.value.caps.splice(idx, 1)
+          }
+        }
+      }
+    }
+  } else {
+    // Child node toggled
+    const isChecked = checkedKeys.includes(data.id)
+    if (isChecked) {
+      for (const cap of (data.capsRequired || [])) {
+        if (!form.value.caps.includes(cap)) {
+          form.value.caps.push(cap)
+        }
+      }
+    } else {
+      // Remove caps not needed by other checked menus
+      const otherCheckedCaps = getOtherCheckedMenuCaps(data.id)
+      for (const cap of (data.capsRequired || [])) {
+        if (!otherCheckedCaps.has(cap)) {
+          const idx = form.value.caps.indexOf(cap)
+          if (idx >= 0) form.value.caps.splice(idx, 1)
+        }
+      }
+    }
+  }
+  // Re-sync tree to update parent check states
+  syncTreeChecks()
+}
+
+function getOtherModuleCaps(moduleId: string): Set<string> {
+  const caps = new Set<string>()
+  const checkedKeys = menuTreeRef.value?.getCheckedKeys() || []
+  for (const group of menuTreeData.value) {
+    if (group.id === moduleId) continue
+    for (const child of (group.children || [])) {
+      if (checkedKeys.includes(child.id)) {
+        for (const cap of (child.capsRequired || [])) {
+          caps.add(cap)
+        }
+      }
+    }
+  }
+  return caps
+}
+
+function getOtherCheckedMenuCaps(excludeMenuId: string): Set<string> {
+  const caps = new Set<string>()
+  const checkedKeys = menuTreeRef.value?.getCheckedKeys() || []
+  for (const group of menuTreeData.value) {
+    for (const child of (group.children || [])) {
+      if (child.id === excludeMenuId) continue
+      if (checkedKeys.includes(child.id)) {
+        for (const cap of (child.capsRequired || [])) {
+          caps.add(cap)
+        }
+      }
+    }
+  }
+  return caps
+}
+
+function checkAllMenus() {
+  if (!menuTreeRef.value) return
+  const allKeys = menuTreeData.value.flatMap(g => [g.id, ...(g.children || []).map(c => c.id)])
+  menuTreeRef.value.setCheckedKeys(allKeys)
+  // Add all caps from all menus
+  for (const group of menuTreeData.value) {
+    for (const child of (group.children || [])) {
+      for (const cap of (child.capsRequired || [])) {
+        if (!form.value.caps.includes(cap)) {
+          form.value.caps.push(cap)
+        }
+      }
+    }
+  }
+}
+
+function uncheckAllMenus() {
+  if (!menuTreeRef.value) return
+  menuTreeRef.value.setCheckedKeys([])
+  // Remove caps that come from menus (keep any manually added caps)
+  const menuCaps = new Set<string>()
+  for (const group of menuTreeData.value) {
+    for (const child of (group.children || [])) {
+      for (const cap of (child.capsRequired || [])) {
+        menuCaps.add(cap)
+      }
+    }
+  }
+  form.value.caps = form.value.caps.filter(c => !menuCaps.has(c))
+}
+
+function allowDrop(draggingNode: Node, dropNode: Node, type: string) {
+  // Only allow reordering within the same level
+  if (draggingNode.data.isParent && dropNode.data.isParent) {
+    return type !== 'inner' // Parent can be reordered among parents
+  }
+  if (!draggingNode.data.isParent && !dropNode.data.isParent) {
+    return type !== 'inner' // Child can be reordered among children in same parent
+  }
+  if (!draggingNode.data.isParent && dropNode.data.isParent) {
+    return type === 'inner' // Child can be moved into a parent
+  }
+  return false
+}
+
+function onNodeDrop() {
+  // After drag-and-drop, save the new order to backend
+  saveMenuOrder()
+}
+
+async function saveMenuOrder() {
+  // Build ordered list of menu_keys from tree
+  const ordered: { menuKey: string; displayOrder: number }[] = []
+  let order = 0
+  for (const group of menuTreeData.value) {
+    for (const child of (group.children || [])) {
+      if (child.menuKey) {
+        ordered.push({ menuKey: child.menuKey, displayOrder: order++ })
+      }
+    }
+  }
+  try {
+    await api.post('/api/permissions/menus/reorder', { items: ordered })
+  } catch (e: any) {
+    console.error('Failed to save menu order', e)
+  }
+}
 
 const showAiDialog = ref(false)
 const aiPrompt = ref('')
@@ -395,12 +686,15 @@ async function load() {
 
 async function loadPermissions() {
   try {
-    const [modsRes, capsRes] = await Promise.all([
+    const [modsRes, capsRes, menusRes] = await Promise.all([
       api.get('/api/permissions/modules'),
-      api.get('/api/permissions/caps')
+      api.get('/api/permissions/caps'),
+      api.get('/api/permissions/menus')
     ])
     modules.value = modsRes.data || []
     caps.value = capsRes.data || []
+    allMenus.value = menusRes.data || []
+    buildMenuTree(allMenus.value)
   } catch (e) {
     console.error('Failed to load permissions', e)
   }
@@ -452,17 +746,28 @@ async function openEdit(id: string) {
       dataScopes: dataScopes.map((ds: any) => ({ entityType: ds.entityType, scopeType: ds.scopeType }))
     }
     showCreate.value = true
+    syncTreeChecks()
   } catch (e: any) {
     ElMessage.error(e.response?.data?.error || e.message)
   }
 }
+
+// Watch form.caps changes to sync tree checks
+watch(() => form.value.caps, () => {
+  if (showCreate.value) syncTreeChecks()
+}, { deep: true })
+
+// When dialog opens for create, sync tree
+watch(showCreate, (val) => {
+  if (val) syncTreeChecks()
+})
 
 async function saveRole() {
   if (!form.value.roleCode) {
     ElMessage.warning(text.value.requiredRoleCode)
     return
   }
-  
+
   saving.value = true
   try {
     const payload = {
@@ -472,13 +777,13 @@ async function saveRole() {
       caps: form.value.caps,
       dataScopes: form.value.dataScopes.filter(ds => ds.entityType)
     }
-    
+
     if (editId.value) {
       await api.put(`/api/roles/${editId.value}`, payload)
     } else {
       await api.post('/api/roles', payload)
     }
-    
+
     ElMessage.success(text.value.saveSuccess)
     showCreate.value = false
     editId.value = ''
@@ -503,11 +808,11 @@ async function deleteRole(id: string) {
 
 async function generateFromAi() {
   if (!aiPrompt.value.trim()) return
-  
+
   aiGenerating.value = true
   aiResult.value = null
   aiGenerationId.value = ''
-  
+
   try {
     const res = await api.post('/api/roles/ai-generate', { prompt: aiPrompt.value })
     aiResult.value = res.data.config
@@ -521,10 +826,10 @@ async function generateFromAi() {
 
 async function applyAiResult() {
   if (!aiGenerationId.value) return
-  
+
   aiApplying.value = true
   try {
-    const res = await api.post('/api/roles/ai-apply', { generationId: aiGenerationId.value })
+    await api.post('/api/roles/ai-apply', { generationId: aiGenerationId.value })
     ElMessage.success(text.value.saveSuccess)
     showAiDialog.value = false
     aiPrompt.value = ''
@@ -568,6 +873,7 @@ function resetForm() {
     caps: [],
     dataScopes: []
   }
+  editId.value = ''
 }
 
 onMounted(() => {
@@ -593,8 +899,49 @@ onMounted(() => {
   display: flex;
   gap: 8px;
 }
+.menu-tree-container {
+  width: 100%;
+  border: 1px solid var(--el-border-color-lighter, #eee);
+  border-radius: 8px;
+  padding: 8px;
+}
+.menu-tree-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--el-border-color-lighter, #eee);
+  margin-bottom: 4px;
+}
+.menu-tree-hint {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+}
+.menu-tree {
+  max-height: 360px;
+  overflow-y: auto;
+}
+.menu-tree-node {
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+}
+.caps-collapse {
+  width: 100%;
+  border: none;
+}
+.caps-collapse :deep(.el-collapse-item__header) {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  height: 32px;
+  line-height: 32px;
+}
+.caps-collapse :deep(.el-collapse-item__wrap) {
+  border: none;
+}
 .caps-selector {
-  max-height: 320px;
+  max-height: 240px;
   overflow-y: auto;
   border: 1px solid var(--el-border-color-lighter, #eee);
   border-radius: 8px;
@@ -634,4 +981,3 @@ onMounted(() => {
   margin-top: 16px;
 }
 </style>
-

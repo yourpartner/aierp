@@ -90,6 +90,33 @@ public class AuthCoreModule : ModuleBase
             return Results.Ok(await svc.GetMenusAsync(string.IsNullOrWhiteSpace(moduleCode) ? null : moduleCode));
         }).RequireAuthorization();
 
+        // メニュー表示順序更新
+        app.MapPost("/api/permissions/menus/reorder", async (HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            var user = Auth.GetUserCtx(req);
+            if (!HasCap(user, "roles:manage")) return Results.StatusCode(403);
+
+            using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: req.HttpContext.RequestAborted);
+            if (!doc.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+                return Results.BadRequest(new { error = "items array required" });
+
+            await using var conn = await ds.OpenConnectionAsync(req.HttpContext.RequestAborted);
+            foreach (var item in items.EnumerateArray())
+            {
+                var menuKey = item.GetProperty("menuKey").GetString();
+                var displayOrder = item.GetProperty("displayOrder").GetInt32();
+                if (string.IsNullOrWhiteSpace(menuKey)) continue;
+
+                await using var cmd = conn.CreateCommand();
+                cmd.CommandText = "UPDATE permission_menus SET display_order = $1 WHERE menu_key = $2";
+                cmd.Parameters.AddWithValue(displayOrder);
+                cmd.Parameters.AddWithValue(menuKey);
+                await cmd.ExecuteNonQueryAsync(req.HttpContext.RequestAborted);
+            }
+
+            return Results.Ok(new { success = true });
+        }).RequireAuthorization();
+
         // 供前端过滤侧边栏菜单使用：返回当前用户可访问的 menu_key 列表
         // 前端请求 /api/permissions/accessible-menus -> 后端实际路径 /permissions/accessible-menus
         app.MapGet("/permissions/accessible-menus", async (HttpRequest req, PermissionService svc) =>

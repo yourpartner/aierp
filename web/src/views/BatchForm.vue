@@ -103,7 +103,7 @@ async function loadMaterials() {
       page: 1,
       pageSize: 500,
       where: [],
-      orderBy: [{ field: 'payload.code', direction: 'asc' }]
+      orderBy: [{ field: 'payload.code', dir: 'asc' }]
     })
     const rows = Array.isArray(r.data?.data) ? r.data.data : []
     materials.value = rows.map((row: any) => ({
@@ -125,7 +125,7 @@ async function generateBatchNo(materialCode: string): Promise<string> {
       page: 1,
       pageSize: 1000,
       where: [{ field: 'payload.materialCode', op: 'eq', value: materialCode }],
-      orderBy: [{ field: 'payload.batchNo', direction: 'desc' }]
+      orderBy: [{ field: 'payload.batchNo', dir: 'desc' }]
     })
     const rows = Array.isArray(r.data?.data) ? r.data.data : []
     let maxSeq = 0

@@ -29,7 +29,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, onMounted } from 'vue'
 import api from '../api'
 import { useI18n } from '../i18n'
 
@@ -41,6 +41,8 @@ const navText = section({ inventoryBalances:'' }, (msg) => msg.nav)
 const q = reactive<any>({ materialCode: '', warehouseCode: '', binCode: '', statusCode: '', batchNo: '' })
 const rows = ref<any[]>([])
 const loading = ref(false)
+
+onMounted(() => load())
 
 async function load() {
   loading.value = true

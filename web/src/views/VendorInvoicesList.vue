@@ -86,7 +86,7 @@
     <el-dialog 
       v-model="showForm" 
       :title="editingId ? '請求書編集' : '請求書登録'" 
-      width="1100px" 
+      width="1000px"
       destroy-on-close
     >
       <VendorInvoiceForm
