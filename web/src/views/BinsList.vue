@@ -69,17 +69,26 @@
       </el-dialog>
 
       <!-- 新建/编辑弹窗 -->
-      <el-dialog 
-        v-model="editDialogVisible" 
-        :title="editMode === 'create' ? labels.createTitle : labels.editTitle" 
-        width="500px" 
+      <el-dialog
+        v-model="editDialogVisible"
+        width="500px"
         append-to-body
+        class="bin-edit-dialog"
       >
+        <template #header>
+          <div class="dialog-header">
+            <span class="dialog-header-title">{{ editMode === 'create' ? labels.createTitle : labels.editTitle }}</span>
+            <div class="dialog-header-actions">
+              <el-button type="primary" size="small" :loading="saving" @click="saveForm">{{ buttons.save }}</el-button>
+              <el-button size="small" @click="editDialogVisible = false">{{ buttons.cancel }}</el-button>
+            </div>
+          </div>
+        </template>
         <el-form ref="formRef" :model="editForm" :rules="formRules" label-width="100px">
           <el-form-item :label="labels.warehouse" prop="warehouseCode">
-            <el-select 
-              v-model="editForm.warehouseCode" 
-              :placeholder="labels.selectWarehouse" 
+            <el-select
+              v-model="editForm.warehouseCode"
+              :placeholder="labels.selectWarehouse"
               style="width:100%"
               :disabled="editMode === 'edit'"
             >
@@ -87,8 +96,8 @@
             </el-select>
           </el-form-item>
           <el-form-item :label="labels.code" prop="code">
-            <el-input 
-              v-model="editForm.code" 
+            <el-input
+              v-model="editForm.code"
               :placeholder="labels.codePlaceholder"
               :disabled="editMode === 'edit'"
               maxlength="4"
@@ -99,19 +108,15 @@
             <el-input v-model="editForm.name" :placeholder="labels.namePlaceholder" />
           </el-form-item>
           <el-form-item :label="labels.status">
-            <el-switch 
-              v-model="editForm.inactive" 
-              :active-text="labels.inactive" 
+            <el-switch
+              v-model="editForm.inactive"
+              :active-text="labels.inactive"
               :inactive-text="labels.active"
               :active-value="true"
               :inactive-value="false"
             />
           </el-form-item>
         </el-form>
-        <template #footer>
-          <el-button @click="editDialogVisible = false">{{ buttons.cancel }}</el-button>
-          <el-button type="primary" :loading="saving" @click="saveForm">{{ buttons.save }}</el-button>
-        </template>
       </el-dialog>
     </el-card>
   </div>
@@ -414,5 +419,21 @@ onMounted(async () => {
   margin-top: 16px;
   display: flex;
   justify-content: flex-end;
+}
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding-right: 32px;
+}
+.dialog-header-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+.dialog-header-actions {
+  display: flex;
+  gap: 8px;
 }
 </style>

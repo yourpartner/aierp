@@ -1,5 +1,13 @@
 <template>
   <div class="material-card">
+    <!-- 嵌入模式下的操作按钮（顶部） -->
+    <div v-if="isEmbedded" class="embedded-header">
+      <div class="page-header-title">{{ headerTitle }}</div>
+      <div class="page-actions">
+        <el-button type="primary" size="small" :loading="saving" @click="save">{{ commonText.save }}</el-button>
+        <el-button size="small" @click="emit('cancel')">{{ commonText.close || '閉じる' }}</el-button>
+      </div>
+    </div>
     <!-- 非嵌入模式下显示标题栏 -->
     <div v-if="!isEmbedded" class="page-header">
       <div class="page-header-title">{{ headerTitle }}</div>
@@ -17,7 +25,7 @@
         <el-skeleton v-if="uiLoading" :rows="6" animated />
         <template v-else>
           <!-- 主表单区域 -->
-          <el-form label-width="100px" label-position="left" class="material-form">
+          <el-form label-width="120px" label-position="left" class="material-form">
             <!-- 第一行：图片和基本信息 -->
             <div class="form-row-with-image">
               <!-- 左侧：商品图片 -->
@@ -141,11 +149,6 @@
       <span v-if="err" class="text-error">{{ err }}</span>
     </div>
 
-    <!-- 嵌入模式下的操作按钮 -->
-    <div v-if="isEmbedded" class="embedded-actions">
-      <el-button @click="emit('cancel')">{{ commonText.close || '閉じる' }}</el-button>
-      <el-button type="primary" :loading="saving" @click="save">{{ commonText.save }}</el-button>
-    </div>
   </div>
 </template>
 
@@ -573,13 +576,13 @@ watch(() => props.materialId, async (id) => {
   color: #f56c6c;
 }
 
-/* 嵌入模式操作按钮 */
-.embedded-actions {
+/* 嵌入模式顶部操作栏 */
+.embedded-header {
   display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  padding-top: 16px;
-  margin-top: 16px;
-  border-top: 1px solid #ebeef5;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #ebeef5;
 }
 </style>

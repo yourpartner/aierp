@@ -54,7 +54,7 @@
         </div>
       </template>
 
-      <el-form label-position="left" label-width="100px">
+      <el-form label-position="left" :label-width="props.dialogMode ? '80px' : '100px'">
         <!-- 基本信息 -->
         <el-row :gutter="20">
           <!-- 编辑模式才显示受注番号 -->
@@ -136,11 +136,11 @@
           </div>
           
           <el-table :data="form.lines" border size="small" class="lines-table">
-            <el-table-column label="#" width="50" align="center">
+            <el-table-column label="#" width="40" align="center">
               <template #default="{ $index }">{{ $index + 1 }}</template>
             </el-table-column>
-            
-            <el-table-column label="品目" min-width="250">
+
+            <el-table-column label="品目" min-width="180">
               <template #default="{ row }">
                 <el-select
                   v-model="row.materialCode"
@@ -153,21 +153,21 @@
                   style="width:100%"
                   @change="(code) => onMaterialChange(code, row)"
                 >
-                  <el-option 
-                    v-for="m in getMaterialOptions(row)" 
-                    :key="m.value" 
-                    :label="m.label" 
+                  <el-option
+                    v-for="m in getMaterialOptions(row)"
+                    :key="m.value"
+                    :label="m.label"
                     :value="m.value"
                   />
                 </el-select>
               </template>
             </el-table-column>
-            
-            <el-table-column label="数量" width="100">
+
+            <el-table-column label="数量" width="80">
               <template #default="{ row }">
-                <el-input-number 
-                  v-model="row.quantity" 
-                  :min="0" 
+                <el-input-number
+                  v-model="row.quantity"
+                  :min="0"
                   :precision="0"
                   :controls="false"
                   style="width:100%"
@@ -175,18 +175,18 @@
                 />
               </template>
             </el-table-column>
-            
-            <el-table-column label="単位" width="80">
+
+            <el-table-column label="単位" width="60">
               <template #default="{ row }">
                 <el-input v-model="row.uom" disabled />
               </template>
             </el-table-column>
-            
-            <el-table-column label="単価" width="120">
+
+            <el-table-column label="単価" width="100">
               <template #default="{ row }">
-                <el-input-number 
-                  v-model="row.unitPrice" 
-                  :min="0" 
+                <el-input-number
+                  v-model="row.unitPrice"
+                  :min="0"
                   :precision="0"
                   :controls="false"
                   style="width:100%"
@@ -194,14 +194,14 @@
                 />
               </template>
             </el-table-column>
-            
-            <el-table-column label="金額（税抜）" width="120">
+
+            <el-table-column label="税抜金額" width="100">
               <template #default="{ row }">
                 <span class="amount-cell">{{ formatNumber(row.amount) }}</span>
               </template>
             </el-table-column>
-            
-            <el-table-column label="税率" width="90">
+
+            <el-table-column label="税率" width="80">
               <template #default="{ row }">
                 <el-select v-model="row.taxRate" style="width:100%" @change="recalcLine(row)">
                   <el-option label="10%" :value="10" />
@@ -210,20 +210,20 @@
                 </el-select>
               </template>
             </el-table-column>
-            
-            <el-table-column label="税額" width="100">
+
+            <el-table-column label="税額" width="90">
               <template #default="{ row }">
                 <span class="amount-cell">{{ formatNumber(row.taxAmount) }}</span>
               </template>
             </el-table-column>
-            
-            <el-table-column label="備考" min-width="120">
+
+            <el-table-column label="備考" min-width="100">
               <template #default="{ row }">
                 <el-input v-model="row.note" placeholder="備考" size="small" />
               </template>
             </el-table-column>
-            
-            <el-table-column label="操作" width="70" fixed="right">
+
+            <el-table-column label="操作" width="60" fixed="right">
               <template #default="{ $index }">
                 <el-button type="danger" text size="small" @click="removeLine($index)">削除</el-button>
               </template>
@@ -787,6 +787,7 @@ defineExpose({ save, saving })
 
 .lines-section {
   margin: 16px 0;
+  overflow-x: auto;
 }
 
 .lines-toolbar {

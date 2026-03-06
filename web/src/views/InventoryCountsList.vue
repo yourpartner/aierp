@@ -101,7 +101,20 @@
     </el-dialog>
 
     <!-- 盘点详情/录入对话框 -->
-    <el-dialog v-model="detailDialog.visible" :title="detailDialog.title" width="90%" top="5vh">
+    <el-dialog v-model="detailDialog.visible" width="90%" top="5vh" class="count-detail-dialog">
+      <template #header>
+        <div class="dialog-header">
+          <span class="dialog-header-title">{{ detailDialog.title }}</span>
+          <div class="dialog-header-actions">
+            <template v-if="detailDialog.mode === 'edit' && detailDialog.data && (detailDialog.data.status === 'draft' || detailDialog.data.status === 'in_progress')">
+              <el-button type="primary" size="small" :loading="detailDialog.saving" @click="saveLines">{{ labels.save }}</el-button>
+              <el-button type="warning" size="small" @click="startCount" v-if="detailDialog.data.status === 'draft'">{{ labels.startCount }}</el-button>
+              <el-button type="success" size="small" @click="completeCount" v-if="detailDialog.data.status === 'in_progress'">{{ labels.complete }}</el-button>
+            </template>
+            <el-button size="small" @click="detailDialog.visible = false">{{ labels.close }}</el-button>
+          </div>
+        </div>
+      </template>
       <div v-if="detailDialog.data" class="count-detail">
         <div class="count-header">
           <el-descriptions :column="4" border size="small">
@@ -112,12 +125,6 @@
               <el-tag :type="statusType(detailDialog.data.status)" size="small">{{ statusLabel(detailDialog.data.status) }}</el-tag>
             </el-descriptions-item>
           </el-descriptions>
-        </div>
-
-        <div class="count-actions" v-if="detailDialog.mode === 'edit' && (detailDialog.data.status === 'draft' || detailDialog.data.status === 'in_progress')">
-          <el-button type="primary" :loading="detailDialog.saving" @click="saveLines">{{ labels.save }}</el-button>
-          <el-button type="warning" @click="startCount" v-if="detailDialog.data.status === 'draft'">{{ labels.startCount }}</el-button>
-          <el-button type="success" @click="completeCount" v-if="detailDialog.data.status === 'in_progress'">{{ labels.complete }}</el-button>
         </div>
 
         <el-table :data="detailDialog.lines" v-loading="detailDialog.linesLoading" stripe style="width: 100%; margin-top: 16px" max-height="500">
@@ -178,9 +185,6 @@
           </el-alert>
         </div>
       </div>
-      <template #footer>
-        <el-button @click="detailDialog.visible = false">{{ labels.close }}</el-button>
-      </template>
     </el-dialog>
   </div>
 </template>
@@ -524,6 +528,22 @@ async function deleteCount(id: string) {
 .text-danger {
   color: #f56c6c;
   font-weight: 600;
+}
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding-right: 32px;
+}
+.dialog-header-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+.dialog-header-actions {
+  display: flex;
+  gap: 8px;
 }
 </style>
 

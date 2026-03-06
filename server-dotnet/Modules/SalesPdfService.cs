@@ -10,11 +10,26 @@ namespace Server.Modules;
 public sealed class SalesPdfService
 {
     private readonly AzureBlobService _blobService;
+    const string JpFontFamily = "Noto Sans JP";
+    static bool _fontRegistered;
+
+    static void EnsureFontRegistered()
+    {
+        if (_fontRegistered) return;
+        var fontPath = Path.Combine(AppContext.BaseDirectory, "Fonts", "NotoSansJP.ttf");
+        if (File.Exists(fontPath))
+        {
+            using var stream = File.OpenRead(fontPath);
+            QuestPDF.Drawing.FontManager.RegisterFont(stream);
+        }
+        _fontRegistered = true;
+    }
 
     public SalesPdfService(AzureBlobService blobService)
     {
         _blobService = blobService;
         QuestPDF.Settings.License = LicenseType.Community;
+        EnsureFontRegistered();
     }
 
     public record CompanyInfo(string Name, string PostalCode, string Address, string Tel, string? RegistrationNo);
@@ -35,7 +50,7 @@ public sealed class SalesPdfService
                 page.MarginTop(30);
                 page.MarginBottom(25);
                 page.MarginHorizontal(35);
-                page.DefaultTextStyle(x => x.FontSize(9).FontFamily("Yu Gothic").FontColor(Colors.Grey.Darken4));
+                page.DefaultTextStyle(x => x.FontSize(9).FontFamily(JpFontFamily).FontColor(Colors.Grey.Darken4));
                 page.Content().Column(col =>
                 {
                     RenderInvoiceContent(col, company, inv);
@@ -63,7 +78,7 @@ public sealed class SalesPdfService
                 page.MarginTop(30);
                 page.MarginBottom(25);
                 page.MarginHorizontal(35);
-                page.DefaultTextStyle(x => x.FontSize(9).FontFamily("Yu Gothic").FontColor(Colors.Grey.Darken4));
+                page.DefaultTextStyle(x => x.FontSize(9).FontFamily(JpFontFamily).FontColor(Colors.Grey.Darken4));
                 page.Content().Column(col =>
                 {
                     RenderDeliveryNoteContent(col, company, dn);

@@ -46,12 +46,7 @@
         <el-table-column label="資産番号" prop="asset_no" width="100" />
         <el-table-column label="資産クラス" min-width="140">
           <template #default="{ row }">
-            {{ row.asset_class_name || getAssetClassName(row.asset_class_id) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="部門" min-width="120">
-          <template #default="{ row }">
-            {{ getDepartmentName(row.department_id) }}
+            {{ getAssetClassName(row.asset_class_id) }}
           </template>
         </el-table-column>
         <el-table-column label="資産名称" prop="asset_name" min-width="200" />
@@ -122,7 +117,7 @@
     </el-card>
 
     <!-- 新建/编辑弹窗 -->
-    <el-dialog v-model="showDialog" :title="dialogTitle" width="860px" destroy-on-close top="5vh">
+    <el-dialog v-model="showDialog" :title="dialogTitle" width="760px" destroy-on-close top="5vh">
       <div class="dialog-content asset-dialog">
         <h4 class="section-title">資産マスタ</h4>
         
@@ -794,7 +789,7 @@ function formatTransactionType(type: string): string {
 
 function getAssetClassName(classId: string): string {
   const ac = assetClasses.value.find(x => x.id === classId)
-  return ac?.class_name || classId || ''
+  return ac?.class_name || ''
 }
 
 function getDepartmentName(deptId: string): string {

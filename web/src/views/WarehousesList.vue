@@ -47,7 +47,16 @@
       </div>
 
       <!-- 详情弹窗 -->
-      <el-dialog v-model="detailDialogVisible" :title="labels.detailTitle" width="700px" append-to-body>
+      <el-dialog v-model="detailDialogVisible" width="700px" append-to-body class="wh-detail-dialog">
+        <template #header>
+          <div class="dialog-header">
+            <span class="dialog-header-title">{{ labels.detailTitle }}</span>
+            <div class="dialog-header-actions">
+              <el-button type="primary" size="small" @click="editFromDetail">{{ buttons.edit }}</el-button>
+              <el-button size="small" @click="detailDialogVisible = false">{{ buttons.close }}</el-button>
+            </div>
+          </div>
+        </template>
         <el-descriptions :column="2" border>
           <el-descriptions-item :label="labels.code">{{ detailData.code }}</el-descriptions-item>
           <el-descriptions-item :label="labels.name">{{ detailData.name }}</el-descriptions-item>
@@ -76,23 +85,28 @@
         </div>
         <div v-else class="bins-empty">{{ labels.noBins }}</div>
         
-        <template #footer>
-          <el-button @click="detailDialogVisible = false">{{ buttons.close }}</el-button>
-          <el-button type="primary" @click="editFromDetail">{{ buttons.edit }}</el-button>
-        </template>
       </el-dialog>
 
       <!-- 新建/编辑弹窗 -->
-      <el-dialog 
-        v-model="editDialogVisible" 
-        :title="editMode === 'create' ? labels.createTitle : labels.editTitle" 
-        width="500px" 
+      <el-dialog
+        v-model="editDialogVisible"
+        width="500px"
         append-to-body
+        class="wh-edit-dialog"
       >
+        <template #header>
+          <div class="dialog-header">
+            <span class="dialog-header-title">{{ editMode === 'create' ? labels.createTitle : labels.editTitle }}</span>
+            <div class="dialog-header-actions">
+              <el-button type="primary" size="small" :loading="saving" @click="saveForm">{{ buttons.save }}</el-button>
+              <el-button size="small" @click="editDialogVisible = false">{{ buttons.cancel }}</el-button>
+            </div>
+          </div>
+        </template>
         <el-form ref="formRef" :model="editForm" :rules="formRules" label-width="100px">
           <el-form-item :label="labels.code" prop="code">
-            <el-input 
-              v-model="editForm.code" 
+            <el-input
+              v-model="editForm.code"
               :placeholder="labels.codePlaceholder"
               :disabled="editMode === 'edit'"
               maxlength="4"
@@ -103,19 +117,15 @@
             <el-input v-model="editForm.name" :placeholder="labels.namePlaceholder" />
           </el-form-item>
           <el-form-item :label="labels.status">
-            <el-switch 
-              v-model="editForm.inactive" 
-              :active-text="labels.inactive" 
+            <el-switch
+              v-model="editForm.inactive"
+              :active-text="labels.inactive"
               :inactive-text="labels.active"
               :active-value="true"
               :inactive-value="false"
             />
           </el-form-item>
         </el-form>
-        <template #footer>
-          <el-button @click="editDialogVisible = false">{{ buttons.cancel }}</el-button>
-          <el-button type="primary" :loading="saving" @click="saveForm">{{ buttons.save }}</el-button>
-        </template>
       </el-dialog>
     </el-card>
   </div>
@@ -417,5 +427,21 @@ onMounted(load)
   text-align: center;
   color: #909399;
   padding: 20px;
+}
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding-right: 32px;
+}
+.dialog-header-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+.dialog-header-actions {
+  display: flex;
+  gap: 8px;
 }
 </style>

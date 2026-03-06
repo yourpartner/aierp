@@ -5,6 +5,18 @@
         <div class="page-header">
           <div class="page-header-title">請求書一覧</div>
           <div class="page-actions">
+            <el-upload
+              ref="uploadRef"
+              :show-file-list="false"
+              :auto-upload="false"
+              :on-change="onFileSelected"
+              accept=".pdf,.png,.jpg,.jpeg,.gif,.webp"
+              style="display:inline-block; margin-right:8px"
+            >
+              <el-button :loading="recognizing">
+                <el-icon><Upload /></el-icon> AI識別
+              </el-button>
+            </el-upload>
             <el-button type="primary" @click="openCreateDialog">
               <el-icon><Plus /></el-icon> 新規登録
             </el-button>
@@ -77,10 +89,11 @@
       width="1100px" 
       destroy-on-close
     >
-      <VendorInvoiceForm 
+      <VendorInvoiceForm
         ref="formRef"
-        :dialog-mode="true" 
+        :dialog-mode="true"
         :edit-id="editingId"
+        :initial-data="recognizedData"
         @saved="onFormSaved"
         @cancel="showForm = false"
       />
@@ -182,7 +195,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { Plus, Search, Refresh } from '@element-plus/icons-vue'
+import { Plus, Search, Refresh, Upload } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import VendorInvoiceForm from './VendorInvoiceForm.vue'
@@ -205,6 +218,11 @@ const detailData = ref<any>(null)
 const showForm = ref(false)
 const editingId = ref<string>('')
 const formRef = ref<InstanceType<typeof VendorInvoiceForm> | null>(null)
+
+// AI識別
+const recognizing = ref(false)
+const uploadRef = ref<any>(null)
+const recognizedData = ref<any>(null)
 
 // 会计凭证弹窗
 const showVoucher = ref(false)
@@ -274,7 +292,7 @@ async function loadData() {
       page: page.value,
       pageSize: pageSize.value,
       where,
-      orderBy: [{ field: 'invoice_date', direction: 'desc' }]
+      orderBy: [{ field: 'invoice_date', dir: 'desc' }]
     })
     list.value = resp.data?.data || []
     total.value = resp.data?.total || 0
@@ -307,6 +325,7 @@ async function viewDetail(row: any) {
 
 function openCreateDialog() {
   editingId.value = ''
+  recognizedData.value = null
   showForm.value = true
 }
 
@@ -318,6 +337,7 @@ function editInvoice(row: any) {
 
 async function onFormSaved(data: { id: string }) {
   showForm.value = false
+  recognizedData.value = null
   await loadData()
   
   // 显示详情弹窗
@@ -374,6 +394,33 @@ function openVoucherDetail(voucherId?: string, voucherNo?: string) {
   currentVoucherId.value = voucherId || ''
   currentVoucherNo.value = voucherNo || ''
   showVoucher.value = true
+}
+
+async function onFileSelected(uploadFile: any) {
+  if (!uploadFile?.raw) return
+  recognizing.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', uploadFile.raw)
+    const resp = await api.post('/vendor-invoice/recognize', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000
+    })
+    if (resp.data?.recognized && resp.data?.data) {
+      recognizedData.value = resp.data.data
+      ElMessage.success('AI識別完了。フォームに反映します。')
+      // Open create dialog with pre-filled data
+      editingId.value = ''
+      showForm.value = true
+    } else {
+      ElMessage.warning('識別結果が取得できませんでした')
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || 'AI識別に失敗しました')
+  } finally {
+    recognizing.value = false
+    uploadRef.value?.clearFiles()
+  }
 }
 
 onMounted(() => {

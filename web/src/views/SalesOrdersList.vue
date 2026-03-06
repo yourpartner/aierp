@@ -50,7 +50,8 @@
 
       <el-dialog
         v-model="detailVisible"
-        width="auto"
+        width="900px"
+        :style="{ maxWidth: '96vw' }"
         :show-close="false"
         destroy-on-close
         append-to-body
@@ -732,12 +733,24 @@ async function openDetail(row: any) {
 </script>
 
 <style scoped>
+.so-detail-dialog :deep(.el-dialog__header) {
+  padding: 0;
+  margin-right: 0;
+}
+.so-detail-dialog :deep(.el-dialog__body) {
+  padding: 0;
+}
 .so-detail-card {
-  max-width: 900px;
-  margin: 0 auto;
+  box-shadow: none;
+  border: none;
+}
+.so-detail-card :deep(.el-card__header) {
+  border-bottom: 1px solid #e4e7ed;
+  padding: 14px 20px;
 }
 .so-detail-card :deep(.el-card__body) {
-  max-height: 70vh;
+  padding: 20px 24px;
+  max-height: calc(100vh - 200px);
   overflow-y: auto;
 }
 .detail-header {
@@ -779,12 +792,12 @@ async function openDetail(row: any) {
 .so-detail-layout {
   display: flex;
   gap: 20px;
-  width: fit-content;
+  width: 100%;
 }
 
 .so-detail-main {
-  flex: 0 0 auto;
-  width: 550px;
+  flex: 1;
+  min-width: 0;
 }
 
 .so-detail-progress {
@@ -1035,19 +1048,6 @@ async function openDetail(row: any) {
   color: #909399;
 }
 
-/* 受注編集ダイアログ */
-.edit-so-dialog :deep(.el-dialog__body) {
-  padding: 0;
-  overflow-y: auto;
-  max-height: 80vh;
-}
-
-/* 受注登録ダイアログ */
-.create-so-dialog :deep(.el-dialog__body) {
-  padding: 0;
-  overflow-y: auto;
-  max-height: 80vh;
-}
 
 /* アップロードステップ */
 .upload-step {

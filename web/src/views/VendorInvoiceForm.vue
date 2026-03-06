@@ -246,6 +246,7 @@ import api from '../api'
 const props = defineProps<{
   dialogMode?: boolean
   editId?: string
+  initialData?: any
 }>()
 
 const emit = defineEmits<{
@@ -703,11 +704,40 @@ async function loadData() {
 }
 
 // 暴露保存方法给父组件
-defineExpose({ save, saving })
+defineExpose({ save, saving, applyRecognizedData })
+
+function applyRecognizedData(data: any) {
+  if (!data) return
+  form.vendorInvoiceNo = data.vendorInvoiceNo || ''
+  form.invoiceDate = data.invoiceDate || new Date().toISOString().slice(0, 10)
+  form.dueDate = data.dueDate || ''
+  form.currency = data.currency || 'JPY'
+  form.invoiceAmount = data.totalAmount || data.subtotal || 0
+  form.memo = data.memo || ''
+
+  // Estimate total quantity from items
+  if (data.items?.length > 0) {
+    form.invoiceQuantity = data.items.reduce((sum: number, item: any) => sum + (item.quantity || 0), 0)
+  }
+
+  // Try to match vendor by name
+  if (data.vendorName) {
+    searchVendors(data.vendorName).then(() => {
+      if (vendorOptions.value.length > 0) {
+        form.vendorCode = vendorOptions.value[0].code
+        form.vendorName = vendorOptions.value[0].name
+        loadAvailableReceipts()
+      }
+    })
+  }
+}
 
 onMounted(() => {
   loadData()
   searchVendors('')
+  if (props.initialData) {
+    applyRecognizedData(props.initialData)
+  }
 })
 </script>
 

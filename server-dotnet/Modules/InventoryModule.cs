@@ -309,16 +309,16 @@ FROM inventory_balances
 WHERE company_code=$1
   AND material_code=$2
   AND warehouse_code=$3
-  AND ((bin_code IS NULL AND $4 IS NULL) OR bin_code = $4)
-  AND ((status_code IS NULL AND $5 IS NULL) OR status_code = $5)
-  AND ((batch_no IS NULL AND $6 IS NULL) OR batch_no = $6)
+  AND (COALESCE(bin_code,'') = COALESCE($4,''))
+  AND (COALESCE(status_code,'') = COALESCE($5,''))
+  AND (COALESCE(batch_no,'') = COALESCE($6,''))
 LIMIT 1";
                     balCmd.Parameters.AddWithValue(cc.ToString());
                     balCmd.Parameters.AddWithValue(material);
                     balCmd.Parameters.AddWithValue(NormalizeWarehouse(wh));
-                    balCmd.Parameters.AddWithValue((object?)bin ?? DBNull.Value);
-                    balCmd.Parameters.AddWithValue((object?)status ?? DBNull.Value);
-                    balCmd.Parameters.AddWithValue((object?)batch ?? DBNull.Value);
+                    balCmd.Parameters.AddWithValue(bin ?? string.Empty);
+                    balCmd.Parameters.AddWithValue(status ?? string.Empty);
+                    balCmd.Parameters.AddWithValue(batch ?? string.Empty);
                     var obj = await balCmd.ExecuteScalarAsync();
                     if (obj is null || obj is DBNull) return 0m;
                     if (obj is decimal d) return d;

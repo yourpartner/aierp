@@ -145,7 +145,7 @@ public static class InventoryCountModule
 
                 // 获取系统库存并创建盘点明细
                 var balanceSql = @"
-                    SELECT ib.material_code, ib.bin_code, ib.batch_no, ib.quantity, ib.uom,
+                    SELECT ib.material_code, ib.bin_code, ib.batch_no, ib.quantity, m.base_uom,
                            m.name as material_name
                     FROM inventory_balances ib
                     LEFT JOIN materials m ON m.company_code = ib.company_code AND m.material_code = ib.material_code

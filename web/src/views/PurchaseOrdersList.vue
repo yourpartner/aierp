@@ -619,7 +619,7 @@ async function loadData() {
       page: page.value,
       pageSize: pageSize.value,
       where,
-      orderBy: [{ field: 'order_date', direction: 'desc' }]
+      orderBy: [{ field: 'order_date', dir: 'desc' }]
     })
     list.value = resp.data?.data || []
     total.value = resp.data?.total || 0

@@ -1,6 +1,10 @@
+using Server.Infrastructure;
 using Server.Infrastructure.Modules;
 using Microsoft.AspNetCore.Http;
 using Npgsql;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 
 namespace Server.Modules.Standard;
 
@@ -13,7 +17,7 @@ public class PurchaseStandardModule : ModuleBase
     {
         Id = "purchase",
         Name = "采购管理",
-        Description = "采购订单、供应商发票等功能",
+        Description = "采购订单、供应商発票等功能",
         Category = ModuleCategory.Standard,
         Version = "1.0.0",
         Dependencies = new[] { "finance_core" },
@@ -24,7 +28,7 @@ public class PurchaseStandardModule : ModuleBase
             new MenuConfig { Id = "menu_vendor_invoices", Label = "menu.vendorInvoices", Icon = "Tickets", Path = "/vendor-invoices", ParentId = "menu_purchase", Order = 502 },
         }
     };
-    
+
     public override void RegisterServices(IServiceCollection services, IConfiguration configuration)
     {
         services.AddScoped<InvoiceRegistryService>();
@@ -71,6 +75,150 @@ public class PurchaseStandardModule : ModuleBase
         {
             return Results.Ok(new { receipts = Array.Empty<object>(), vouchers = Array.Empty<object>(), receivedSummary = new { } });
         }).RequireAuthorization();
+
+        // POST /vendor-invoice/recognize — upload PDF/image → AI recognition → return structured data
+        app.MapPost("/vendor-invoice/recognize", async (HttpRequest req, AzureBlobService blobService, IHttpClientFactory httpClientFactory, IConfiguration configuration) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            var apiKey = AiFileHelpers.ResolveOpenAIApiKey(req, configuration);
+            if (string.IsNullOrWhiteSpace(apiKey))
+                return Results.BadRequest(new { error = "OpenAI API key not configured" });
+
+            var formData = await req.ReadFormAsync(req.HttpContext.RequestAborted);
+            var file = formData.Files.GetFile("file");
+            if (file is null || file.Length <= 0)
+                return Results.BadRequest(new { error = "file required" });
+
+            var originalName = string.IsNullOrWhiteSpace(file.FileName) ? "invoice.bin" : file.FileName;
+            var contentType = string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType;
+            var ext = Path.GetExtension(originalName)?.ToLowerInvariant() ?? string.Empty;
+            var companyCode = cc.ToString().Trim();
+
+            // Read file into memory
+            await using var stream = file.OpenReadStream();
+            await using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, req.HttpContext.RequestAborted);
+            var fileBytes = buffer.ToArray();
+
+            // Upload to Azure Blob for archival
+            string? blobName = null;
+            string? blobUrl = null;
+            if (blobService.IsConfigured)
+            {
+                blobName = $"{companyCode}/purchase/invoices/{DateTime.UtcNow:yyyy/MM/dd}/{Guid.NewGuid():N}{ext}";
+                buffer.Position = 0;
+                await blobService.UploadAsync(buffer, blobName, contentType, req.HttpContext.RequestAborted);
+                try { blobUrl = blobService.GetReadUri(blobName); } catch { }
+            }
+
+            // Build base64 for Vision API
+            var base64 = fileBytes.Length > 0 ? Convert.ToBase64String(fileBytes) : null;
+
+            // Extract text preview for PDF
+            string? textPreview = null;
+            if (ext == ".pdf" || contentType.Contains("pdf", StringComparison.OrdinalIgnoreCase))
+            {
+                // Save to temp file for text extraction
+                var tempPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}{ext}");
+                try
+                {
+                    await File.WriteAllBytesAsync(tempPath, fileBytes, req.HttpContext.RequestAborted);
+                    textPreview = AiFileHelpers.ExtractTextPreview(tempPath, contentType, 4000);
+                }
+                finally
+                {
+                    try { File.Delete(tempPath); } catch { }
+                }
+            }
+
+            // Build OpenAI Vision API request
+            var userContent = new List<object>();
+            if (!string.IsNullOrWhiteSpace(textPreview))
+            {
+                userContent.Add(new { type = "text", text = AiFileHelpers.SanitizePreview(textPreview, 4000) ?? "" });
+            }
+            if (!string.IsNullOrWhiteSpace(base64))
+            {
+                var mimeType = string.IsNullOrWhiteSpace(contentType) ? "image/png" : contentType;
+                userContent.Add(new { type = "image_url", image_url = new { url = $"data:{mimeType};base64,{base64}" } });
+            }
+
+            var systemPrompt = @"あなたは仕入請求書（Vendor Invoice）の解析アシスタントです。
+ユーザーが提供する請求書（画像またはPDF）に基づき、次の JSON を出力してください：
+- vendorName: 請求元（仕入先）の会社名
+- vendorInvoiceNo: 請求書番号（記載があれば）
+- invoiceDate: 請求日（YYYY-MM-DD）
+- dueDate: 支払期限（YYYY-MM-DD、記載があれば）
+- currency: 通貨コード（既定は JPY）
+- totalAmount: 合計金額（税込、数値）
+- subtotal: 税抜合計（数値）
+- taxAmount: 消費税額（数値）
+- taxRate: 税率（パーセンテージ、整数）
+- invoiceRegistrationNo: 適格請求書発行事業者番号（^T\d{13}$ に一致する番号があれば）
+- items: 明細配列。各要素は以下を含む：
+  - description: 品名・摘要
+  - quantity: 数量（数値）
+  - unitPrice: 単価（数値）
+  - amount: 金額（数値）
+  - taxRate: 税率（パーセンテージ、整数）
+- bankInfo: 振込先情報（銀行名、支店名、口座種別、口座番号、口座名義）があれば記載
+- memo: その他の補足情報
+
+【重要】和暦から西暦への変換ルール：
+- 令和元年 = 2019年（令和N年 = 2018 + N 年）
+- 平成元年 = 1989年（平成N年 = 1988 + N 年）
+
+判別できない項目は空文字または 0 を返し、決して推測で値を作らないこと。";
+
+            var body = new
+            {
+                model = "gpt-4o",
+                temperature = 0.1,
+                response_format = new { type = "json_object" },
+                messages = new object[]
+                {
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = userContent.ToArray() }
+                }
+            };
+
+            var http = httpClientFactory.CreateClient("openai");
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            var jsonOpts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+            using var response = await http.PostAsync("chat/completions",
+                new StringContent(JsonSerializer.Serialize(body, jsonOpts), Encoding.UTF8, "application/json"),
+                req.HttpContext.RequestAborted);
+
+            var responseText = await response.Content.ReadAsStringAsync(req.HttpContext.RequestAborted);
+            if (!response.IsSuccessStatusCode)
+            {
+                return Results.Problem($"AI recognition failed: {response.StatusCode}");
+            }
+
+            using var doc = JsonDocument.Parse(responseText);
+            var aiContent = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+            if (string.IsNullOrWhiteSpace(aiContent))
+                return Results.Problem("AI returned empty result");
+
+            // Parse AI response and return
+            using var aiDoc = JsonDocument.Parse(aiContent);
+            return Results.Ok(new
+            {
+                recognized = true,
+                data = aiDoc.RootElement.Clone(),
+                attachment = new
+                {
+                    blobName,
+                    url = blobUrl,
+                    fileName = originalName,
+                    contentType,
+                    size = fileBytes.Length
+                }
+            });
+        }).RequireAuthorization().DisableAntiforgery();
     }
 }
 

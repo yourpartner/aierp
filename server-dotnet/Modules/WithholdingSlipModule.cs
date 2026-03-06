@@ -11,10 +11,26 @@ namespace Server.Modules;
 
 public static class WithholdingSlipModule
 {
+    const string JpFontFamily = "Noto Sans JP";
+    static bool _fontRegistered;
+
+    static void EnsureFontRegistered()
+    {
+        if (_fontRegistered) return;
+        var fontPath = Path.Combine(AppContext.BaseDirectory, "Fonts", "NotoSansJP.ttf");
+        if (File.Exists(fontPath))
+        {
+            using var stream = File.OpenRead(fontPath);
+            QuestPDF.Drawing.FontManager.RegisterFont(stream);
+        }
+        _fontRegistered = true;
+    }
+
     public static void MapWithholdingSlipModule(this WebApplication app)
     {
         app.MapGet("/payroll/withholding-slip/employees", HandleGetEmployees).RequireAuthorization();
         app.MapGet("/payroll/withholding-slip/check-existing", HandleCheckExisting).RequireAuthorization();
+        app.MapGet("/payroll/withholding-slip/list", HandleList).RequireAuthorization();
         app.MapPost("/payroll/withholding-slip/generate", HandleGenerate).RequireAuthorization();
     }
 
@@ -83,6 +99,53 @@ ORDER BY e.employee_code";
             catch { /* blob doesn't exist or error */ }
         }
         return Results.Ok(existing);
+    }
+
+    static async Task<IResult> HandleList(HttpRequest req, NpgsqlDataSource ds, AzureBlobService blobService, CancellationToken ct)
+    {
+        if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+            return Results.BadRequest(new { error = "Missing x-company-code" });
+        var companyCode = cc.ToString()!;
+        var year = req.Query["year"].FirstOrDefault() ?? DateTime.Today.Year.ToString();
+
+        if (!blobService.IsConfigured)
+            return Results.Ok(Array.Empty<object>());
+
+        var prefix = $"{companyCode}/withholding-slips/{year}/";
+        var items = new List<object>();
+
+        // Get employee names for display
+        var empNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        await using var conn = await ds.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT employee_code, COALESCE(payload->>'nameKanji', employee_code) FROM employees WHERE company_code=$1";
+        cmd.Parameters.AddWithValue(companyCode);
+        await using var rd = await cmd.ExecuteReaderAsync(ct);
+        while (await rd.ReadAsync(ct))
+            empNames[rd.GetString(0)] = rd.GetString(1);
+
+        await foreach (var blob in blobService.ListBlobsAsync(prefix, ct))
+        {
+            var blobName = blob.Name;
+            // Extract employee code from pattern: 源泉徴収票_{empCode}_{year}.pdf
+            var fileName = Path.GetFileNameWithoutExtension(blobName);
+            var parts = fileName.Split('_');
+            var empCode = parts.Length >= 2 ? parts[1] : "";
+            var name = empNames.TryGetValue(empCode, out var n) ? n : empCode;
+            var url = blobService.GetReadUri(blobName);
+
+            items.Add(new
+            {
+                employeeCode = empCode,
+                name,
+                blobName,
+                url,
+                createdOn = blob.Properties.CreatedOn?.ToOffset(TimeSpan.FromHours(9)).ToString("yyyy-MM-dd HH:mm"),
+                size = blob.Properties.ContentLength
+            });
+        }
+
+        return Results.Ok(items);
     }
 
     static async Task<IResult> HandleGenerate(HttpRequest req, NpgsqlDataSource ds, AzureBlobService blobService, CancellationToken ct)
@@ -391,6 +454,7 @@ WHERE e.company_code = $1 AND r.period_month LIKE $2 AND e.employee_code = $3
     static byte[] GeneratePdf(SlipData data, string year)
     {
         QuestPDF.Settings.License = LicenseType.Community;
+        EnsureFontRegistered();
         int yearInt = int.TryParse(year, out var y) ? y : DateTime.Today.Year;
         int reiwa = yearInt - 2018;
 
@@ -402,7 +466,7 @@ WHERE e.company_code = $1 AND r.period_month LIKE $2 AND e.employee_code = $3
                 page.MarginTop(25);
                 page.MarginBottom(20);
                 page.MarginHorizontal(30);
-                page.DefaultTextStyle(x => x.FontSize(8).FontFamily("Yu Gothic").FontColor(Colors.Black));
+                page.DefaultTextStyle(x => x.FontSize(8).FontFamily(JpFontFamily).FontColor(Colors.Black));
                 page.Content().Column(col => RenderSlip(col, data, yearInt, reiwa));
             });
         });

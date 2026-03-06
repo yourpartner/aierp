@@ -3,7 +3,7 @@
     <el-card>
       <template #header>
         <div class="page-header">
-          <div class="page-header-title">在庫台帳</div>
+          <div class="page-header-title">入出庫台帳</div>
           <div class="page-actions">
             <el-button :loading="loading" @click="load">{{ buttons.refresh }}</el-button>
           </div>

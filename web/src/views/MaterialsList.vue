@@ -215,7 +215,7 @@ onMounted(load)
 }
 
 .material-detail-dialog :deep(.el-dialog__body) {
-  padding: 0;
+  padding: 16px 20px;
   flex: 1;
   overflow-y: auto;
 }

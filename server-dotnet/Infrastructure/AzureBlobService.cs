@@ -78,6 +78,15 @@ public sealed class AzureBlobService
         return blobClient.Uri.ToString();
     }
 
+    public async IAsyncEnumerable<BlobItem> ListBlobsAsync(string prefix, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var container = EnsureContainer();
+        await foreach (var blob in container.GetBlobsAsync(prefix: prefix, cancellationToken: cancellationToken))
+        {
+            yield return blob;
+        }
+    }
+
     public async Task DeleteAsync(string? blobName, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(blobName))
