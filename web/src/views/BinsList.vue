@@ -51,7 +51,16 @@
       </div>
 
       <!-- 详情弹窗 -->
-      <el-dialog v-model="detailDialogVisible" :title="labels.detailTitle" width="500px" append-to-body>
+      <el-dialog v-model="detailDialogVisible" width="500px" append-to-body>
+        <template #header>
+          <div class="dialog-header">
+            <span class="dialog-header-title">{{ labels.detailTitle }}</span>
+            <div class="dialog-header-actions">
+              <el-button type="primary" size="small" @click="editFromDetail">{{ buttons.edit }}</el-button>
+              <el-button size="small" @click="detailDialogVisible = false">{{ buttons.close }}</el-button>
+            </div>
+          </div>
+        </template>
         <el-descriptions :column="1" border>
           <el-descriptions-item :label="labels.warehouse">{{ detailData.warehouseCode }}</el-descriptions-item>
           <el-descriptions-item :label="labels.code">{{ detailData.code }}</el-descriptions-item>
@@ -62,10 +71,6 @@
             </el-tag>
           </el-descriptions-item>
         </el-descriptions>
-        <template #footer>
-          <el-button @click="detailDialogVisible = false">{{ buttons.close }}</el-button>
-          <el-button type="primary" @click="editFromDetail">{{ buttons.edit }}</el-button>
-        </template>
       </el-dialog>
 
       <!-- 新建/编辑弹窗 -->

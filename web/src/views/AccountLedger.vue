@@ -137,10 +137,10 @@
             <span>{{ row.accountName ? `${row.accountName} (${row.accountCode})` : row.accountCode }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="amount" :label="labels.amount" width="120" align="right" sortable="custom">
+        <el-table-column prop="amount" :label="labels.amount" min-width="130" align="right" sortable="custom">
           <template #default="{ row }">{{ formatAmount(row.amount) }}</template>
         </el-table-column>
-        <el-table-column prop="balance" :label="labels.balance" width="120" align="right">
+        <el-table-column prop="balance" :label="labels.balance" min-width="130" align="right">
           <template #default="{ row }">
             <span :class="{ 'negative-balance': row.balance < 0 }">{{ formatAmount(row.balance) }}</span>
           </template>
@@ -209,6 +209,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import { Download, Document } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
 import api from '../api'
@@ -506,10 +507,11 @@ async function load() {
     const data = r.data?.data || []
     total.value = r.data?.total || data.length
 
-    // 预取创建人信息（不阻塞主流程）
+    // 预取创建人信息（等待完成以避免UUID闪烁）
+    if (!userIndexLoaded.value) await loadUsersIndex()
     try {
       const ids = data.map((x: any) => String(x?.createdBy ?? '').trim()).filter((x: string) => isUuid(x))
-      void ensureUsers(ids)
+      await ensureUsers(ids)
     } catch {}
 
     // 处理数据，补充科目名称和取引先名称
@@ -526,7 +528,7 @@ async function load() {
       }
     })
   } catch (e) {
-    console.error('加载勘定明細失败', e)
+    ElMessage.error('勘定明細の取得に失敗しました')
     rows.value = []
     total.value = 0
   } finally {

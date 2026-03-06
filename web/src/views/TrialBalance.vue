@@ -255,6 +255,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed } from 'vue'
+import { ElMessage } from 'element-plus'
 import { Download, CircleCheck, WarningFilled, DataAnalysis } from '@element-plus/icons-vue'
 import api from '../api'
 import { useI18n } from '../i18n'
@@ -354,9 +355,6 @@ const voucherDetailRef = ref<InstanceType<typeof VouchersList> | null>(null)
 const currentVoucherId = ref<string>('')
 const currentVoucherNo = ref<string>('')
 
-// テーブルデータ（合計行を追加）
-const tableData = computed(() => rows.value)
-
 // データ読み込み
 async function load() {
   loading.value = true
@@ -382,7 +380,7 @@ async function load() {
     totals.value = r.data?.totals || null
     period.value = r.data?.period || null
   } catch (e) {
-    console.error('試算表の取得に失敗しました', e)
+    ElMessage.error('試算表の取得に失敗しました')
     rows.value = []
     totals.value = null
     period.value = null
@@ -444,9 +442,11 @@ function getSummaries({ columns }: { columns: any[] }) {
 }
 
 // 明細表示
+let detailRequestId = 0
 async function showDetails(row: any, drcr: 'DR' | 'CR') {
   if (!period.value) return
-  
+
+  const requestId = ++detailRequestId
   detailTitle.value = `${row.accountCode} ${row.accountName} - ${drcr === 'DR' ? labels.value.debit : labels.value.credit}明細`
   detailDialogVisible.value = true
   detailLoading.value = true
@@ -461,13 +461,15 @@ async function showDetails(row: any, drcr: 'DR' | 'CR') {
       pageSize: 500
     }
     const r = await api.post('/reports/account-ledger', params)
+    if (requestId !== detailRequestId) return // stale request
     let data = r.data?.data || []
     data = data.filter((item: any) => item.drcr === drcr)
     detailRows.value = data
   } catch (e) {
-    console.error('明細の取得に失敗しました', e)
+    if (requestId !== detailRequestId) return
+    ElMessage.error('明細の取得に失敗しました')
   } finally {
-    detailLoading.value = false
+    if (requestId === detailRequestId) detailLoading.value = false
   }
 }
 

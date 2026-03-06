@@ -75,7 +75,16 @@
     </el-card>
 
     <!-- 创建盘点单对话框 -->
-    <el-dialog v-model="createDialog.visible" :title="labels.createTitle" width="500px">
+    <el-dialog v-model="createDialog.visible" width="500px">
+      <template #header>
+        <div class="dialog-header">
+          <span class="dialog-header-title">{{ labels.createTitle }}</span>
+          <div class="dialog-header-actions">
+            <el-button type="primary" size="small" :loading="createDialog.loading" @click="createCount">{{ labels.create }}</el-button>
+            <el-button size="small" @click="createDialog.visible = false">{{ labels.cancel }}</el-button>
+          </div>
+        </div>
+      </template>
       <el-form :model="createDialog.form" label-width="100px">
         <el-form-item :label="labels.warehouse" required>
           <el-select v-model="createDialog.form.warehouseCode" :placeholder="labels.selectWarehouse" style="width: 100%">
@@ -94,10 +103,6 @@
           <el-input v-model="createDialog.form.description" type="textarea" :rows="2" />
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="createDialog.visible = false">{{ labels.cancel }}</el-button>
-        <el-button type="primary" :loading="createDialog.loading" @click="createCount">{{ labels.create }}</el-button>
-      </template>
     </el-dialog>
 
     <!-- 盘点详情/录入对话框 -->

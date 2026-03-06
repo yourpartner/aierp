@@ -123,21 +123,21 @@
             {{ getCategoryName(row.category) }}
           </template>
         </el-table-column>
-        <el-table-column label="入金" align="right" width="120">
+        <el-table-column label="入金" align="right" min-width="130">
           <template #default="{ row }">
             <span v-if="row.transactionType === 'receipt' || row.transactionType === 'replenish'" class="amount receipt">
               {{ formatCurrency(row.amount) }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="出金" align="right" width="120">
+        <el-table-column label="出金" align="right" min-width="130">
           <template #default="{ row }">
             <span v-if="row.transactionType === 'payment'" class="amount payment">
               {{ formatCurrency(row.amount) }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column prop="balanceAfter" label="残高" align="right" width="130">
+        <el-table-column prop="balanceAfter" label="残高" align="right" min-width="140">
           <template #default="{ row }">
             <span class="amount-balance">{{ formatCurrency(row.balanceAfter) }}</span>
           </template>
@@ -146,7 +146,16 @@
     </el-card>
 
     <!-- 入金フォーム -->
-    <el-dialog v-model="showReceiptForm" title="入金登録" width="500px" destroy-on-close append-to-body class="cash-ledger-dialog">
+    <el-dialog v-model="showReceiptForm" width="500px" destroy-on-close append-to-body class="cash-ledger-dialog">
+      <template #header>
+        <div class="dialog-header">
+          <span class="dialog-header-title">入金登録</span>
+          <div class="dialog-header-actions">
+            <el-button type="primary" size="small" @click="submitReceipt" :loading="submitting">登録</el-button>
+            <el-button size="small" @click="showReceiptForm = false">キャンセル</el-button>
+          </div>
+        </div>
+      </template>
       <el-form :model="receiptForm" label-width="100px">
         <el-form-item label="日付" required>
           <el-date-picker v-model="receiptForm.transactionDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
@@ -175,14 +184,19 @@
           </el-form-item>
         </template>
       </el-form>
-      <template #footer>
-        <el-button @click="showReceiptForm = false">キャンセル</el-button>
-        <el-button type="primary" @click="submitReceipt" :loading="submitting">登録</el-button>
-      </template>
     </el-dialog>
 
     <!-- 出金フォーム -->
-    <el-dialog v-model="showPaymentForm" title="出金登録" width="500px" destroy-on-close append-to-body class="cash-ledger-dialog">
+    <el-dialog v-model="showPaymentForm" width="500px" destroy-on-close append-to-body class="cash-ledger-dialog">
+      <template #header>
+        <div class="dialog-header">
+          <span class="dialog-header-title">出金登録</span>
+          <div class="dialog-header-actions">
+            <el-button type="warning" size="small" @click="submitPayment" :loading="submitting">登録</el-button>
+            <el-button size="small" @click="showPaymentForm = false">キャンセル</el-button>
+          </div>
+        </div>
+      </template>
       <el-form :model="paymentForm" label-width="100px">
         <el-form-item label="日付" required>
           <el-date-picker v-model="paymentForm.transactionDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
@@ -216,14 +230,19 @@
           </el-form-item>
         </template>
       </el-form>
-      <template #footer>
-        <el-button @click="showPaymentForm = false">キャンセル</el-button>
-        <el-button type="warning" @click="submitPayment" :loading="submitting">登録</el-button>
-      </template>
     </el-dialog>
 
     <!-- 実査フォーム -->
-    <el-dialog v-model="showCountForm" title="現金実査" width="500px" destroy-on-close append-to-body class="cash-ledger-dialog">
+    <el-dialog v-model="showCountForm" width="500px" destroy-on-close append-to-body class="cash-ledger-dialog">
+      <template #header>
+        <div class="dialog-header">
+          <span class="dialog-header-title">現金実査</span>
+          <div class="dialog-header-actions">
+            <el-button type="primary" size="small" @click="submitCount" :loading="submitting">実査完了</el-button>
+            <el-button size="small" @click="showCountForm = false">キャンセル</el-button>
+          </div>
+        </div>
+      </template>
       <el-form :model="countForm" label-width="120px">
         <el-form-item label="実査日" required>
           <el-date-picker v-model="countForm.countDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
@@ -244,14 +263,19 @@
           <el-switch v-model="countForm.createAdjustmentVoucher" />
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="showCountForm = false">キャンセル</el-button>
-        <el-button type="primary" @click="submitCount" :loading="submitting">実査完了</el-button>
-      </template>
     </el-dialog>
 
     <!-- 補充フォーム -->
-    <el-dialog v-model="showReplenishForm" title="現金補充" width="560px" destroy-on-close append-to-body class="cash-ledger-dialog">
+    <el-dialog v-model="showReplenishForm" width="560px" destroy-on-close append-to-body class="cash-ledger-dialog">
+      <template #header>
+        <div class="dialog-header">
+          <span class="dialog-header-title">現金補充</span>
+          <div class="dialog-header-actions">
+            <el-button type="success" size="small" @click="submitReplenish" :loading="submitting">補充実行</el-button>
+            <el-button size="small" @click="showReplenishForm = false">キャンセル</el-button>
+          </div>
+        </div>
+      </template>
       <el-form :model="replenishForm" label-width="120px">
         <el-form-item label="補充先">
           <el-input :model-value="`${currentAccount?.name || ''} (${filter.cashCode})`" disabled />
@@ -278,19 +302,19 @@
         <el-form-item label="補充元" required>
           <el-select v-model="replenishForm.sourceAccountCode" style="width: 100%" placeholder="選択してください">
             <el-option-group label="銀行口座">
-              <el-option 
-                v-for="src in replenishSources.filter(s => s.isBank)" 
-                :key="src.code" 
-                :label="`${src.name} (${src.code})`" 
-                :value="src.code" 
+              <el-option
+                v-for="src in replenishSources.filter(s => s.isBank)"
+                :key="src.code"
+                :label="`${src.name} (${src.code})`"
+                :value="src.code"
               />
             </el-option-group>
             <el-option-group label="現金口座">
-              <el-option 
-                v-for="src in replenishSources.filter(s => s.isCash)" 
-                :key="src.code" 
-                :label="`${src.name} (${src.code})`" 
-                :value="src.code" 
+              <el-option
+                v-for="src in replenishSources.filter(s => s.isCash)"
+                :key="src.code"
+                :label="`${src.name} (${src.code})`"
+                :value="src.code"
               />
             </el-option-group>
           </el-select>
@@ -308,10 +332,6 @@
           </span>
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="showReplenishForm = false">キャンセル</el-button>
-        <el-button type="success" @click="submitReplenish" :loading="submitting">補充実行</el-button>
-      </template>
     </el-dialog>
 
     <!-- 凭证详情弹窗 -->
@@ -518,7 +538,7 @@ async function loadCashAccounts() {
       filter.value.cashCode = cashAccounts.value[0].cashCode
     }
   } catch (e: any) {
-    console.error('Failed to load cash accounts:', e)
+    ElMessage.error('現金口座の取得に失敗しました')
   }
 }
 
@@ -556,7 +576,7 @@ async function loadAccounts() {
       name: a.payload?.name || a.account_code
     }))
   } catch (e) {
-    console.error('Failed to load accounts:', e)
+    ElMessage.error('勘定科目の取得に失敗しました')
   }
 }
 
@@ -565,7 +585,7 @@ async function loadExpenseCategories() {
     const resp = await api.get('/cash/expense-categories')
     expenseCategories.value = resp.data || []
   } catch (e) {
-    console.error('Failed to load expense categories:', e)
+    // expense categories are optional, silent failure OK
   }
 }
 
@@ -667,9 +687,10 @@ async function submitCount() {
 }
 
 // 打开补充对话框
+const replenishLoading = ref(false)
 async function openReplenishForm() {
-  if (!filter.value.cashCode) return
-  
+  if (!filter.value.cashCode || replenishLoading.value) return
+
   // 重置表单
   replenishForm.value = {
     replenishDate: new Date().toISOString().split('T')[0],
@@ -680,7 +701,8 @@ async function openReplenishForm() {
   }
   
   showReplenishForm.value = true
-  
+  replenishLoading.value = true
+
   // 并行加载补充源和定额信息
   try {
     const [sourcesRes, imprestRes] = await Promise.all([
@@ -690,9 +712,7 @@ async function openReplenishForm() {
     
     replenishSources.value = Array.isArray(sourcesRes.data) ? sourcesRes.data : []
     imprestInfo.value = imprestRes.data || null
-    
-    console.log('Replenish sources:', replenishSources.value)
-    
+
     // 如果有推荐补充额，默认填入
     if (imprestInfo.value?.recommendedAmount > 0) {
       replenishForm.value.amount = imprestInfo.value.recommendedAmount
@@ -709,8 +729,9 @@ async function openReplenishForm() {
       ElMessage.warning('補充可能な口座（銀行または他の現金口座）がありません。勘定科目の設定を確認してください。')
     }
   } catch (e: any) {
-    console.error('Failed to load replenish info:', e)
     ElMessage.error(e.response?.data?.error || '補充情報の取得に失敗しました')
+  } finally {
+    replenishLoading.value = false
   }
 }
 
@@ -1059,10 +1080,23 @@ onMounted(async () => {
   padding: 20px;
 }
 
-.el-dialog.cash-ledger-dialog .el-dialog__footer {
-  background-color: #fff !important;
-  border-top: 1px solid #e4e7ed;
-  padding: 12px 20px;
+.cash-ledger-dialog .dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.cash-ledger-dialog .dialog-header-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.cash-ledger-dialog .dialog-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* 确保遮罩层正确显示 */

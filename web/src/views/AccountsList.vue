@@ -92,11 +92,9 @@
 <script setup lang="ts">
 import { onMounted, ref, reactive, watch, computed, inject, nextTick } from 'vue'
 import api from '../api'
-import DynamicForm from '../components/DynamicForm.vue'
-import BankBranchPicker from '../components/BankBranchPicker.vue'
 import AccountEditor from '../components/AccountEditor.vue'
 import { useI18n } from '../i18n'
-import { Close, Notebook } from '@element-plus/icons-vue'
+import { Notebook } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import { buildFsTreeOptions, defaultTreeSelectProps, type FsTreeOption } from '../utils/fsTree'
 
@@ -190,17 +188,9 @@ const rows = ref<any[]>([])
 const loading = ref(false)
 const show = ref(false)
 const saving = ref(false)
-const msg = ref('')
-const err = ref('')
-const ui = ref<any>(null)
-const uiSource = ref<any>(null)
-const uiLoading = ref(false)
-const uiError = ref('')
 const currentId = ref<string>('')
 const editorRef = ref<any>(null)
 const editForm = reactive<any>({})
-const showBank = ref(false)
-const showBranch = ref(false)
 const balanceGroupSource = ref<any[]>([])
 const profitGroupSource = ref<any[]>([])
 const balanceGroups = ref<FsTreeOption[]>([])
@@ -692,46 +682,6 @@ onMounted(async () => {
   }
 })
 
-async function saveEdit() {
-  if (!currentId.value) return
-  saving.value = true
-  msg.value = ''
-  err.value = ''
-  try {
-    const normalized = normalizeAccountPayload(editForm)
-    const body = { payload: normalized }
-    const r = await api.put(`/objects/account/${currentId.value}`, body)
-    const idx = rows.value.findIndex(x => x.id === currentId.value)
-    if (idx >= 0) rows.value[idx] = r.data
-    msg.value = commonText.value.saved
-  } catch (e: any) {
-    const baseErr = e?.response?.data?.error || e?.message || commonText.value.saveFailed
-    const details = e?.response?.data?.details
-    // include key payload fields to make schema mismatch diagnosable without devtools
-    const sent = (() => {
-      try {
-        const p = normalizeAccountPayload(editForm)
-        return {
-          code: p.code,
-          isBank: p.isBank,
-          isCash: p.isCash,
-          taxType: p.taxType,
-          bankInfo: p.bankInfo
-            ? { accountType: p.bankInfo.accountType, bankName: p.bankInfo.bankName, branchName: p.bankInfo.branchName, currency: p.bankInfo.currency }
-            : null
-        }
-      } catch {
-        return null
-      }
-    })()
-    err.value = details
-      ? `${baseErr}\n${JSON.stringify(details)}\nSENT=${JSON.stringify(sent)}`
-      : `${baseErr}\nSENT=${JSON.stringify(sent)}`
-  } finally {
-    saving.value = false
-  }
-}
-
 function categoryLabel(v: string) {
   return categoryMap.value[v] || v || accountsText.value.none
 }
@@ -740,36 +690,9 @@ function taxLabel(v: string) {
   return taxMap.value[v] || v || accountsText.value.none
 }
 
-function onAction(name: string) {
-  if (name === 'openBankPicker') showBank.value = true
-  if (name === 'openBranchPicker' && editForm?.bankInfo?.bankCode) showBranch.value = true
-}
-
-function ensureBankInfo() {
-  if (!editForm.bankInfo) editForm.bankInfo = {}
-}
-
-function onPickBank(row: any) {
-  ensureBankInfo()
-  editForm.bankInfo.bankCode = row.payload.bankCode
-  // 显示格式：编号 名称
-  editForm.bankInfo.bankName = `${row.payload.bankCode} ${row.payload.name}`
-  delete editForm.bankInfo.branchCode
-  delete editForm.bankInfo.branchName
-  showBank.value = false
-}
-
-function onPickBranch(row: any) {
-  ensureBankInfo()
-  editForm.bankInfo.branchCode = row.payload.branchCode
-  // 显示格式：编号 名称
-  editForm.bankInfo.branchName = `${row.payload.branchCode} ${row.payload.branchName}`
-  showBranch.value = false
-}
-
 watch(() => editForm.isBank, (val: boolean) => {
   if (val) {
-    ensureBankInfo()
+    if (!editForm.bankInfo) editForm.bankInfo = {}
   } else {
     delete editForm.bankInfo
   }
@@ -777,12 +700,6 @@ watch(() => editForm.isBank, (val: boolean) => {
 
 watch(() => editForm.isCash, (val: boolean) => {
   if (!val) delete editForm.cashCurrency
-})
-
-watch(() => lang.value, () => {
-  if (uiSource.value) {
-    ui.value = transformUi(uiSource.value)
-  }
 })
 
 </script>
