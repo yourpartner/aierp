@@ -35,6 +35,8 @@ export interface Messages {
     payrollExecute: string
     payrollHistory: string
     residentTax: string
+    bonusCalc: string
+    yearEndAdjustment: string
     timesheets: string
     timesheetNew: string
     certRequest: string
@@ -862,6 +864,8 @@ export const ja: Messages = {
     payrollExecute: '給与計算',
     payrollHistory: '給与履歴',
     residentTax: '住民税',
+    bonusCalc: '賞与計算',
+    yearEndAdjustment: '年末調整',
     timesheets: '工数一覧',
     timesheetNew: '工数入力',
     certRequest: '証明書申請',
@@ -1953,6 +1957,8 @@ export const en: Messages = {
     payrollExecute: 'Payroll',
     payrollHistory: 'Payroll History',
     residentTax: 'Resident Tax',
+    bonusCalc: 'Bonus Calculation',
+    yearEndAdjustment: 'Year-End Adjustment',
     timesheets: 'Timesheets',
     timesheetNew: 'New Timesheet',
     certRequest: 'Certificate Request',
@@ -2996,6 +3002,8 @@ zh.nav = {
   payrollExecute: '薪资计算',
   payrollHistory: '薪资历史',
   residentTax: '住民税',
+  bonusCalc: '奖金计算',
+  yearEndAdjustment: '年末调整',
   timesheets: '工时列表',
   timesheetNew: '录入工时',
   certRequest: '证明申请',

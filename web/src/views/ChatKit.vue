@@ -3675,6 +3675,8 @@ const pathToEmbedKeyMap: Record<string, string> = {
   '/hr/resident-tax': 'hr.resident_tax',
   '/hr/wage-ledger': 'hr.wageLedger',
   '/hr/withholding-slip': 'hr.withholdingSlip',
+  '/hr/bonus-calc': 'hr.bonusCalc',
+  '/hr/year-end-adjustment': 'hr.yearEndAdjustment',
   '/timesheets': 'timesheets.list',
   // 系统模块
   '/company/settings': 'company.settings',
@@ -3881,6 +3883,8 @@ const embedMap:Record<string, any> = {
   ,'hr.wage_ledger': defineAsyncComponent(() => import('./hr/WageLedger.vue'))
   ,'hr.wageLedger': defineAsyncComponent(() => import('./hr/WageLedger.vue'))
   ,'hr.withholdingSlip': defineAsyncComponent(() => import('./hr/WithholdingSlipMock.vue'))
+  ,'hr.bonusCalc': defineAsyncComponent(() => import('./hr/BonusCalc.vue'))
+  ,'hr.yearEndAdjustment': defineAsyncComponent(() => import('./hr/YearEndAdjustment.vue'))
   ,'timesheets.list': defineAsyncComponent(() => import('./TimesheetsList.vue'))
   ,'timesheet.new': defineAsyncComponent(() => import('./TimesheetForm.vue'))
   ,'cert.request': CertificateRequestForm

@@ -21,6 +21,8 @@ public class PayrollStandardModule : ModuleBase
             new MenuConfig { Id = "menu_payroll_execute", Label = "menu.payrollExecute", Icon = "CircleCheck", Path = "/payroll-execute", ParentId = "menu_hr", Order = 212, Permission = "payroll.execute" },
             new MenuConfig { Id = "menu_payroll_history", Label = "menu.payrollHistory", Icon = "Clock", Path = "/payroll-history", ParentId = "menu_hr", Order = 213, Permission = "payroll.history" },
             new MenuConfig { Id = "hr.resident_tax", Label = "menu.residentTax", Icon = "Money", Path = "/hr/resident-tax", ParentId = "menu_hr", Order = 214, Permission = "payroll:resident_tax" },
+            new MenuConfig { Id = "hr.bonus_calc", Label = "menu.bonusCalc", Icon = "Money", Path = "/hr/bonus-calc", ParentId = "menu_hr", Order = 215, Permission = "payroll:execute" },
+            new MenuConfig { Id = "hr.year_end_adjustment", Label = "menu.yearEndAdjustment", Icon = "Document", Path = "/hr/year-end-adjustment", ParentId = "menu_hr", Order = 216, Permission = "payroll:execute" },
         }
     };
     
@@ -38,6 +40,8 @@ public class PayrollStandardModule : ModuleBase
         app.MapHrPayrollModule();
         app.MapWageLedgerModule();
         app.MapWithholdingSlipModule();
+        BonusPayrollModule.MapEndpoints(app);
+        YearEndAdjustmentModule.MapEndpoints(app);
     }
 }
 
