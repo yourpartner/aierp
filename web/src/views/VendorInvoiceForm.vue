@@ -13,19 +13,36 @@
 
       <el-alert v-if="err" type="error" :title="err" show-icon :closable="false" style="margin-bottom:16px" />
 
+      <!-- PDF/画像識別 -->
+      <div class="recognize-section">
+        <el-upload
+          :auto-upload="false"
+          :show-file-list="false"
+          accept=".pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp"
+          :on-change="onFileSelected"
+        >
+          <el-button type="primary" plain :loading="recognizing">
+            <el-icon><Upload /></el-icon> PDF/画像から読取
+          </el-button>
+        </el-upload>
+        <span v-if="form.attachment" class="attachment-badge">
+          <el-icon><Document /></el-icon> {{ form.attachment.fileName || '添付済み' }}
+        </span>
+      </div>
+
       <!-- 基本信息 -->
       <el-form label-position="left" label-width="100px" class="form-section">
         <el-row :gutter="20">
           <el-col :span="12">
             <el-form-item label="仕入先" required>
-              <el-select 
-                v-model="form.vendorCode" 
-                filterable 
-                remote 
-                reserve-keyword 
-                :remote-method="searchVendors" 
-                :loading="vendorLoading" 
-                placeholder="仕入先を検索..." 
+              <el-select
+                v-model="form.vendorCode"
+                filterable
+                remote
+                reserve-keyword
+                :remote-method="searchVendors"
+                :loading="vendorLoading"
+                placeholder="仕入先を検索..."
                 style="width:100%"
                 @change="onVendorChange"
               >
@@ -35,10 +52,10 @@
           </el-col>
           <el-col :span="6">
             <el-form-item label="請求日" required>
-              <el-date-picker 
-                v-model="form.invoiceDate" 
-                type="date" 
-                value-format="YYYY-MM-DD" 
+              <el-date-picker
+                v-model="form.invoiceDate"
+                type="date"
+                value-format="YYYY-MM-DD"
                 style="width:100%"
                 @change="onInvoiceDateChange"
               />
@@ -54,20 +71,20 @@
         <el-row :gutter="20">
           <el-col :span="5">
             <el-form-item label="請求数量" required>
-              <el-input-number 
-                v-model="form.invoiceQuantity" 
-                :min="0" 
+              <el-input-number
+                v-model="form.invoiceQuantity"
+                :min="0"
                 :max="99999999"
-                :controls="false" 
-                style="width:100%" 
+                :controls="false"
+                style="width:100%"
                 @change="autoMatchReceipts"
               />
             </el-form-item>
           </el-col>
           <el-col :span="5">
             <el-form-item label="請求金額" required>
-              <el-input 
-                v-model="formattedInvoiceAmount" 
+              <el-input
+                v-model="formattedInvoiceAmount"
                 style="width:100%"
                 @blur="onAmountBlur"
               >
@@ -75,17 +92,17 @@
               </el-input>
             </el-form-item>
           </el-col>
-          <el-col :span="4">
+          <el-col :span="5">
             <el-form-item label="通貨">
               <el-select v-model="form.currency" style="width:100%">
-                <el-option label="JPY" value="JPY" />
-                <el-option label="USD" value="USD" />
-                <el-option label="CNY" value="CNY" />
+                <el-option label="JPY - 日本円" value="JPY" />
+                <el-option label="USD - 米ドル" value="USD" />
+                <el-option label="CNY - 人民元" value="CNY" />
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="10">
-            <el-form-item label="仕入先請求書番号" label-width="130px" class="nowrap-label">
+          <el-col :span="9">
+            <el-form-item label="請求書番号" label-width="100px" class="nowrap-label">
               <el-input v-model="form.vendorInvoiceNo" placeholder="任意" />
             </el-form-item>
           </el-col>
@@ -240,7 +257,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Warning, InfoFilled, Loading } from '@element-plus/icons-vue'
+import { Warning, InfoFilled, Loading, Upload, Document } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '../api'
 
@@ -270,6 +287,7 @@ const selectedCrAccount = ref('')
 const pendingPayload = ref<any>(null)
 
 const saving = ref(false)
+const recognizing = ref(false)
 const loadingReceipts = ref(false)
 const err = ref('')
 
@@ -522,6 +540,35 @@ function onReceiptSelectionChange(selection: any[]) {
   selectedReceipts.value = selection
 }
 
+// PDF/画像識別
+async function onFileSelected(uploadFile: any) {
+  if (!uploadFile?.raw) return
+  recognizing.value = true
+  err.value = ''
+  try {
+    const fd = new FormData()
+    fd.append('file', uploadFile.raw)
+    const resp = await api.post('/vendor-invoice/recognize', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    if (resp.data?.recognized && resp.data?.data) {
+      const recognized = resp.data.data
+      // 添付情報を保存
+      if (resp.data.attachment) recognized._attachment = resp.data.attachment
+      applyRecognizedData(recognized)
+      ElMessage.success('読取完了')
+    } else {
+      ElMessage.warning('識別結果が取得できませんでした')
+    }
+  } catch (e: any) {
+    const msg = e?.response?.data?.detail || e?.response?.data?.error || '識別に失敗しました'
+    err.value = msg
+    ElMessage.error(msg)
+  } finally {
+    recognizing.value = false
+  }
+}
+
 function onCancel() {
   if (props.dialogMode) {
     emit('cancel')
@@ -772,6 +819,25 @@ onMounted(() => {
 .page-header-title {
   font-size: 18px;
   font-weight: 600;
+}
+
+.recognize-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: #f5f7fa;
+  border-radius: 6px;
+  border: 1px dashed #dcdfe6;
+}
+
+.attachment-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #409eff;
 }
 
 .form-section {
