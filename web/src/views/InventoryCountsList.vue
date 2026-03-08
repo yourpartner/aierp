@@ -101,7 +101,7 @@
     </el-dialog>
 
     <!-- 盘点详情/录入对话框 -->
-    <el-dialog v-model="detailDialog.visible" :title="detailDialog.title" width="1000px" :style="{ maxWidth: '95vw' }" top="5vh" append-to-body destroy-on-close class="count-detail-dialog">
+    <el-dialog v-model="detailDialog.visible" :title="detailDialog.title" width="1200px" :style="{ maxWidth: '95vw' }" top="5vh" append-to-body destroy-on-close class="count-detail-dialog">
       <template #header>
         <div class="dialog-header">
           <span class="dialog-header-title">{{ detailDialog.title }}</span>
@@ -164,7 +164,7 @@
               <span v-else>-</span>
             </template>
           </el-table-column>
-          <el-table-column :label="labels.varianceReason" min-width="150">
+          <el-table-column :label="labels.varianceReason" min-width="200">
             <template #default="{ row }">
               <el-input
                 v-if="detailDialog.mode === 'edit' && (detailDialog.data.status === 'draft' || detailDialog.data.status === 'in_progress') && row.actual_qty != null && row.actual_qty !== row.system_qty"
@@ -544,6 +544,13 @@ async function deleteCount(id: string) {
 .dialog-header-actions {
   display: flex;
   gap: 8px;
+}
+</style>
+
+<style>
+/* 盘点详情弹窗统一边距 */
+.count-detail-dialog .el-dialog__body {
+  padding: 16px 20px;
 }
 </style>
 
