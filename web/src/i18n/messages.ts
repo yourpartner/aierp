@@ -1707,6 +1707,7 @@ export const ja: Messages = {
     expirationdate: '有効期限',
     manufacturedate: '製造日',
     mfgdate: '製造日',
+    expdate: '有効期限',
     productiondate: '製造日',
     batchdate: 'ロット日',
     barcode: 'バーコード',
