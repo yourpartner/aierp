@@ -285,7 +285,8 @@ const form = reactive({
   currency: 'JPY',
   invoiceQuantity: 0,
   invoiceAmount: 0,
-  memo: ''
+  memo: '',
+  attachment: null as any  // AI識別時のPDF添付情報
 })
 
 // 供应商搜索
@@ -589,6 +590,9 @@ async function save() {
     lines
   }
 
+  // 添付ファイル情報を保持
+  if (form.attachment) payload.attachment = form.attachment
+
   // 如果已选择科目，添加到 payload
   if (selectedDrAccount.value) payload.selectedDrAccount = selectedDrAccount.value
   if (selectedCrAccount.value) payload.selectedCrAccount = selectedCrAccount.value
@@ -679,7 +683,8 @@ async function loadData() {
       form.invoiceQuantity = data.invoiceQuantity || 0
       form.invoiceAmount = data.invoiceAmount || 0
       form.memo = data.memo || ''
-      
+      form.attachment = data.attachment || null
+
       // 加载供应商选项
       if (form.vendorCode) {
         vendorOptions.value = [{ code: form.vendorCode, name: form.vendorName, label: `${form.vendorName} (${form.vendorCode})` }]
@@ -715,6 +720,8 @@ function applyRecognizedData(data: any) {
   form.currency = data.currency || 'JPY'
   form.invoiceAmount = data.totalAmount || data.subtotal || 0
   form.memo = data.memo || ''
+  // 保存附件信息
+  if (data._attachment) form.attachment = data._attachment
 
   // Estimate total quantity from items
   if (data.items?.length > 0) {

@@ -219,6 +219,25 @@ public class PurchaseStandardModule : ModuleBase
                 }
             });
         }).RequireAuthorization().DisableAntiforgery();
+
+        // GET /blob/download-url?name=xxx — get fresh SAS URL for blob
+        app.MapGet("/blob/download-url", (HttpRequest req, AzureBlobService blobService) =>
+        {
+            var name = req.Query["name"].ToString();
+            if (string.IsNullOrWhiteSpace(name))
+                return Results.BadRequest(new { error = "name required" });
+            if (!blobService.IsConfigured)
+                return Results.BadRequest(new { error = "Blob storage not configured" });
+            try
+            {
+                var url = blobService.GetReadUri(name);
+                return Results.Ok(new { url });
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(ex.Message);
+            }
+        }).RequireAuthorization();
     }
 }
 

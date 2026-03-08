@@ -30,6 +30,7 @@
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
         <el-select v-model="statusFilter" placeholder="ステータス" clearable style="width:120px" @change="loadData">
+          <el-option label="下書き" value="draft" />
           <el-option label="転記済" value="posted" />
           <el-option label="転記保留" value="pending_post" />
           <el-option label="支払済" value="paid" />
@@ -53,6 +54,14 @@
         </el-table-column>
         <el-table-column label="金額" width="140" align="right">
           <template #default="{ row }">¥{{ formatNumber(row.grand_total) }}</template>
+        </el-table-column>
+        <el-table-column label="発注" width="130">
+          <template #default="{ row }">{{ row.payload?.poRef || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="PDF" width="50" align="center">
+          <template #default="{ row }">
+            <el-icon v-if="row.payload?.attachment" :size="16" color="#409eff"><Document /></el-icon>
+          </template>
         </el-table-column>
         <el-table-column prop="status" label="ステータス" width="100">
           <template #default="{ row }">
@@ -122,11 +131,14 @@
     </el-dialog>
 
     <!-- 详情弹窗 -->
-    <el-dialog v-model="showDetail" width="800px" :style="{ maxWidth: '95vw' }" destroy-on-close append-to-body>
+    <el-dialog v-model="showDetail" width="900px" destroy-on-close append-to-body>
       <template #header>
         <div class="dialog-header">
           <span class="dialog-header-title">請求書詳細</span>
           <div class="dialog-header-actions">
+            <el-button v-if="detailAttachment" size="small" @click="downloadAttachment">
+              <el-icon><Download /></el-icon> PDF
+            </el-button>
             <el-button v-if="detailData && canEditInvoice(detailData)" type="primary" size="small" @click="editInvoice(detailData)">編集</el-button>
             <el-button size="small" @click="showDetail = false">閉じる</el-button>
           </div>
@@ -142,17 +154,31 @@
           <el-descriptions-item label="請求日">{{ detailData.payload?.invoiceDate }}</el-descriptions-item>
           <el-descriptions-item label="支払期限">{{ detailData.payload?.dueDate || '-' }}</el-descriptions-item>
           <el-descriptions-item label="仕入先">{{ detailData.payload?.vendorName }} ({{ detailData.vendor_code }})</el-descriptions-item>
+          <el-descriptions-item label="発注番号">
+            <span v-if="detailData.payload?.poRef" class="voucher-link" @click="navigateToPo(detailData.payload.poRef)">{{ detailData.payload.poRef }}</span>
+            <span v-else class="text-muted">-</span>
+          </el-descriptions-item>
           <el-descriptions-item label="会計伝票番号">
-            <span 
-              v-if="detailData.payload?.voucherNo" 
+            <span
+              v-if="detailData.payload?.voucherNo"
               class="voucher-link"
               @click="openVoucherDetail(detailData.payload.voucherId, detailData.payload.voucherNo)"
             >{{ detailData.payload.voucherNo }}</span>
             <span v-else class="text-muted">-</span>
           </el-descriptions-item>
           <el-descriptions-item label="作成日">{{ formatDateTime(detailData.created_at) }}</el-descriptions-item>
-          <el-descriptions-item label="作成者">{{ detailData.payload?.createdBy || '-' }}</el-descriptions-item>
         </el-descriptions>
+
+        <!-- PDF プレビュー -->
+        <div v-if="detailAttachment" class="attachment-section">
+          <el-divider content-position="left">添付ファイル</el-divider>
+          <div class="attachment-item">
+            <el-icon><Document /></el-icon>
+            <a class="attachment-link" @click="downloadAttachment">{{ detailAttachment.fileName || 'invoice.pdf' }}</a>
+            <span class="attachment-size" v-if="detailAttachment.size">（{{ formatFileSize(detailAttachment.size) }}）</span>
+            <el-button size="small" text type="primary" @click="previewAttachment">プレビュー</el-button>
+          </div>
+        </div>
 
         <el-divider content-position="left">明細</el-divider>
         <el-table :data="detailData.payload?.lines || []" border size="small">
@@ -160,23 +186,23 @@
             <template #default="{ $index }">{{ $index + 1 }}</template>
           </el-table-column>
           <el-table-column label="品目" min-width="180">
-            <template #default="{ row }">{{ row.materialName || row.materialCode }}</template>
+            <template #default="{ row }">{{ row.materialName || row.description || row.materialCode || '-' }}</template>
           </el-table-column>
           <el-table-column label="数量" width="80" align="right">
-            <template #default="{ row }">{{ row.quantity }}</template>
+            <template #default="{ row }">{{ row.quantity || '-' }}</template>
           </el-table-column>
           <el-table-column label="単価" width="100" align="right">
-            <template #default="{ row }">{{ formatNumber(row.unitPrice) }}</template>
+            <template #default="{ row }">{{ row.unitPrice ? formatNumber(row.unitPrice) : '-' }}</template>
           </el-table-column>
           <el-table-column label="金額" width="110" align="right">
             <template #default="{ row }">{{ formatNumber(row.amount) }}</template>
           </el-table-column>
           <el-table-column label="税率" width="60" align="center">
-            <template #default="{ row }">{{ row.taxRate }}%</template>
+            <template #default="{ row }">{{ row.taxRate != null ? row.taxRate + '%' : '-' }}</template>
           </el-table-column>
-          <el-table-column label="マッチング" min-width="150">
+          <el-table-column label="発注番号" width="140">
             <template #default="{ row }">
-              <span v-if="row.matchedPoNo">{{ row.matchedPoNo }}</span>
+              <span v-if="row.matchedPoNo" class="voucher-link" @click="navigateToPo(row.matchedPoNo)">{{ row.matchedPoNo }}</span>
               <span v-else class="text-muted">-</span>
             </template>
           </el-table-column>
@@ -184,7 +210,7 @@
 
         <div class="totals-inline">
           <span class="total-item">税抜合計: <strong>¥{{ formatNumber(detailData.payload?.subtotal) }}</strong></span>
-          <span class="total-item">消費税: <strong>¥{{ formatNumber(detailData.payload?.taxTotal) }}</strong></span>
+          <span class="total-item">消費税: <strong>¥{{ formatNumber(detailData.payload?.taxTotal || detailData.payload?.taxAmount) }}</strong></span>
           <span class="total-item total-grand">合計（税込）: <strong>¥{{ formatNumber(detailData.payload?.grandTotal) }}</strong></span>
         </div>
 
@@ -192,6 +218,11 @@
           <strong>備考:</strong> {{ detailData.payload.memo }}
         </div>
       </div>
+    </el-dialog>
+
+    <!-- PDF プレビュー弹窗 -->
+    <el-dialog v-model="showPdfPreview" width="80%" destroy-on-close append-to-body title="PDF プレビュー">
+      <iframe v-if="pdfPreviewUrl" :src="pdfPreviewUrl" style="width:100%; height:75vh; border:none;" />
     </el-dialog>
 
     <!-- 会计凭证弹窗 -->
@@ -217,8 +248,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { Plus, Search, Refresh, Upload } from '@element-plus/icons-vue'
+import { ref, computed, onMounted } from 'vue'
+import { Plus, Search, Refresh, Upload, Download, Document } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import VendorInvoiceForm from './VendorInvoiceForm.vue'
@@ -253,6 +284,10 @@ const showVoucher = ref(false)
 const currentVoucherId = ref<string>('')
 const currentVoucherNo = ref<string>('')
 
+// PDF プレビュー
+const showPdfPreview = ref(false)
+const pdfPreviewUrl = ref<string>('')
+
 function formatNumber(value: number | undefined | null) {
   if (value === undefined || value === null) return '-'
   return new Intl.NumberFormat('ja-JP').format(Math.round(value))
@@ -273,18 +308,23 @@ function formatDateTime(value: string | undefined | null) {
 
 function getStatusType(status: string) {
   const map: Record<string, string> = {
+    draft: 'info',
     posted: 'success',
     pending_post: 'warning',
-    paid: ''
+    paid: '',
+    approved: ''
   }
   return map[status] || 'info'
 }
 
 function getStatusLabel(status: string) {
   const map: Record<string, string> = {
+    draft: '下書き',
     posted: '転記済',
     pending_post: '転記保留',
-    paid: '支払済'
+    paid: '支払済',
+    approved: '承認済',
+    pending: '未処理'
   }
   return map[status] || status
 }
@@ -435,7 +475,12 @@ async function onFileSelected(uploadFile: any) {
       timeout: 120000
     })
     if (resp.data?.recognized && resp.data?.data) {
-      recognizedData.value = resp.data.data
+      // 将附件信息合并到识别数据中
+      const aiData = resp.data.data
+      if (resp.data.attachment) {
+        aiData._attachment = resp.data.attachment
+      }
+      recognizedData.value = aiData
       ElMessage.success('AI識別完了。フォームに反映します。')
       // Open create dialog with pre-filled data
       editingId.value = ''
@@ -449,6 +494,57 @@ async function onFileSelected(uploadFile: any) {
     recognizing.value = false
     uploadRef.value?.clearFiles()
   }
+}
+
+// 添付ファイル関連
+const detailAttachment = computed(() => {
+  return detailData.value?.payload?.attachment || detailData.value?.payload?._attachment || null
+})
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+async function downloadAttachment() {
+  const att = detailAttachment.value
+  if (!att) return
+  if (att.url) {
+    window.open(att.url, '_blank')
+  } else if (att.blobName) {
+    try {
+      const resp = await api.get(`/blob/download-url?name=${encodeURIComponent(att.blobName)}`)
+      if (resp.data?.url) window.open(resp.data.url, '_blank')
+    } catch {
+      ElMessage.error('ダウンロードURLの取得に失敗しました')
+    }
+  }
+}
+
+async function previewAttachment() {
+  const att = detailAttachment.value
+  if (!att) return
+  let url = att.url
+  if (!url && att.blobName) {
+    try {
+      const resp = await api.get(`/blob/download-url?name=${encodeURIComponent(att.blobName)}`)
+      url = resp.data?.url
+    } catch {
+      ElMessage.error('プレビューURLの取得に失敗しました')
+      return
+    }
+  }
+  if (url) {
+    pdfPreviewUrl.value = url
+    showPdfPreview.value = true
+  }
+}
+
+function navigateToPo(poNo: string) {
+  if (!poNo) return
+  // 目前直接提示，后续可跳转到PO详情
+  ElMessage.info(`発注番号: ${poNo}`)
 }
 
 onMounted(() => {
@@ -542,6 +638,35 @@ onMounted(() => {
 
 .text-muted {
   color: #909399;
+}
+
+.attachment-section {
+  margin-top: 4px;
+}
+
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f5f7fa;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.attachment-link {
+  color: #409eff;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.attachment-link:hover {
+  color: #66b1ff;
+}
+
+.attachment-size {
+  color: #909399;
+  font-size: 12px;
 }
 
 .voucher-link {
