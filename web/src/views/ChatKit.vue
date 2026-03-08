@@ -961,7 +961,7 @@ const BinForm = defineAsyncComponent(() => import('./BinForm.vue'))
 const StockStatuses = defineAsyncComponent(() => import('./StockStatuses.vue'))
 const BatchesList = defineAsyncComponent(() => import('./BatchesList.vue'))
 const BatchForm = defineAsyncComponent(() => import('./BatchForm.vue'))
-const InventoryMovement = defineAsyncComponent(() => import('./InventoryMovementSchema.vue'))
+const InventoryMovement = defineAsyncComponent(() => import('./InventoryMovement.vue'))
 const InventoryBalances = defineAsyncComponent(() => import('./InventoryBalances.vue'))
 
 const router = useRouter()
