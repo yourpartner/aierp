@@ -3581,6 +3581,7 @@ function getModuleGroupLabel(moduleCode: string): string {
     'ai': 'AI',
     'staffing': navTexts.staffing || '人材派遣',
     'portal': navTexts.portal || 'ポータル',
+    'fixed_asset': navTexts.groupFixedAssets || '固定資産',
     'fixed_assets': navTexts.groupFixedAssets || '固定資産',
   }
   return mapping[moduleCode] || moduleCode
