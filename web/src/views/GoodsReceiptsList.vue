@@ -80,19 +80,19 @@
               accept=".pdf,.png,.jpg,.jpeg,.gif,.webp"
               style="display:inline-block"
             >
-              <el-button :loading="recognizing" size="small">
+              <el-button :loading="recognizing">
                 <el-icon><Upload /></el-icon> 納品書AI読取
               </el-button>
             </el-upload>
-            <el-button size="small" @click="showCreate = false">キャンセル</el-button>
-            <el-button type="primary" size="small" :loading="creating" @click="doCreate">登録</el-button>
+            <el-button @click="showCreate = false">キャンセル</el-button>
+            <el-button type="primary" :loading="creating" @click="doCreate">登録</el-button>
           </div>
         </div>
       </template>
 
       <el-alert v-if="createErr" type="error" :title="createErr" show-icon :closable="false" style="margin-bottom:16px" />
 
-      <el-form label-position="left" label-width="90px" style="padding: 0 8px;">
+      <el-form label-position="left" label-width="90px">
         <el-row :gutter="20">
           <el-col :span="8">
             <el-form-item label="入庫日" required>
@@ -168,8 +168,8 @@
       </el-form>
 
       <!-- 明細 -->
-      <div class="section-title" style="padding: 0 8px;">入庫明細</div>
-      <el-table :data="createForm.lines" border size="small" style="margin: 0 8px 12px 8px; width: calc(100% - 16px);">
+      <div class="section-title">入庫明細</div>
+      <el-table :data="createForm.lines" border size="small" style="margin-bottom: 12px;">
         <el-table-column label="発注" width="120">
           <template #default="{ row }">{{ row.poNo || '-' }}</template>
         </el-table-column>
@@ -230,9 +230,7 @@
           </template>
         </el-table-column>
       </el-table>
-      <div style="padding: 0 8px;">
-        <el-button size="small" @click="addLine"><el-icon><Plus /></el-icon> 行追加</el-button>
-      </div>
+      <el-button size="small" @click="addLine"><el-icon><Plus /></el-icon> 行追加</el-button>
     </el-dialog>
 
     <!-- AI認識結果確認ダイアログ -->
@@ -345,7 +343,7 @@
         </div>
       </template>
       <template v-if="detailData">
-        <el-descriptions :column="3" border size="small" style="padding: 0 8px;">
+        <el-descriptions :column="3" border size="small">
           <el-descriptions-item label="入庫日">{{ detailData.movement_date }}</el-descriptions-item>
           <el-descriptions-item label="発注番号">{{ detailData.reference_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="倉庫">{{ detailData.to_warehouse || '-' }}</el-descriptions-item>
@@ -353,8 +351,8 @@
           <el-descriptions-item label="参照タイプ">{{ detailData.payload?.referenceType || '-' }}</el-descriptions-item>
           <el-descriptions-item label="備考">{{ detailData.payload?.memo || '-' }}</el-descriptions-item>
         </el-descriptions>
-        <div class="section-title" style="margin-top:16px; padding: 0 8px;">明細</div>
-        <el-table :data="detailData.payload?.lines || []" border size="small" style="margin: 0 8px; width: calc(100% - 16px);">
+        <div class="section-title" style="margin-top:16px;">明細</div>
+        <el-table :data="detailData.payload?.lines || []" border size="small">
           <el-table-column label="品目" min-width="200">
             <template #default="{ row }">{{ materialNames[row.materialCode] || row.materialCode }}</template>
           </el-table-column>
@@ -545,7 +543,7 @@ async function loadPOsForVendor(vendorCode: string) {
     const resp = await api.post('/objects/purchase_order/search', {
       where: [
         { field: 'partner_code', op: 'eq', value: vendorCode },
-        { field: 'status', op: 'in', value: ['new', 'partial_received'] }
+        { field: 'status', op: 'in', value: ['draft', 'ordered', 'partial_received'] }
       ],
       orderBy: [{ field: 'order_date', direction: 'desc' }],
       limit: 200
@@ -572,9 +570,33 @@ function onWarehouseChange(val: string) {
   })
 }
 
-function onPosSelected(selectedNos: string[]) {
+async function onPosSelected(selectedNos: string[]) {
   // Keep manually added lines (fromPo === false)
   const manualLines = createForm.lines.filter(l => !l.fromPo)
+
+  // Collect all material codes from selected POs to fetch UOM
+  const matCodes = new Set<string>()
+  for (const poNo of selectedNos) {
+    const po = poOptions.value.find(p => p.po_no === poNo)
+    for (const line of po?.payload?.lines || []) {
+      if (line.materialCode) matCodes.add(line.materialCode)
+    }
+  }
+
+  // Fetch material master for UOM and names
+  const matUomMap: Record<string, string> = {}
+  if (matCodes.size > 0) {
+    try {
+      const resp = await api.post('/objects/material/search', {
+        where: [{ field: 'material_code', op: 'in', value: [...matCodes] }],
+        limit: matCodes.size
+      })
+      for (const m of resp.data?.data || []) {
+        matUomMap[m.material_code] = m.payload?.baseUnit || m.payload?.uom || m.payload?.unit || ''
+        materialNames.value[m.material_code] = m.payload?.name || m.payload?.materialName || m.material_code
+      }
+    } catch { /* ignore */ }
+  }
 
   // Build lines from selected POs
   const poLines: ReceiptLine[] = []
@@ -600,7 +622,7 @@ function onPosSelected(selectedNos: string[]) {
         orderedQty: line.quantity || 0,
         receivedQty: line.receivedQuantity || 0,
         quantity: remaining,
-        uom: line.uom || '',
+        uom: line.uom || matUomMap[line.materialCode] || '',
         toWarehouse: createForm.toWarehouse,
         toBin: createForm.toBin,
         lineNo: line.lineNo || 0
@@ -609,10 +631,6 @@ function onPosSelected(selectedNos: string[]) {
   }
 
   createForm.lines = [...poLines, ...manualLines]
-
-  // fetch material names if needed
-  const codes = poLines.map(l => l.materialCode).filter(c => c && !materialNames.value[c])
-  if (codes.length > 0) fetchMaterialNames(codes)
 }
 
 async function searchMaterials(query: string) {
