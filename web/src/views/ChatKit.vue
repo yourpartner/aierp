@@ -3265,8 +3265,6 @@ const timelineMessages = computed(() => {
     if (!msg) return
     if (shouldHideMessage(msg)) return
     if (msg.kind === 'embed') return
-    const resolvedId = resolveMessageTaskId(msg, false)
-    if (resolvedId) return
     const ts = toTimestamp(resolveMessageTimestamp(msg))
     rows.push({ msg, index, ts })
   })
