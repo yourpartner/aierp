@@ -235,6 +235,105 @@
       </div>
     </el-dialog>
 
+    <!-- AI認識結果確認ダイアログ -->
+    <el-dialog v-model="showRecognizeConfirm" width="900px" :style="{ maxWidth: '95vw' }" :close-on-click-modal="false" destroy-on-close append-to-body>
+      <template #header>
+        <div class="dialog-header">
+          <span class="dialog-header-title">AI認識結果の確認</span>
+          <div class="dialog-header-actions">
+            <el-button size="small" @click="showRecognizeConfirm = false">キャンセル</el-button>
+            <el-button type="primary" size="small" @click="confirmRecognizedData">適用</el-button>
+          </div>
+        </div>
+      </template>
+
+      <div v-if="recognizedData" style="padding: 0 8px;">
+        <!-- 認識されたヘッダ情報 -->
+        <el-descriptions :column="2" border size="small" style="margin-bottom: 16px;">
+          <el-descriptions-item label="仕入先名">
+            <span v-if="recognizedData.vendorName">{{ recognizedData.vendorName }}</span>
+            <el-tag v-else size="small" type="info">未検出</el-tag>
+            <template v-if="recognizedPoVendor.vendorCode">
+              <el-icon style="margin: 0 4px; color: #67c23a;"><Check /></el-icon>
+              <span style="color: #67c23a; font-size: 12px;">{{ recognizedPoVendor.vendorCode }} - {{ recognizedPoVendor.vendorName }}</span>
+            </template>
+          </el-descriptions-item>
+          <el-descriptions-item label="納品日">
+            <span v-if="recognizedData.deliveryDate">{{ recognizedData.deliveryDate }}</span>
+            <el-tag v-else size="small" type="info">未検出</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="納品書番号">
+            <span v-if="recognizedData.deliveryNoteNo">{{ recognizedData.deliveryNoteNo }}</span>
+            <el-tag v-else size="small" type="info">未検出</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="発注番号">
+            <span v-if="recognizedData.poNo">{{ recognizedData.poNo }}</span>
+            <el-tag v-else size="small" type="info">未検出</el-tag>
+            <template v-if="recognizedPoVendor.found">
+              <el-icon style="margin-left: 4px; color: #67c23a;"><Check /></el-icon>
+              <span style="color: #67c23a; font-size: 12px;">PO確認済</span>
+            </template>
+            <template v-else-if="recognizedData.poNo && !recognizedPoVendor.loading">
+              <el-icon style="margin-left: 4px; color: #e6a23c;"><Warning /></el-icon>
+              <span style="color: #e6a23c; font-size: 12px;">該当PO無し</span>
+            </template>
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <!-- 認識された明細 -->
+        <div class="section-title">認識された明細</div>
+        <el-table :data="recognizedItems" border size="small" style="margin-bottom: 12px;">
+          <el-table-column type="index" width="40" />
+          <el-table-column label="品名（AI認識）" min-width="200">
+            <template #default="{ row }">{{ row.description || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="品目コード（候補）" min-width="250">
+            <template #default="{ row }">
+              <template v-if="row.matchLoading">
+                <el-icon class="is-loading"><Loading /></el-icon> 検索中...
+              </template>
+              <template v-else-if="row.candidates && row.candidates.length > 0">
+                <el-select v-model="row.selectedMaterial" size="small" style="width:100%" placeholder="候補を選択...">
+                  <el-option
+                    v-for="c in row.candidates"
+                    :key="c.materialCode"
+                    :label="c.materialCode + ' - ' + c.name"
+                    :value="c.materialCode"
+                  />
+                </el-select>
+              </template>
+              <template v-else>
+                <el-select
+                  v-model="row.selectedMaterial"
+                  filterable
+                  remote
+                  reserve-keyword
+                  :remote-method="(q: string) => searchMaterialsForRecognize(q, row)"
+                  :loading="materialLoading"
+                  size="small"
+                  style="width:100%"
+                  placeholder="手動検索..."
+                >
+                  <el-option v-for="m in row.manualOptions || []" :key="m.code" :label="m.label" :value="m.code" />
+                </el-select>
+                <div style="font-size: 11px; color: #e6a23c; margin-top: 2px;">自動マッチ候補なし</div>
+              </template>
+            </template>
+          </el-table-column>
+          <el-table-column label="数量" width="90" align="right">
+            <template #default="{ row }">
+              <el-input-number v-model="row.quantity" :min="0" :controls="false" size="small" style="width:80px" />
+            </template>
+          </el-table-column>
+          <el-table-column label="単位" width="70">
+            <template #default="{ row }">{{ row.uom || '-' }}</template>
+          </el-table-column>
+        </el-table>
+
+        <el-alert v-if="recognizedData.memo" type="info" :title="'備考: ' + recognizedData.memo" :closable="false" style="margin-bottom: 8px;" />
+      </div>
+    </el-dialog>
+
     <!-- 詳細ダイアログ -->
     <el-dialog v-model="showDetail" width="800px" destroy-on-close append-to-body>
       <template #header>
@@ -275,7 +374,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { Plus, Search, Refresh, Upload, Delete } from '@element-plus/icons-vue'
+import { Plus, Search, Refresh, Upload, Delete, Check, Warning, Loading } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 
@@ -335,6 +434,12 @@ const poLoading = ref(false)
 // material search
 const materialOptions = ref<{ code: string; label: string }[]>([])
 const materialLoading = ref(false)
+
+// AI recognition confirmation
+const showRecognizeConfirm = ref(false)
+const recognizedData = ref<any>(null)
+const recognizedItems = ref<any[]>([])
+const recognizedPoVendor = reactive({ found: false, loading: false, vendorCode: '', vendorName: '', poId: '', poPayload: null as any })
 
 // detail dialog
 const showDetail = ref(false)
@@ -628,7 +733,7 @@ async function onFileSelected(file: any) {
     fd.append('file', file.raw)
     const resp = await api.post('/goods-receipt/recognize', fd)
     if (resp.data?.recognized && resp.data?.data) {
-      applyRecognizedData(resp.data.data)
+      await showRecognizeConfirmDialog(resp.data.data)
     } else {
       ElMessage.warning('認識結果が空です')
     }
@@ -639,28 +744,177 @@ async function onFileSelected(file: any) {
   }
 }
 
-function applyRecognizedData(data: any) {
-  // Fill vendor if recognized
-  if (data.vendorName) {
-    // Try to find vendor by name
-    searchVendors(data.vendorName)
+async function showRecognizeConfirmDialog(data: any) {
+  recognizedData.value = data
+  recognizedPoVendor.found = false
+  recognizedPoVendor.loading = false
+  recognizedPoVendor.vendorCode = ''
+  recognizedPoVendor.vendorName = ''
+  recognizedPoVendor.poId = ''
+  recognizedPoVendor.poPayload = null
+
+  // Prepare items with match placeholders
+  recognizedItems.value = (data.items || []).map((item: any) => ({
+    description: item.description || '',
+    quantity: item.quantity || 0,
+    uom: item.uom || '',
+    selectedMaterial: '',
+    candidates: [],
+    matchLoading: true,
+    manualOptions: []
+  }))
+
+  showRecognizeConfirm.value = true
+
+  // Parallel: match materials + find PO
+  const matchPromise = matchMaterials(data.items || [])
+  const poPromise = data.poNo ? findPoByNo(data.poNo) : Promise.resolve()
+  await Promise.all([matchPromise, poPromise])
+}
+
+async function matchMaterials(items: any[]) {
+  if (items.length === 0) return
+  try {
+    const resp = await api.post('/goods-receipt/match-materials', {
+      items: items.map((it: any) => ({ description: it.description || '' }))
+    })
+    const matches = resp.data?.matches || []
+    for (let i = 0; i < matches.length && i < recognizedItems.value.length; i++) {
+      const ri = recognizedItems.value[i]
+      ri.candidates = matches[i].candidates || []
+      ri.matchLoading = false
+      // Auto-select if exactly 1 candidate
+      if (ri.candidates.length === 1) {
+        ri.selectedMaterial = ri.candidates[0].materialCode
+      }
+    }
+  } catch {
+    // Mark all as done loading
+    recognizedItems.value.forEach(ri => { ri.matchLoading = false })
   }
+}
+
+async function findPoByNo(poNo: string) {
+  recognizedPoVendor.loading = true
+  try {
+    const resp = await api.post('/goods-receipt/find-po', { poNo })
+    if (resp.data?.found) {
+      recognizedPoVendor.found = true
+      recognizedPoVendor.vendorCode = resp.data.vendorCode || ''
+      recognizedPoVendor.vendorName = resp.data.vendorName || ''
+      recognizedPoVendor.poId = resp.data.poId || ''
+      recognizedPoVendor.poPayload = resp.data.payload || null
+    }
+  } catch { /* ignore */ }
+  finally { recognizedPoVendor.loading = false }
+}
+
+async function searchMaterialsForRecognize(query: string, row: any) {
+  if (!query || query.length < 1) return
+  materialLoading.value = true
+  try {
+    const resp = await api.post('/objects/material/search', {
+      where: [{ field: 'name', op: 'contains', value: query }],
+      limit: 20
+    })
+    row.manualOptions = (resp.data?.data || []).map((m: any) => ({
+      code: m.material_code,
+      label: `${m.material_code} - ${m.payload?.name || m.payload?.materialName || ''}`
+    }))
+  } catch { /* ignore */ }
+  finally { materialLoading.value = false }
+}
+
+async function confirmRecognizedData() {
+  const data = recognizedData.value
+  if (!data) return
+
+  // 1. Apply vendor from PO lookup or vendor name search
+  if (recognizedPoVendor.found && recognizedPoVendor.vendorCode) {
+    // Set vendor directly from PO
+    vendorOptions.value = [{ code: recognizedPoVendor.vendorCode, label: `${recognizedPoVendor.vendorCode} - ${recognizedPoVendor.vendorName}` }]
+    createForm.vendorCode = recognizedPoVendor.vendorCode
+    await loadPOsForVendor(recognizedPoVendor.vendorCode)
+  } else if (data.vendorName) {
+    await searchVendors(data.vendorName)
+    // Auto-select if single result
+    if (vendorOptions.value.length === 1) {
+      createForm.vendorCode = vendorOptions.value[0].code
+      await loadPOsForVendor(createForm.vendorCode)
+    }
+  }
+
+  // 2. Apply delivery date
   if (data.deliveryDate) {
     createForm.movementDate = data.deliveryDate
   }
 
-  if (data.items?.length > 0) {
-    const aiLines: ReceiptLine[] = data.items.map((item: any) => ({
-      poNo: data.poNo || '', poId: '', fromPo: false,
-      materialCode: '', orderedQty: 0, receivedQty: 0,
-      quantity: item.quantity || 0, uom: item.uom || '',
-      toWarehouse: createForm.toWarehouse, toBin: createForm.toBin, lineNo: 0
-    }))
-    // Append to existing lines
-    createForm.lines = [...createForm.lines, ...aiLines]
+  // 3. Auto-select PO if found
+  if (recognizedPoVendor.found && data.poNo) {
+    const matchingPo = poOptions.value.find((p: any) => p.po_no === data.poNo)
+    if (matchingPo) {
+      createForm.selectedPoNos = [data.poNo]
+      // Build PO lines, then try to match AI items to PO lines
+      onPosSelected([data.poNo])
+      matchAiItemsToPoLines()
+    } else {
+      // PO exists but is fully received or belongs to different vendor
+      addAiItemsAsManualLines()
+    }
+  } else {
+    addAiItemsAsManualLines()
   }
 
-  ElMessage.success('AI認識データを適用しました。品目コードを手動で選択してください。')
+  showRecognizeConfirm.value = false
+  ElMessage.success('AI認識データを適用しました')
+}
+
+function matchAiItemsToPoLines() {
+  // For each PO line, see if an AI-recognized item matches by materialCode
+  // Update quantities if AI quantity differs from remaining
+  for (const line of createForm.lines) {
+    if (!line.fromPo) continue
+    const aiItem = recognizedItems.value.find(ri =>
+      ri.selectedMaterial && ri.selectedMaterial === line.materialCode
+    )
+    if (aiItem && aiItem.quantity > 0) {
+      // Use AI-recognized quantity (capped by remaining)
+      const remaining = line.orderedQty - line.receivedQty
+      line.quantity = Math.min(aiItem.quantity, remaining)
+    }
+  }
+
+  // Add unmatched AI items as manual lines
+  const matchedCodes = new Set(createForm.lines.filter(l => l.fromPo).map(l => l.materialCode))
+  for (const ri of recognizedItems.value) {
+    if (ri.selectedMaterial && !matchedCodes.has(ri.selectedMaterial)) {
+      if (ri.selectedMaterial) {
+        materialNames.value[ri.selectedMaterial] = ri.candidates?.find((c: any) => c.materialCode === ri.selectedMaterial)?.name || ri.description
+      }
+      createForm.lines.push({
+        poNo: '', poId: '', fromPo: false,
+        materialCode: ri.selectedMaterial || '',
+        orderedQty: 0, receivedQty: 0,
+        quantity: ri.quantity || 0, uom: ri.uom || '',
+        toWarehouse: createForm.toWarehouse, toBin: createForm.toBin, lineNo: 0
+      })
+    }
+  }
+}
+
+function addAiItemsAsManualLines() {
+  for (const ri of recognizedItems.value) {
+    if (ri.selectedMaterial) {
+      materialNames.value[ri.selectedMaterial] = ri.candidates?.find((c: any) => c.materialCode === ri.selectedMaterial)?.name || ri.description
+    }
+    createForm.lines.push({
+      poNo: recognizedData.value?.poNo || '', poId: '', fromPo: false,
+      materialCode: ri.selectedMaterial || '',
+      orderedQty: 0, receivedQty: 0,
+      quantity: ri.quantity || 0, uom: ri.uom || '',
+      toWarehouse: createForm.toWarehouse, toBin: createForm.toBin, lineNo: 0
+    })
+  }
 }
 
 function onRowClick(row: any) {

@@ -3668,6 +3668,8 @@ const pathToEmbedKeyMap: Record<string, string> = {
   '/finance/cash-flow': 'finance.cashFlow',
   '/finance/expense-claims': 'finance.expenseClaims',
   '/finance/analysis': 'finance.analysis',
+  '/hr/analysis': 'hr.analysis',
+  '/sales/analysis': 'sales.analysis',
   '/moneytree/transactions': 'moneytree.transactions',
   // 人事模块
   '/hr/departments': 'hr.dept',
@@ -3874,6 +3876,8 @@ const embedMap:Record<string, any> = {
   'finance.cashFlow': defineAsyncComponent(() => import('./finance/CashFlow.vue')),
   'finance.expenseClaims': defineAsyncComponent(() => import('./finance/ExpenseClaims.vue')),
   'finance.analysis': defineAsyncComponent(() => import('./finance/FinancialAnalysis.vue')),
+  'hr.analysis': defineAsyncComponent(() => import('./hr/HrAnalysis.vue')),
+  'sales.analysis': defineAsyncComponent(() => import('./SalesAnalysisAgent.vue')),
   'schema.editor': SchemaEditor,
   'bp.list': BusinessPartnersList,
   'bp.new': BusinessPartnerForm,

@@ -319,6 +319,109 @@ public class PurchaseStandardModule : ModuleBase
             return Results.Ok(new { recognized = true, data = aiDoc.RootElement.Clone() });
         }).RequireAuthorization().DisableAntiforgery();
 
+        // POST /goods-receipt/match-materials — fuzzy match AI-recognized item descriptions to material master
+        app.MapPost("/goods-receipt/match-materials", async (HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: req.HttpContext.RequestAborted);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("items", out var itemsEl) || itemsEl.ValueKind != JsonValueKind.Array)
+                return Results.BadRequest(new { error = "items array required" });
+
+            var company = cc.ToString().Trim();
+            await using var conn = await ds.OpenConnectionAsync(req.HttpContext.RequestAborted);
+
+            var results = new List<object>();
+            foreach (var item in itemsEl.EnumerateArray())
+            {
+                var desc = item.TryGetProperty("description", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString()?.Trim() : null;
+                if (string.IsNullOrWhiteSpace(desc))
+                {
+                    results.Add(new { description = desc, candidates = Array.Empty<object>() });
+                    continue;
+                }
+
+                // Search by name ILIKE and material_code ILIKE, return top candidates
+                await using var cmd = conn.CreateCommand();
+                cmd.CommandText = @"
+                    SELECT material_code, name, payload->>'baseUom' AS uom
+                    FROM materials
+                    WHERE company_code = @cc
+                      AND (name ILIKE @pattern OR material_code ILIKE @pattern)
+                    ORDER BY
+                        CASE WHEN name = @exact THEN 0
+                             WHEN name ILIKE @starts THEN 1
+                             WHEN material_code ILIKE @starts THEN 2
+                             ELSE 3 END,
+                        name
+                    LIMIT 5";
+                cmd.Parameters.AddWithValue("cc", company);
+                cmd.Parameters.AddWithValue("pattern", "%" + desc + "%");
+                cmd.Parameters.AddWithValue("exact", desc);
+                cmd.Parameters.AddWithValue("starts", desc + "%");
+
+                var candidates = new List<object>();
+                await using var rdr = await cmd.ExecuteReaderAsync(req.HttpContext.RequestAborted);
+                while (await rdr.ReadAsync(req.HttpContext.RequestAborted))
+                {
+                    candidates.Add(new
+                    {
+                        materialCode = rdr.GetString(0),
+                        name = rdr.IsDBNull(1) ? "" : rdr.GetString(1),
+                        uom = rdr.IsDBNull(2) ? "" : rdr.GetString(2)
+                    });
+                }
+
+                results.Add(new { description = desc, candidates });
+            }
+
+            return Results.Ok(new { matches = results });
+        }).RequireAuthorization();
+
+        // POST /goods-receipt/find-po — find PO by po_no, return vendor info for auto-linking
+        app.MapPost("/goods-receipt/find-po", async (HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: req.HttpContext.RequestAborted);
+            var root = doc.RootElement;
+            var poNo = root.TryGetProperty("poNo", out var pn) && pn.ValueKind == JsonValueKind.String ? pn.GetString()?.Trim() : null;
+            if (string.IsNullOrWhiteSpace(poNo))
+                return Results.BadRequest(new { error = "poNo required" });
+
+            var company = cc.ToString().Trim();
+            await using var conn = await ds.OpenConnectionAsync(req.HttpContext.RequestAborted);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                SELECT po.id, po.po_no, po.partner_code, bp.name AS vendor_name,
+                       po.payload, po.status
+                FROM purchase_orders po
+                LEFT JOIN business_partners bp ON bp.partner_code = po.partner_code AND bp.company_code = po.company_code
+                WHERE po.company_code = @cc AND po.po_no = @poNo
+                LIMIT 1";
+            cmd.Parameters.AddWithValue("cc", company);
+            cmd.Parameters.AddWithValue("poNo", poNo);
+
+            await using var rdr = await cmd.ExecuteReaderAsync(req.HttpContext.RequestAborted);
+            if (!await rdr.ReadAsync(req.HttpContext.RequestAborted))
+                return Results.Ok(new { found = false });
+
+            var payload = rdr.IsDBNull(4) ? null : rdr.GetString(4);
+            return Results.Ok(new
+            {
+                found = true,
+                poId = rdr.GetString(0),
+                poNo = rdr.GetString(1),
+                vendorCode = rdr.IsDBNull(2) ? "" : rdr.GetString(2),
+                vendorName = rdr.IsDBNull(3) ? "" : rdr.GetString(3),
+                status = rdr.IsDBNull(5) ? "" : rdr.GetString(5),
+                payload = payload != null ? JsonDocument.Parse(payload).RootElement.Clone() : (JsonElement?)null
+            });
+        }).RequireAuthorization();
+
         // POST /vendor-invoice/available-receipts — query uninvoiced receipt lines linked to a vendor's POs
         app.MapPost("/vendor-invoice/available-receipts", async (HttpRequest req, NpgsqlDataSource ds) =>
         {

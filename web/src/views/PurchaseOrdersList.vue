@@ -41,9 +41,19 @@
         <el-table-column label="納期" width="120">
           <template #default="{ row }">{{ row.payload?.expectedDeliveryDate || '-' }}</template>
         </el-table-column>
-        <el-table-column label="金額" width="140" align="right">
+        <el-table-column label="金額" width="130" align="right">
           <template #default="{ row }">
             <span class="amount-cell">{{ formatNumber(row.amount_total) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="入庫済" width="100" align="right">
+          <template #default="{ row }">
+            <span :class="{ 'text-success': isFullyReceived(row) }">{{ getReceivedSummary(row) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="請求済" width="120" align="right">
+          <template #default="{ row }">
+            <span>{{ formatNumber(row.payload?.invoicedAmount) || '-' }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="status" label="ステータス" width="120">
@@ -114,11 +124,11 @@
                 <el-table-column label="品目" min-width="200">
                   <template #default="{ row }">{{ row.materialName || row.materialCode }}</template>
                 </el-table-column>
-                <el-table-column label="数量" width="80" align="right">
-                  <template #default="{ row }">{{ row.quantity }} {{ row.uom || '' }}</template>
+                <el-table-column label="数量" width="100" align="right">
+                  <template #default="{ row }">{{ row.quantity }} {{ row.uom || row.unit || '個' }}</template>
                 </el-table-column>
-                <el-table-column label="入庫済" width="80" align="right">
-                  <template #default="{ row }">{{ row.receivedQuantity || 0 }} {{ row.uom || '' }}</template>
+                <el-table-column label="入庫済" width="100" align="right">
+                  <template #default="{ row }">{{ row.receivedQuantity || 0 }} {{ row.uom || row.unit || '個' }}</template>
                 </el-table-column>
                 <el-table-column label="単価" width="80" align="right">
                   <template #default="{ row }">{{ formatNumber(row.unitPrice) }}</template>
@@ -590,6 +600,24 @@ function getActualLineStatusLabel(row: any) {
   return '未入庫'
 }
 
+// 一覧用：入庫済サマリー
+function getReceivedSummary(row: any): string {
+  const lines = row.payload?.lines || []
+  if (!lines.length) return '-'
+  const totalOrdered = lines.reduce((s: number, l: any) => s + (l.quantity || 0), 0)
+  const totalReceived = lines.reduce((s: number, l: any) => s + (l.receivedQuantity || 0), 0)
+  if (totalOrdered === 0) return '-'
+  return `${totalReceived} / ${totalOrdered}`
+}
+
+function isFullyReceived(row: any): boolean {
+  const lines = row.payload?.lines || []
+  if (!lines.length) return false
+  const totalOrdered = lines.reduce((s: number, l: any) => s + (l.quantity || 0), 0)
+  const totalReceived = lines.reduce((s: number, l: any) => s + (l.receivedQuantity || 0), 0)
+  return totalOrdered > 0 && totalReceived >= totalOrdered
+}
+
 // 获取入库数量文本（包含单位）
 function getReceiptQuantityText(receipt: any) {
   const lines = receipt.lines || []
@@ -1026,18 +1054,25 @@ onMounted(() => {
   font-weight: 600;
 }
 
+.text-success {
+  color: #67C23A;
+  font-weight: 500;
+}
+
 .dialog-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding-right: 32px;
+  width: 100%;
 }
 .dialog-header-title {
   font-size: 16px;
   font-weight: 600;
+  color: #303133;
 }
 .dialog-header-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
 }
 
@@ -1274,16 +1309,20 @@ onMounted(() => {
 
 <style>
 .el-dialog.po-detail-dialog {
+  background-color: #fff !important;
   border-radius: 8px !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15) !important;
 }
 
 .el-dialog.po-detail-dialog .el-dialog__header {
+  background-color: #fff !important;
   border-bottom: 1px solid #e4e7ed;
   padding: 16px 20px;
   margin-right: 0;
 }
 
 .el-dialog.po-detail-dialog .el-dialog__body {
+  background-color: #fff !important;
   padding: 20px;
 }
 </style>

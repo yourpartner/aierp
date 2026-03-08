@@ -2,6 +2,7 @@
   "dependencies": {
     "@vitejs/plugin-vue": "^6.0.1",
     "axios": "^1.12.2",
+    "bcryptjs": "^3.0.3",
     "element-plus": "^2.11.4",
     "jaconv": "^1.1.2",
     "jsoneditor": "^10.4.1",
