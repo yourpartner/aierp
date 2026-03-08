@@ -33,7 +33,12 @@
             <el-tag :type="getTypeTagType(row.movement_type)" size="small">{{ getTypeLabel(row.movement_type) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="material_code" label="品目" min-width="180" />
+        <el-table-column prop="material_code" label="品目" min-width="180">
+          <template #default="{ row }">
+            <span v-if="materialNames[row.material_code]">{{ materialNames[row.material_code] }} ({{ row.material_code }})</span>
+            <span v-else>{{ row.material_code }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="quantity" label="数量" width="100" align="right">
           <template #default="{ row }">
             <span :class="{ 'text-success': row.movement_type === 'IN' || row.movement_type === 'COUNT_GAIN', 'text-danger': row.movement_type === 'OUT' || row.movement_type === 'COUNT_LOSS' }">
@@ -83,6 +88,7 @@ const q = reactive<any>({ materialCode: '', warehouseCode: '', movementType: '',
 const rows = ref<any[]>([])
 const warehouses = ref<any[]>([])
 const loading = ref(false)
+const materialNames = ref<Record<string, string>>({})
 
 const filteredRows = computed(() => {
   let result = rows.value
@@ -147,11 +153,33 @@ async function loadWarehouses() {
   } catch { /* ignore */ }
 }
 
+async function fetchMaterialNames(codes: string[]) {
+  const unique = Array.from(new Set(codes.filter(c => !!c)))
+  const missing = unique.filter(c => !materialNames.value[c])
+  if (missing.length === 0) return
+  try {
+    const r = await api.post('/objects/material/search', {
+      page: 1, pageSize: Math.max(200, missing.length),
+      where: [{ field: 'material_code', op: 'in', value: missing }],
+      orderBy: []
+    })
+    const map = { ...materialNames.value }
+    for (const row of (r.data?.data || [])) {
+      const code = row.material_code
+      const name = row.payload?.name || row.name || ''
+      if (code && name) map[code] = name
+    }
+    materialNames.value = map
+  } catch { /* ignore */ }
+}
+
 async function load() {
   loading.value = true
   try {
     const r = await api.get('/inventory/inventory_ledger')
-    rows.value = Array.isArray(r.data) ? r.data : []
+    const data = Array.isArray(r.data) ? r.data : []
+    rows.value = data
+    await fetchMaterialNames(data.map((r: any) => r.material_code))
   } finally {
     loading.value = false
   }
