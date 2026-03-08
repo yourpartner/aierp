@@ -990,9 +990,9 @@ WHERE e.company_code = $1 AND r.period_month LIKE $2 AND e.employee_code = $3
                             foreach (var e in eras)
                             {
                                 if (e == era)
-                                    r.AutoItem().Padding(0, 1).Text(e).FontSize(SmallFs).Bold().Underline();
+                                    r.AutoItem().PaddingHorizontal(1).Text(e).FontSize(SmallFs).Bold().Underline();
                                 else
-                                    r.AutoItem().Padding(0, 1).Text(e).FontSize(SmallFs - 0.5f);
+                                    r.AutoItem().PaddingHorizontal(1).Text(e).FontSize(SmallFs - 0.5f);
                             }
                             r.AutoItem().PaddingLeft(4).Text($"{eraYear:D2}年{bd.Month:D2}月{bd.Day:D2}日").FontSize(ValueFs);
                         }
