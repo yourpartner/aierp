@@ -97,6 +97,9 @@
         <el-table-column :label="labels.partnerCol" min-width="140" align="left">
           <template #default="{ row }">{{ row.partnerDisplay || '-' }}</template>
         </el-table-column>
+        <el-table-column :label="labels.employeeCol" min-width="120" align="left">
+          <template #default="{ row }">{{ row.employeeDisplay || '-' }}</template>
+        </el-table-column>
         <el-table-column :label="labels.remark" min-width="100" align="left">
           <template #default="{ row }">
             <span class="cell-remark" :title="row.remark || '-'">{{ row.remark || '-' }}</span>
@@ -183,7 +186,7 @@ const labels = section(
     receiptDate: '', date: '', feeBearer: '', customerBears: '', companyBears: '',
     feeAmount: '', feeAccount: '', account: '', bearer: '',
     noOpenItems: '', index: '', voucherNo: '', docDate: '', originalAmount: '', residualAmount: '',
-    applyAmount: '', remark: '', partnerCol: '', clearingTotal: '', actualReceipt: '', fee: '',
+    applyAmount: '', remark: '', partnerCol: '', employeeCol: '', clearingTotal: '', actualReceipt: '', fee: '',
     mismatch: '', cancel: '', execute: ''
   },
   (msg) => ({
@@ -214,6 +217,7 @@ const labels = section(
     applyAmount: msg.receiptPlanner?.applyAmount || '今回配分',
     remark: msg.receiptPlanner?.remark || '備考',
     partnerCol: msg.receiptPlanner?.partnerCol || '取引先',
+    employeeCol: msg.receiptPlanner?.employeeCol || '従業員',
     clearingTotal: msg.receiptPlanner?.clearingTotal || '消込金額',
     actualReceipt: msg.receiptPlanner?.actualReceipt || '実入金',
     fee: msg.receiptPlanner?.fee || '手数料',
@@ -253,6 +257,7 @@ const partnerOptions = reactive<{label:string,value:string,name?:string}[]>([])
 
 // 缓存
 const partnerCache = new Map<string, { code: string; name: string }>()
+const employeeCache = new Map<string, { code: string; name: string }>()
 const voucherCache = new Map<string, { voucherNo: string; summary: string; lines: any[] }>()
 const accountCache = new Map<string, { code: string; name: string; currency?: string }>()
 
@@ -285,9 +290,7 @@ async function loadOpenItems(){
     } else {
       where.push({ field:'account_code', op:'in', value: form.accountCodes })
     }
-    if (form.partnerId) {
-      where.push({ field:'partner_id', op:'eq', value: form.partnerId })
-    }
+    // 取引先フィルタはclient-sideで実施（partner_idが従業員UUIDの場合、伝票明細のcustomerIdも考慮するため）
     const r = await api.post('/objects/openitem/search', { page:1, pageSize:200, where, orderBy:[{field:'doc_date',dir:'ASC'}] })
     let data: any[] = (r.data?.data || []).map((x: any) => ({ ...x, apply: 0 }))
 
@@ -304,23 +307,65 @@ async function loadOpenItems(){
     }).filter(id => !!id)
     await fetchVouchersByIds(voucherIds)
 
-    const partnerCodes = data.map((x: any) => String(x.partner_id || x.partnerId || '').trim()).filter(code => !!code)
-    await fetchPartnersByCodes(partnerCodes)
+    const partnerIds = data.map((x: any) => String(x.partner_id || x.partnerId || '').trim()).filter(code => !!code)
+    await fetchPartnersByCodes(partnerIds)
+
+    // partner_idがbusinesspartnerに見つからなかったUUIDは従業員として検索
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const unmatchedIds = partnerIds.filter(id => uuidRe.test(id) && !partnerCache.has(id))
+    if (unmatchedIds.length > 0) {
+      await fetchEmployeesByIds(unmatchedIds)
+    }
+
+    // 伝票明細のcustomerIdも取得（パートナー名表示用）
+    const lineCustomerIds = new Set<string>()
+    for (const item of data) {
+      const refs = parseJsonSafe(item.refs)
+      const vid = String(item.voucher_id || item.voucherId || refs?.voucherId || refs?.voucher_id || '')
+      const vInfo = vid ? voucherCache.get(vid) : undefined
+      if (vInfo) {
+        const lineNo = Number(item.voucher_line_no ?? item.voucherLineNo ?? refs?.lineNo ?? 0)
+        const line = vInfo.lines && lineNo > 0 ? vInfo.lines[lineNo - 1] : null
+        const cid = String(line?.customerId || '').trim()
+        if (cid && !partnerCache.has(cid)) lineCustomerIds.add(cid)
+      }
+    }
+    if (lineCustomerIds.size > 0) {
+      await fetchPartnersByCodes(Array.from(lineCustomerIds))
+    }
 
     const accountCodes = data.map((x: any) => String(x.account_code || '').trim()).filter(code => !!code)
     await fetchAccountsByCodes(accountCodes)
 
     // 丰富数据
-    openItems.value = data.map((item: any) => {
+    const enriched = data.map((item: any) => {
       const refs = parseJsonSafe(item.refs)
       const voucherId = String(item.voucher_id || item.voucherId || refs?.voucherId || refs?.voucher_id || '')
       const voucherInfo = voucherId ? voucherCache.get(voucherId) : undefined
       const lineNo = Number(item.voucher_line_no ?? item.voucherLineNo ?? refs?.lineNo ?? 0)
       const line = voucherInfo && Array.isArray(voucherInfo.lines) && lineNo > 0 ? voucherInfo.lines[lineNo - 1] : null
-      const partnerCode = String(item.partner_id || item.partnerId || line?.customerId || line?.customerCode || '').trim()
-      const partnerInfo = partnerCache.get(partnerCode)
+
+      // 取引先表示：partner_idを優先、見つからない場合は伝票明細のcustomerIdを使用
+      const pid = String(item.partner_id || item.partnerId || '').trim()
+      const lineCustomerId = String(line?.customerId || line?.customerCode || '').trim()
+
+      let displayPartnerId = pid
+      let partnerInfo = pid ? partnerCache.get(pid) : undefined
+      // partner_idが従業員の場合、伝票明細のcustomerIdを取引先として表示
+      const empInfo = pid ? employeeCache.get(pid) : undefined
+      if (!partnerInfo && empInfo && lineCustomerId) {
+        displayPartnerId = lineCustomerId
+        partnerInfo = partnerCache.get(lineCustomerId)
+      }
+
       const partnerName = partnerInfo?.name || line?.customerName || ''
-      const partnerDisplayText = partnerDisplay(partnerCode, partnerName)
+      const partnerDisplayText = partnerDisplay(displayPartnerId, partnerName)
+
+      // 従業員表示
+      const employeeDisplayText = empInfo
+        ? (empInfo.code ? `${empInfo.name || ''} (${empInfo.code})`.trim() : empInfo.name || '')
+        : ''
+
       const remark = (line?.note || line?.remark || line?.description || '').toString()
       const voucherNo = (voucherInfo?.voucherNo || refs?.voucherNo || '').toString()
       const original = Number(item.original_amount ?? item.originalAmount ?? 0)
@@ -332,9 +377,12 @@ async function loadOpenItems(){
       return {
         ...item,
         voucherId,
-        partnerCode,
+        partnerCode: displayPartnerId,
         partnerName,
         partnerDisplay: partnerDisplayText,
+        employeeDisplay: employeeDisplayText,
+        _partnerId: pid,
+        _lineCustomerId: lineCustomerId,
         voucherNo,
         remark,
         original,
@@ -344,6 +392,12 @@ async function loadOpenItems(){
       }
     })
 
+    // 取引先フィルタ（client-side）：partner_idまたは伝票明細のcustomerIdが一致するものを表示
+    const filtered = form.partnerId
+      ? enriched.filter((row: any) => row._partnerId === form.partnerId || row._lineCustomerId === form.partnerId)
+      : enriched
+
+    openItems.value = filtered
     applyAllocations(new Map())
   } finally {
     loading.value = false
@@ -383,6 +437,25 @@ async function fetchPartnersByCodes(codes: string[]){
         if (id) partnerCache.set(id, { code: code || id, name })
         if (code) partnerCache.set(code, { code, name })
       }
+    }
+  } catch {}
+}
+
+async function fetchEmployeesByIds(ids: string[]) {
+  const unique = Array.from(new Set(ids.filter(c => !!c)))
+  const missing = unique.filter(c => !employeeCache.has(c))
+  if (missing.length === 0) return
+  try {
+    const resp = await api.post('/objects/employee/search', {
+      page: 1, pageSize: Math.max(200, missing.length),
+      where: [{ field: 'id', op: 'in', value: missing }], orderBy: []
+    })
+    for (const row of (resp.data?.data || [])) {
+      const id = String(row.id || '').trim()
+      const code = String(row.employee_code || '').trim()
+      const payload = parseJsonSafe(row.payload) || {}
+      const name = (payload?.name || row.name || '').toString()
+      if (id) employeeCache.set(id, { code, name })
     }
   } catch {}
 }
