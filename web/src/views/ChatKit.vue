@@ -3666,6 +3666,7 @@ const pathToEmbedKeyMap: Record<string, string> = {
   '/cash/ledger': 'cash.ledger',
   '/finance/cash-flow': 'finance.cashFlow',
   '/finance/expense-claims': 'finance.expenseClaims',
+  '/finance/analysis': 'finance.analysis',
   '/moneytree/transactions': 'moneytree.transactions',
   // 人事模块
   '/hr/departments': 'hr.dept',
@@ -3871,6 +3872,7 @@ const embedMap:Record<string, any> = {
   'cash.ledger': CashLedger,
   'finance.cashFlow': defineAsyncComponent(() => import('./finance/CashFlow.vue')),
   'finance.expenseClaims': defineAsyncComponent(() => import('./finance/ExpenseClaims.vue')),
+  'finance.analysis': defineAsyncComponent(() => import('./finance/FinancialAnalysis.vue')),
   'schema.editor': SchemaEditor,
   'bp.list': BusinessPartnersList,
   'bp.new': BusinessPartnerForm,
