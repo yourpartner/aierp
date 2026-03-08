@@ -4467,6 +4467,10 @@ onMounted(async () => {
     const matched = fetchedSessions.find(item => item.id === activeSessionId.value)
     if (matched){
       setActiveSession(matched.id, matched.title)
+    } else {
+      // Stored session belongs to a different company/user — fall back to first available
+      localStorage.removeItem(SINGLE_SESSION_STORAGE_KEY)
+      setActiveSession(fetchedSessions[0].id, fetchedSessions[0].title)
     }
   }
 
