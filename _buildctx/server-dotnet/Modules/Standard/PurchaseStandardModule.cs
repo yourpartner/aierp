@@ -221,6 +221,104 @@ public class PurchaseStandardModule : ModuleBase
             });
         }).RequireAuthorization().DisableAntiforgery();
 
+        // POST /goods-receipt/recognize — upload PDF/image of delivery note → AI recognition
+        app.MapPost("/goods-receipt/recognize", async (HttpRequest req, AzureBlobService blobService, IHttpClientFactory httpClientFactory, IConfiguration configuration) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            var apiKey = AiFileHelpers.ResolveOpenAIApiKey(req, configuration);
+            if (string.IsNullOrWhiteSpace(apiKey))
+                return Results.BadRequest(new { error = "OpenAI API key not configured" });
+
+            var formData = await req.ReadFormAsync(req.HttpContext.RequestAborted);
+            var file = formData.Files.GetFile("file");
+            if (file is null || file.Length <= 0)
+                return Results.BadRequest(new { error = "file required" });
+
+            var originalName = string.IsNullOrWhiteSpace(file.FileName) ? "delivery.bin" : file.FileName;
+            var contentType = string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType;
+            var ext = Path.GetExtension(originalName)?.ToLowerInvariant() ?? string.Empty;
+
+            await using var stream = file.OpenReadStream();
+            await using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, req.HttpContext.RequestAborted);
+            var fileBytes = buffer.ToArray();
+
+            var base64 = fileBytes.Length > 0 ? Convert.ToBase64String(fileBytes) : null;
+
+            string? textPreview = null;
+            if (ext == ".pdf" || contentType.Contains("pdf", StringComparison.OrdinalIgnoreCase))
+            {
+                var tempPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}{ext}");
+                try
+                {
+                    await File.WriteAllBytesAsync(tempPath, fileBytes, req.HttpContext.RequestAborted);
+                    textPreview = AiFileHelpers.ExtractTextPreview(tempPath, contentType, 4000);
+                }
+                finally { try { File.Delete(tempPath); } catch { } }
+            }
+
+            var userContent = new List<object>();
+            if (!string.IsNullOrWhiteSpace(textPreview))
+                userContent.Add(new { type = "text", text = AiFileHelpers.SanitizePreview(textPreview, 4000) ?? "" });
+            if (!string.IsNullOrWhiteSpace(base64))
+            {
+                var mimeType = string.IsNullOrWhiteSpace(contentType) ? "image/png" : contentType;
+                userContent.Add(new { type = "image_url", image_url = new { url = $"data:{mimeType};base64,{base64}" } });
+            }
+
+            var systemPrompt = @"あなたは納品書（Delivery Note / Goods Receipt）の解析アシスタントです。
+ユーザーが提供する納品書（画像またはPDF）に基づき、次の JSON を出力してください：
+- vendorName: 納品元（仕入先）の会社名
+- deliveryDate: 納品日（YYYY-MM-DD）
+- deliveryNoteNo: 納品書番号（記載があれば）
+- poNo: 発注番号（記載があれば）
+- items: 明細配列。各要素は以下を含む：
+  - description: 品名・摘要
+  - quantity: 数量（数値）
+  - uom: 単位（個、箱、kg など）
+- memo: その他の補足情報
+
+【重要】和暦から西暦への変換ルール：
+- 令和元年 = 2019年（令和N年 = 2018 + N 年）
+- 平成元年 = 1989年（平成N年 = 1988 + N 年）
+
+判別できない項目は空文字または 0 を返し、決して推測で値を作らないこと。";
+
+            var body = new
+            {
+                model = "gpt-4o",
+                temperature = 0.1,
+                response_format = new { type = "json_object" },
+                messages = new object[]
+                {
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = userContent.ToArray() }
+                }
+            };
+
+            var http = httpClientFactory.CreateClient("openai");
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            var jsonOpts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+            using var response = await http.PostAsync("chat/completions",
+                new StringContent(JsonSerializer.Serialize(body, jsonOpts), Encoding.UTF8, "application/json"),
+                req.HttpContext.RequestAborted);
+
+            var responseText = await response.Content.ReadAsStringAsync(req.HttpContext.RequestAborted);
+            if (!response.IsSuccessStatusCode)
+                return Results.Problem($"AI recognition failed: {response.StatusCode}");
+
+            using var doc = JsonDocument.Parse(responseText);
+            var aiContent = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+            if (string.IsNullOrWhiteSpace(aiContent))
+                return Results.Problem("AI returned empty result");
+
+            using var aiDoc = JsonDocument.Parse(aiContent);
+            return Results.Ok(new { recognized = true, data = aiDoc.RootElement.Clone() });
+        }).RequireAuthorization().DisableAntiforgery();
+
         // POST /vendor-invoice/available-receipts — query uninvoiced receipt lines linked to a vendor's POs
         app.MapPost("/vendor-invoice/available-receipts", async (HttpRequest req, NpgsqlDataSource ds) =>
         {
