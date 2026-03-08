@@ -167,7 +167,7 @@ ORDER BY e.employee_code";
             }
         }
 
-        var company = await SalesPdfService.GetCompanyInfoAsync(ds, companyCode);
+        var company = await GetCompanyInfoForSlipAsync(ds, companyCode);
         var allEmployees = await GetEmployeeDetailsAsync(ds, companyCode, year, ct);
 
         if (targetCodes.Count > 0)
@@ -228,7 +228,7 @@ ORDER BY e.employee_code";
 
     #region Data Models
 
-    record EmployeeDetail(string Code, string Name, string NameKana, string Address, string PostalCode, string Department, string Gender, string BirthDate);
+    record EmployeeDetail(string Code, string Name, string NameKana, string Address, string PostalCode, string Department, string Gender, string BirthDate, string DependentsJson);
 
     record SlipData
     {
@@ -298,6 +298,43 @@ ORDER BY e.employee_code";
 
     #region Data Queries
 
+    /// <summary>
+    /// 会社情報取得: companies テーブル → company_settings テーブルの順で検索
+    /// </summary>
+    static async Task<SalesPdfService.CompanyInfo> GetCompanyInfoForSlipAsync(NpgsqlDataSource ds, string companyCode)
+    {
+        // First try the standard companies table
+        var info = await SalesPdfService.GetCompanyInfoAsync(ds, companyCode);
+        // If name is a fallback (starts with "会社 "), try company_settings
+        if (info.Name.StartsWith("会社 ") || info.Name == companyCode)
+        {
+            try
+            {
+                await using var conn = await ds.OpenConnectionAsync();
+                await using var cmd = conn.CreateCommand();
+                cmd.CommandText = @"SELECT payload->>'companyName', payload->>'companyAddress', payload->>'companyPostalCode', payload->>'companyTel', payload->>'registrationNo' FROM company_settings WHERE company_code = $1 LIMIT 1";
+                cmd.Parameters.AddWithValue(companyCode);
+                await using var rd = await cmd.ExecuteReaderAsync();
+                if (await rd.ReadAsync())
+                {
+                    var name = rd.IsDBNull(0) ? null : rd.GetString(0);
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        return new SalesPdfService.CompanyInfo(
+                            name,
+                            rd.IsDBNull(2) ? info.PostalCode : rd.GetString(2) ?? info.PostalCode,
+                            rd.IsDBNull(1) ? info.Address : rd.GetString(1) ?? info.Address,
+                            rd.IsDBNull(3) ? info.Tel : rd.GetString(3) ?? info.Tel,
+                            rd.IsDBNull(4) ? info.RegistrationNo : rd.GetString(4)
+                        );
+                    }
+                }
+            }
+            catch { /* fallback to original */ }
+        }
+        return info;
+    }
+
     static async Task<List<EmployeeDetail>> GetEmployeeDetailsAsync(NpgsqlDataSource ds, string companyCode, string year, CancellationToken ct)
     {
         await using var conn = await ds.OpenConnectionAsync(ct);
@@ -311,7 +348,8 @@ SELECT DISTINCT ON (e.employee_code)
     COALESCE(emp.payload->'contact'->>'postalCode', ''),
     COALESCE(e.department_code, ''),
     COALESCE(emp.payload->>'gender', ''),
-    COALESCE(emp.payload->>'birthDate', '')
+    COALESCE(emp.payload->>'birthDate', ''),
+    COALESCE(emp.payload->'dependents'::text, '[]')
 FROM payroll_run_entries e
 JOIN payroll_runs r ON r.id = e.run_id
 LEFT JOIN employees emp ON emp.company_code = e.company_code AND emp.employee_code = e.employee_code
@@ -332,7 +370,8 @@ ORDER BY e.employee_code";
                 rd.IsDBNull(4) ? "" : rd.GetString(4),
                 rd.IsDBNull(5) ? "" : rd.GetString(5),
                 rd.IsDBNull(6) ? "" : rd.GetString(6),
-                rd.IsDBNull(7) ? "" : rd.GetString(7)
+                rd.IsDBNull(7) ? "" : rd.GetString(7),
+                rd.IsDBNull(8) ? "[]" : rd.GetString(8)
             ));
         }
         return list;
@@ -421,6 +460,60 @@ WHERE e.company_code = $1 AND r.period_month LIKE $2 AND e.employee_code = $3
         var basicDeduction = CalcBasicDeduction(salaryIncomeAfterDeduction);
         var totalIncomeDeductions = basicDeduction + socialInsurance;
 
+        // Parse dependents from employee master data
+        var spouseName = "";
+        var spouseNameKana = "";
+        var hasSpouse = false;
+        var dependentNames = new List<string>();
+        var under16Names = new List<string>();
+        int numOtherDependents = 0;
+
+        int yearInt = int.TryParse(year, out var yi) ? yi : DateTime.Today.Year;
+        var yearEnd = new DateTime(yearInt, 12, 31);
+
+        try
+        {
+            using var depDoc = JsonDocument.Parse(emp.DependentsJson);
+            foreach (var dep in depDoc.RootElement.EnumerateArray())
+            {
+                var relation = dep.TryGetProperty("relation", out var rel) ? rel.GetString() ?? "" : "";
+                var nameKanji = dep.TryGetProperty("nameKanji", out var nk) ? nk.GetString() ?? "" : "";
+                var nameKana = dep.TryGetProperty("nameKana", out var nka) ? nka.GetString() ?? "" : "";
+                var birthDateStr = dep.TryGetProperty("birthDate", out var bd) ? bd.GetString() ?? "" : "";
+
+                if (relation == "配偶者")
+                {
+                    hasSpouse = true;
+                    spouseName = nameKanji;
+                    spouseNameKana = nameKana;
+                    continue;
+                }
+
+                // Determine age at year end
+                if (DateTime.TryParse(birthDateStr, out var birthDate))
+                {
+                    var age = yearEnd.Year - birthDate.Year;
+                    if (birthDate > yearEnd.AddYears(-age)) age--;
+
+                    if (age < 16)
+                    {
+                        under16Names.Add(nameKanji);
+                    }
+                    else
+                    {
+                        dependentNames.Add(nameKanji);
+                        numOtherDependents++;
+                    }
+                }
+                else
+                {
+                    dependentNames.Add(nameKanji);
+                    numOtherDependents++;
+                }
+            }
+        }
+        catch { /* ignore parse errors */ }
+
         return new SlipData
         {
             EmployeeName = emp.Name,
@@ -440,6 +533,13 @@ WHERE e.company_code = $1 AND r.period_month LIKE $2 AND e.employee_code = $3
             SocialInsurance = socialInsurance,
             BasicDeduction = basicDeduction,
             EmployeeBirthDate = emp.BirthDate,
+            HasSpouse = hasSpouse,
+            SpouseName = spouseName,
+            SpouseNameKana = spouseNameKana,
+            DependentNames = dependentNames,
+            Under16DependentNames = under16Names,
+            NumOtherDependents = numOtherDependents,
+            NumUnder16Dependents = under16Names.Count,
         };
     }
 
