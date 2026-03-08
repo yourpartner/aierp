@@ -493,15 +493,16 @@ async function fetchMaterialNames(codes: string[]) {
 }
 
 async function searchVendors(query: string) {
-  if (!query || query.length < 1) { vendorOptions.value = []; return }
   vendorLoading.value = true
   try {
+    const where: any[] = [{ field: 'flag_vendor', op: 'eq', value: true }]
+    if (query && query.length > 0) {
+      // Search by name or partner_code
+      where.push({ field: 'name', op: 'contains', value: query })
+    }
     const resp = await api.post('/objects/businesspartner/search', {
-      where: [
-        { field: 'flag_vendor', op: 'eq', value: true },
-        { field: 'name', op: 'contains', value: query }
-      ],
-      limit: 30
+      where,
+      limit: 50
     })
     vendorOptions.value = (resp.data?.data || []).map((bp: any) => ({
       code: bp.partner_code,
@@ -653,6 +654,8 @@ function openCreateDialog() {
   poOptions.value = []
   vendorOptions.value = []
   showCreate.value = true
+  // Preload vendor list
+  searchVendors('')
 }
 
 async function doCreate() {
