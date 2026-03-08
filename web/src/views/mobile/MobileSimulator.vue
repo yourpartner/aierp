@@ -123,6 +123,58 @@
                 </div>
               </div>
               
+              <!-- 微信风格的勤怠入力页面 -->
+              <div v-else-if="currentWechatView === 'timesheet_input'" class="detail-view wechat-style">
+                <div class="detail-header">
+                  <div class="back-btn" @click="handleTimesheetBack('wechat')">&lt;</div>
+                  <div class="title">勤怠入力</div>
+                  <div class="more-btn">...</div>
+                </div>
+                <div class="detail-body timesheet-body">
+                  <div class="ts-month-header">
+                    <div class="ts-month-title">2026年02月分 勤怠表</div>
+                    <div class="ts-client-info">派遣先: 株式会社ABC商事</div>
+                    <div class="ts-status-badge not-submitted" v-if="!wechatTimesheetSubmitted">未提出</div>
+                    <div class="ts-status-badge submitted" v-else>提出済</div>
+                  </div>
+
+                  <div class="ts-day-list">
+                    <div v-for="day in timesheetDays" :key="day.date"
+                         :class="['ts-day-row', { weekend: day.isWeekend, filled: day.start }]">
+                      <div class="ts-day-date">
+                        <span class="date">{{ day.dateLabel }}</span>
+                        <span :class="['dow', { sat: day.dow === '土', sun: day.dow === '日' }]">{{ day.dow }}</span>
+                      </div>
+                      <div class="ts-day-times" v-if="!day.isWeekend">
+                        <input type="time" v-model="day.start" class="time-input" :disabled="wechatTimesheetSubmitted" />
+                        <span class="time-sep">~</span>
+                        <input type="time" v-model="day.end" class="time-input" :disabled="wechatTimesheetSubmitted" />
+                      </div>
+                      <div class="ts-day-times" v-else>
+                        <span class="rest-label">休日</span>
+                      </div>
+                      <div class="ts-day-hours">
+                        {{ day.isWeekend ? '-' : calcHours(day.start, day.end) }}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="ts-summary">
+                    <div class="ts-summary-row"><span>稼働日数</span><span>{{ workingDays }}日</span></div>
+                    <div class="ts-summary-row"><span>合計時間</span><span>{{ totalHours }}h</span></div>
+                    <div class="ts-summary-row"><span>残業時間</span><span>{{ overtimeHours }}h</span></div>
+                  </div>
+
+                  <div class="ts-actions" v-if="!wechatTimesheetSubmitted">
+                    <button class="ts-btn save" @click="saveTimesheet('wechat')">一時保存</button>
+                    <button class="ts-btn submit" @click="submitTimesheet('wechat')">提出する</button>
+                  </div>
+                  <div class="ts-actions" v-else>
+                    <div class="ts-submitted-msg">勤怠を提出しました。お疲れ様でした！</div>
+                  </div>
+                </div>
+              </div>
+
               <div v-else class="detail-view wechat-style">
                 <div class="detail-header">
                   <div class="back-btn" @click="currentWechatView = 'chat'">&lt;</div>
@@ -283,6 +335,61 @@
                 </div>
               </div>
               
+              <!-- Line 风格的勤怠入力 LIFF 页面 -->
+              <div v-else-if="currentLineView === 'timesheet_input'" class="detail-view line-style">
+                <div class="detail-header line-style">
+                  <div class="back-btn" @click="handleTimesheetBack('line')">×</div>
+                  <div class="title">勤怠入力</div>
+                  <div class="more-btn">⋮</div>
+                </div>
+                <div class="detail-body timesheet-body line-theme">
+                  <div class="liff-header">
+                    <h2>2026年02月分 勤怠表</h2>
+                    <p class="subtitle">派遣先: 株式会社ABC商事</p>
+                  </div>
+
+                  <div class="ts-status-card" :class="{ submitted: lineTimesheetSubmitted }">
+                    <span v-if="!lineTimesheetSubmitted">未提出 - 提出期限: 2026-03-10</span>
+                    <span v-else>提出済</span>
+                  </div>
+
+                  <div class="ts-day-list line-list">
+                    <div v-for="day in timesheetDays" :key="day.date"
+                         :class="['ts-day-card', { weekend: day.isWeekend }]">
+                      <div class="ts-day-left">
+                        <span class="date">{{ day.dateLabel }}</span>
+                        <span :class="['dow', { sat: day.dow === '土', sun: day.dow === '日' }]">{{ day.dow }}</span>
+                      </div>
+                      <div class="ts-day-center" v-if="!day.isWeekend">
+                        <input type="time" v-model="day.start" class="line-time-input" :disabled="lineTimesheetSubmitted" />
+                        <span class="time-sep">~</span>
+                        <input type="time" v-model="day.end" class="line-time-input" :disabled="lineTimesheetSubmitted" />
+                      </div>
+                      <div class="ts-day-center" v-else>
+                        <span class="rest-label">休日</span>
+                      </div>
+                      <div class="ts-day-right">
+                        {{ day.isWeekend ? '-' : calcHours(day.start, day.end) }}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="summary-card ts-line-summary">
+                    <div class="row"><span>稼働日数</span><span>{{ workingDays }}日</span></div>
+                    <div class="row"><span>合計時間</span><span class="total-val">{{ totalHours }}h</span></div>
+                    <div class="row"><span>残業時間</span><span>{{ overtimeHours }}h</span></div>
+                  </div>
+
+                  <div class="action-area" v-if="!lineTimesheetSubmitted">
+                    <button class="line-btn secondary" @click="saveTimesheet('line')">一時保存</button>
+                    <button class="line-btn primary" @click="submitTimesheet('line')">提出する</button>
+                  </div>
+                  <div class="action-area" v-else>
+                    <div class="ts-submitted-msg line-submitted">勤怠を提出しました。お疲れ様でした！</div>
+                  </div>
+                </div>
+              </div>
+
               <div v-else class="detail-view line-style">
                 <div class="detail-header line-style">
                   <div class="back-btn" @click="currentLineView = 'chat'">×</div>
@@ -302,7 +409,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import WechatUI from './WechatUI.vue'
 import LineUI from './LineUI.vue'
@@ -314,15 +421,113 @@ const theme = ref('light')
 const currentWechatView = ref('chat')
 const currentLineView = ref('chat')
 
+// --- Timesheet data ---
+interface TimesheetDay {
+  date: string
+  dateLabel: string
+  dow: string
+  isWeekend: boolean
+  start: string
+  end: string
+}
+
+const wechatTimesheetSubmitted = ref(false)
+const lineTimesheetSubmitted = ref(false)
+
+const generateTimesheetDays = (): TimesheetDay[] => {
+  const days: TimesheetDay[] = []
+  const dowNames = ['日', '月', '火', '水', '木', '金', '土']
+  // February 2026
+  for (let d = 1; d <= 28; d++) {
+    const dt = new Date(2026, 1, d)
+    const dow = dowNames[dt.getDay()]
+    const isWeekend = dt.getDay() === 0 || dt.getDay() === 6
+    days.push({
+      date: `2026-02-${String(d).padStart(2, '0')}`,
+      dateLabel: `2/${d}`,
+      dow,
+      isWeekend,
+      start: isWeekend ? '' : '09:00',
+      end: isWeekend ? '' : '18:00'
+    })
+  }
+  return days
+}
+
+const timesheetDays = ref<TimesheetDay[]>(generateTimesheetDays())
+
+const calcHours = (start: string, end: string): string => {
+  if (!start || !end) return '-'
+  const [sh, sm] = start.split(':').map(Number)
+  const [eh, em] = end.split(':').map(Number)
+  const mins = (eh * 60 + em) - (sh * 60 + sm) - 60 // 1h break
+  return mins > 0 ? (mins / 60).toFixed(1) : '0.0'
+}
+
+const workingDays = computed(() => {
+  return timesheetDays.value.filter(d => !d.isWeekend && d.start && d.end).length
+})
+
+const totalHours = computed(() => {
+  let sum = 0
+  for (const d of timesheetDays.value) {
+    if (d.isWeekend || !d.start || !d.end) continue
+    const h = parseFloat(calcHours(d.start, d.end))
+    if (!isNaN(h)) sum += h
+  }
+  return sum.toFixed(1)
+})
+
+const overtimeHours = computed(() => {
+  let sum = 0
+  for (const d of timesheetDays.value) {
+    if (d.isWeekend || !d.start || !d.end) continue
+    const h = parseFloat(calcHours(d.start, d.end))
+    if (!isNaN(h) && h > 8) sum += h - 8
+  }
+  return sum.toFixed(1)
+})
+
+const saveTimesheet = (_platform: string) => {
+  alert('一時保存しました。')
+}
+
+const submitTimesheet = (platform: string) => {
+  if (platform === 'wechat') {
+    wechatTimesheetSubmitted.value = true
+  } else {
+    lineTimesheetSubmitted.value = true
+  }
+}
+
+const handleTimesheetBack = (platform: string) => {
+  if (platform === 'wechat') {
+    if (wechatTimesheetSubmitted.value) {
+      // Post confirmation message back to chat
+      window.dispatchEvent(new CustomEvent('timesheet-submitted', { detail: { platform: 'wechat' } }))
+    }
+    currentWechatView.value = 'chat'
+  } else {
+    if (lineTimesheetSubmitted.value) {
+      window.dispatchEvent(new CustomEvent('timesheet-submitted', { detail: { platform: 'line' } }))
+    }
+    currentLineView.value = 'chat'
+  }
+}
+
 watch(() => route.query.scenario, () => {
   currentWechatView.value = 'chat'
   currentLineView.value = 'chat'
+  wechatTimesheetSubmitted.value = false
+  lineTimesheetSubmitted.value = false
+  timesheetDays.value = generateTimesheetDays()
 })
 
 const getDetailTitle = (view: string) => {
   switch(view) {
     case 'payslip': return '給与明細'
     case 'timesheet': return '勤怠入力'
+    case 'timesheet_input': return '勤怠入力'
     case 'cert': return '各種証明書'
     case 'dashboard': return 'マイページ'
     default: return '詳細ページ'
@@ -337,11 +542,11 @@ onMounted(() => {
   }
   updateTime()
   timer = window.setInterval(updateTime, 60000)
-  
+
   window.addEventListener('navigate-to-detail', (e: any) => {
     const view = e.detail.view
     const platform = e.detail.platform
-    
+
     if (platform === 'wechat') {
       currentWechatView.value = view
     } else if (platform === 'line') {
@@ -861,5 +1066,322 @@ onUnmounted(() => {
 
 .line-history-card .arrow {
   margin-left: 4px;
+}
+
+/* --- Timesheet Shared Styles --- */
+.timesheet-body {
+  padding: 0;
+  background-color: #f5f5f5;
+}
+
+.ts-month-header {
+  background: linear-gradient(135deg, #4a90d9, #357abd);
+  padding: 20px 16px;
+  color: white;
+  text-align: center;
+}
+
+.ts-month-title {
+  font-size: 18px;
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+
+.ts-client-info {
+  font-size: 13px;
+  opacity: 0.9;
+  margin-bottom: 10px;
+}
+
+.ts-status-badge {
+  display: inline-block;
+  padding: 4px 16px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.ts-status-badge.not-submitted {
+  background-color: rgba(255,255,255,0.2);
+  color: #ffcc00;
+  border: 1px solid #ffcc00;
+}
+
+.ts-status-badge.submitted {
+  background-color: rgba(255,255,255,0.2);
+  color: #90ee90;
+  border: 1px solid #90ee90;
+}
+
+.ts-day-list {
+  padding: 8px 12px;
+}
+
+.ts-day-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  margin-bottom: 2px;
+  background-color: #fff;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.ts-day-row.weekend {
+  background-color: #f9f0f0;
+  opacity: 0.7;
+}
+
+.ts-day-row.filled {
+  border-left: 3px solid #4a90d9;
+}
+
+.ts-day-date {
+  width: 60px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ts-day-date .date {
+  font-weight: 500;
+}
+
+.ts-day-date .dow {
+  font-size: 11px;
+  color: #888;
+}
+
+.ts-day-date .dow.sat {
+  color: #4a90d9;
+}
+
+.ts-day-date .dow.sun {
+  color: #e53935;
+}
+
+.ts-day-times {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.time-input {
+  width: 70px;
+  padding: 4px 4px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 12px;
+  text-align: center;
+  background-color: #fafafa;
+}
+
+.time-input:focus {
+  border-color: #4a90d9;
+  outline: none;
+}
+
+.time-input:disabled {
+  background-color: #f0f0f0;
+  color: #999;
+}
+
+.time-sep {
+  font-size: 12px;
+  color: #999;
+}
+
+.rest-label {
+  font-size: 12px;
+  color: #ccc;
+}
+
+.ts-day-hours {
+  width: 40px;
+  text-align: right;
+  font-size: 12px;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.ts-summary {
+  margin: 12px;
+  background-color: #fff;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.ts-summary-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 14px;
+  color: #333;
+}
+
+.ts-actions {
+  padding: 12px 16px 24px;
+  display: flex;
+  gap: 12px;
+}
+
+.ts-btn {
+  flex: 1;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: bold;
+  border: none;
+  cursor: pointer;
+}
+
+.ts-btn.save {
+  background-color: #f0f0f0;
+  color: #333;
+}
+
+.ts-btn.submit {
+  background-color: #4a90d9;
+  color: white;
+}
+
+.ts-btn:active {
+  opacity: 0.8;
+}
+
+.ts-submitted-msg {
+  width: 100%;
+  text-align: center;
+  padding: 16px;
+  font-size: 15px;
+  font-weight: bold;
+  color: #4a90d9;
+  background-color: #e8f4fd;
+  border-radius: 8px;
+}
+
+/* --- LINE Timesheet Styles --- */
+.line-theme .liff-header + .ts-status-card {
+  margin: 0;
+}
+
+.ts-status-card {
+  margin: 0 16px 12px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: bold;
+  text-align: center;
+  background-color: #fff3e0;
+  color: #e65100;
+}
+
+.ts-status-card.submitted {
+  background-color: #e8f5e9;
+  color: #2e7d32;
+}
+
+.ts-day-list.line-list {
+  padding: 0 12px;
+}
+
+.ts-day-card {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  margin-bottom: 4px;
+  background-color: #fff;
+  border-radius: 10px;
+  font-size: 13px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+.ts-day-card.weekend {
+  background-color: #fafafa;
+  opacity: 0.6;
+}
+
+.ts-day-left {
+  width: 60px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ts-day-left .date {
+  font-weight: 600;
+}
+
+.ts-day-left .dow {
+  font-size: 11px;
+  color: #888;
+}
+
+.ts-day-left .dow.sat {
+  color: #1e88e5;
+}
+
+.ts-day-left .dow.sun {
+  color: #e53935;
+}
+
+.ts-day-center {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.line-time-input {
+  width: 70px;
+  padding: 5px 4px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 12px;
+  text-align: center;
+  background-color: #fafafa;
+}
+
+.line-time-input:focus {
+  border-color: #00c300;
+  outline: none;
+}
+
+.line-time-input:disabled {
+  background-color: #f0f0f0;
+  color: #999;
+}
+
+.ts-day-right {
+  width: 40px;
+  text-align: right;
+  font-size: 12px;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.ts-line-summary {
+  margin: 12px 16px;
+}
+
+.ts-line-summary .total-val {
+  color: #00c300;
+  font-weight: bold;
+}
+
+.line-btn.secondary {
+  background-color: #f0f0f0;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+.line-submitted {
+  color: #00c300 !important;
+  background-color: #e8f5e9 !important;
 }
 </style>

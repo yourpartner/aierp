@@ -120,7 +120,38 @@ const initScenario = () => {
   messages.value = []
   const scenario = route.query.scenario
   
-  if (scenario === 'payslip' || !scenario) {
+  if (scenario === 'timesheet') {
+    // 勤怠督促シナリオ：管理者からの督促→従業員が入力→提出完了
+    messages.value.push({
+      type: 'received',
+      text: '',
+      isCard: true,
+      cardData: {
+        title: '【督促】勤怠未提出のお知らせ',
+        date: '2026年03月分',
+        desc: '2026年02月分の勤怠がまだ提出されていません。期限までにご提出ください。',
+        items: [
+          { label: '対象月', value: '2026年02月' },
+          { label: '提出期限', value: '2026-03-10', highlight: true },
+          { label: 'ステータス', value: '未提出', highlight: true }
+        ],
+        action: 'timesheet_open'
+      }
+    })
+    // 模拟用户收到后的反应
+    setTimeout(() => {
+      messages.value.push({ type: 'sent', text: '勤怠を入力します。' })
+      scrollToBottom()
+      setTimeout(() => {
+        messages.value.push({ type: 'received', text: '勤怠入力ページを開いています...' })
+        scrollToBottom()
+        setTimeout(() => {
+          const event = new CustomEvent('navigate-to-detail', { detail: { view: 'timesheet_input', platform: 'wechat' } })
+          window.dispatchEvent(event)
+        }, 800)
+      }, 600)
+    }, 1500)
+  } else if (scenario === 'payslip' || !scenario) {
     // 默认或工资单场景：推送工资单卡片
     messages.value.push({
       type: 'received',
@@ -164,8 +195,29 @@ const initScenario = () => {
   scrollToBottom()
 }
 
+const onTimesheetSubmitted = (e: any) => {
+  if (e.detail?.platform === 'wechat') {
+    messages.value.push({
+      type: 'received',
+      text: '',
+      isCard: true,
+      cardData: {
+        title: '勤怠提出完了のお知らせ',
+        date: '2026年02月分',
+        desc: '2026年02月分の勤怠が正常に提出されました。承認をお待ちください。',
+        items: [
+          { label: 'ステータス', value: '提出済' },
+          { label: '提出日', value: '2026-03-08' }
+        ]
+      }
+    })
+    scrollToBottom()
+  }
+}
+
 onMounted(() => {
   initScenario()
+  window.addEventListener('timesheet-submitted', onTimesheetSubmitted)
 })
 
 watch(() => route.query.scenario, () => {
@@ -184,9 +236,22 @@ const handleAction = (action: string) => {
   activeMenu.value = null
   
   if (action === 'payslip_push' || action === 'payslip') {
-    // 触发自定义事件，通知父组件切换到详情视图
     const event = new CustomEvent('navigate-to-detail', { detail: { view: 'payslip', platform: 'wechat' } })
     window.dispatchEvent(event)
+    return
+  }
+
+  if (action === 'timesheet_open') {
+    messages.value.push({ type: 'sent', text: '勤怠を入力します。' })
+    scrollToBottom()
+    setTimeout(() => {
+      messages.value.push({ type: 'received', text: '勤怠入力ページを開いています...' })
+      scrollToBottom()
+      setTimeout(() => {
+        const event = new CustomEvent('navigate-to-detail', { detail: { view: 'timesheet_input', platform: 'wechat' } })
+        window.dispatchEvent(event)
+      }, 800)
+    }, 600)
     return
   }
   
