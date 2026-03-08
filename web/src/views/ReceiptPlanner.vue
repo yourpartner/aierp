@@ -97,9 +97,6 @@
         <el-table-column :label="labels.partnerCol" min-width="140" align="left">
           <template #default="{ row }">{{ row.partnerDisplay || '-' }}</template>
         </el-table-column>
-        <el-table-column :label="labels.employeeCol" min-width="120" align="left">
-          <template #default="{ row }">{{ row.employeeDisplay || '-' }}</template>
-        </el-table-column>
         <el-table-column :label="labels.remark" min-width="100" align="left">
           <template #default="{ row }">
             <span class="cell-remark" :title="row.remark || '-'">{{ row.remark || '-' }}</span>
