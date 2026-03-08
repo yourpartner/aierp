@@ -77,25 +77,24 @@
     </el-card>
 
     <!-- 创建纳品书对话框 -->
-    <el-dialog v-model="createDialog.visible" :title="labels.createTitle" width="500px">
-      <el-form :model="createDialog.form" label-width="100px">
+    <el-dialog v-model="createDialog.visible" :title="labels.createTitle" width="460px" append-to-body destroy-on-close>
+      <el-form :model="createDialog.form" label-width="80px">
         <el-form-item :label="labels.warehouse" required>
-          <el-select v-model="createDialog.form.warehouseCode" :placeholder="labels.selectWarehouse" style="width: 100%">
+          <el-select v-model="createDialog.form.warehouseCode" :placeholder="labels.selectWarehouse">
             <el-option v-for="w in warehouseOptions" :key="w.warehouse_code" :label="`${w.name} (${w.warehouse_code})`" :value="w.warehouse_code" />
           </el-select>
         </el-form-item>
         <el-form-item :label="labels.deliveryDate">
-          <el-date-picker v-model="createDialog.form.deliveryDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+          <el-date-picker v-model="createDialog.form.deliveryDate" type="date" value-format="YYYY-MM-DD" />
         </el-form-item>
         <el-form-item :label="labels.customer">
-          <el-select 
-            v-model="createDialog.form.customerId" 
-            :placeholder="labels.selectCustomer" 
-            filterable 
-            remote 
+          <el-select
+            v-model="createDialog.form.customerId"
+            :placeholder="labels.selectCustomer"
+            filterable
+            remote
             :remote-method="searchCustomers"
-            clearable 
-            style="width: 100%"
+            clearable
             @change="onCustomerChange"
           >
             <el-option v-for="c in customerOptions" :key="c.id" :label="`${c.name} (${c.code})`" :value="c.id" />
@@ -109,7 +108,7 @@
     </el-dialog>
 
     <!-- 详情对话框 -->
-    <el-dialog v-model="detailDialog.visible" :title="detailDialog.title" width="fit-content" :style="{ minWidth: '800px', maxWidth: '95vw' }" top="5vh">
+    <el-dialog v-model="detailDialog.visible" :title="detailDialog.title" width="900px" :style="{ maxWidth: '95vw' }" top="5vh" append-to-body destroy-on-close>
       <div v-if="detailDialog.data" class="delivery-detail">
         <div class="detail-header">
           <el-descriptions :column="4" border size="small">

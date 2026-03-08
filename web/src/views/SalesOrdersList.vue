@@ -183,6 +183,7 @@
         width="1100px"
         :style="{ maxWidth: '96vw' }"
         destroy-on-close
+        append-to-body
         class="edit-so-dialog"
       >
         <template #header>
@@ -204,7 +205,7 @@
       </el-dialog>
 
       <!-- 创建纳品书对话框 -->
-      <el-dialog v-model="deliveryDialogVisible" title="納品書作成" width="480px" class="delivery-dialog">
+      <el-dialog v-model="deliveryDialogVisible" title="納品書作成" width="460px" append-to-body class="delivery-dialog">
         <el-form label-width="80px" class="delivery-form">
           <el-form-item label="倉庫" required>
             <el-select v-model="deliveryForm.warehouseCode" placeholder="倉庫を選択" class="delivery-select">
@@ -229,6 +230,7 @@
         :width="createStep === 0 ? '560px' : '1100px'"
         :style="{ maxWidth: '96vw' }"
         destroy-on-close
+        append-to-body
         class="create-so-dialog"
         @close="resetCreateDialog"
       >

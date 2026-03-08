@@ -75,27 +75,18 @@
     </el-card>
 
     <!-- 创建盘点单对话框 -->
-    <el-dialog v-model="createDialog.visible" width="500px">
-      <template #header>
-        <div class="dialog-header">
-          <span class="dialog-header-title">{{ labels.createTitle }}</span>
-          <div class="dialog-header-actions">
-            <el-button type="primary" size="small" :loading="createDialog.loading" @click="createCount">{{ labels.create }}</el-button>
-            <el-button size="small" @click="createDialog.visible = false">{{ labels.cancel }}</el-button>
-          </div>
-        </div>
-      </template>
-      <el-form :model="createDialog.form" label-width="100px">
+    <el-dialog v-model="createDialog.visible" :title="labels.createTitle" width="460px" append-to-body destroy-on-close>
+      <el-form :model="createDialog.form" label-width="80px">
         <el-form-item :label="labels.warehouse" required>
-          <el-select v-model="createDialog.form.warehouseCode" :placeholder="labels.selectWarehouse" style="width: 100%">
+          <el-select v-model="createDialog.form.warehouseCode" :placeholder="labels.selectWarehouse">
             <el-option v-for="w in warehouseOptions" :key="w.warehouse_code" :label="`${w.name} (${w.warehouse_code})`" :value="w.warehouse_code" />
           </el-select>
         </el-form-item>
         <el-form-item :label="labels.countDate">
-          <el-date-picker v-model="createDialog.form.countDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+          <el-date-picker v-model="createDialog.form.countDate" type="date" value-format="YYYY-MM-DD" />
         </el-form-item>
         <el-form-item :label="labels.bin">
-          <el-select v-model="createDialog.form.binCode" :placeholder="labels.allBins" clearable style="width: 100%">
+          <el-select v-model="createDialog.form.binCode" :placeholder="labels.allBins" clearable>
             <el-option v-for="b in filteredBinOptions" :key="b.bin_code" :label="`${b.name} (${b.bin_code})`" :value="b.bin_code" />
           </el-select>
         </el-form-item>
@@ -103,10 +94,14 @@
           <el-input v-model="createDialog.form.description" type="textarea" :rows="2" />
         </el-form-item>
       </el-form>
+      <template #footer>
+        <el-button @click="createDialog.visible = false">{{ labels.cancel }}</el-button>
+        <el-button type="primary" :loading="createDialog.loading" @click="createCount">{{ labels.create }}</el-button>
+      </template>
     </el-dialog>
 
     <!-- 盘点详情/录入对话框 -->
-    <el-dialog v-model="detailDialog.visible" width="1000px" :style="{ maxWidth: '95vw' }" top="5vh" class="count-detail-dialog">
+    <el-dialog v-model="detailDialog.visible" :title="detailDialog.title" width="1000px" :style="{ maxWidth: '95vw' }" top="5vh" append-to-body destroy-on-close class="count-detail-dialog">
       <template #header>
         <div class="dialog-header">
           <span class="dialog-header-title">{{ detailDialog.title }}</span>

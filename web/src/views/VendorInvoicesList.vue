@@ -87,6 +87,7 @@
       v-model="showForm"
       width="1000px"
       destroy-on-close
+      append-to-body
     >
       <template #header>
         <div class="dialog-header">
@@ -121,7 +122,7 @@
     </el-dialog>
 
     <!-- 详情弹窗 -->
-    <el-dialog v-model="showDetail" width="fit-content" :style="{ minWidth: '700px', maxWidth: '95vw' }" destroy-on-close>
+    <el-dialog v-model="showDetail" width="800px" :style="{ maxWidth: '95vw' }" destroy-on-close append-to-body>
       <template #header>
         <div class="dialog-header">
           <span class="dialog-header-title">請求書詳細</span>

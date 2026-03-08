@@ -75,7 +75,7 @@
     </el-card>
 
     <!-- 详情/编辑弹窗 -->
-    <el-dialog v-model="showDetail" width="fit-content" :style="{ maxWidth: '95vw' }" destroy-on-close>
+    <el-dialog v-model="showDetail" width="900px" :style="{ maxWidth: '95vw' }" destroy-on-close append-to-body>
       <template #header>
         <div class="dialog-header">
           <span class="dialog-header-title">{{ isEditMode ? '発注編集' : '発注詳細' }}</span>
@@ -317,7 +317,7 @@
     </el-dialog>
 
     <!-- 入库弹窗 -->
-    <el-dialog v-model="showReceive" title="入庫処理" width="800px" destroy-on-close>
+    <el-dialog v-model="showReceive" title="入庫処理" width="800px" destroy-on-close append-to-body>
       <div v-if="receiveData" style="padding-right: 10px;">
         <el-alert type="info" :closable="false" style="margin-bottom:16px">
           発注番号: {{ receiveData.payload?.poNo }} | 仕入先: {{ receiveData.payload?.partnerName }}
