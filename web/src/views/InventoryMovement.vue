@@ -190,9 +190,9 @@ async function loadRefOptions() {
   refDataCache.value = {}
   try {
     if (model.movementType === 'IN') {
-      // Load POs not fully received
+      // Load POs not fully received (status: draft, ordered, partial_received, new)
       const resp = await api.post('/objects/purchase_order/search', {
-        where: [{ field: 'status', op: 'in', value: ['new', 'partial_received'] }],
+        where: [{ field: 'status', op: 'in', value: ['new', 'draft', 'ordered', 'partial_received'] }],
         orderBy: [{ field: 'order_date', direction: 'desc' }],
         limit: 200
       })
@@ -208,18 +208,22 @@ async function loadRefOptions() {
     } else if (model.movementType === 'OUT') {
       // Load SOs not fully shipped
       const resp = await api.post('/objects/sales_order/search', {
-        where: [{ field: 'status', op: 'in', value: ['new', 'confirmed', 'partial_shipped'] }],
+        where: [{ field: 'status', op: 'in', value: ['new', 'confirmed', 'partial_shipped', 'draft'] }],
         orderBy: [{ field: 'order_date', direction: 'desc' }],
         limit: 200
       })
       const sos = resp.data?.data || []
-      refOptions.value = sos.map((so: any) => ({
-        label: `${so.order_no || so.payload?.orderNo || so.id?.slice(0,8)} (${so.order_date || ''} - ${so.partner_code || ''})`,
-        value: so.order_no || so.payload?.orderNo || so.id,
-        data: so
-      }))
+      refOptions.value = sos.map((so: any) => {
+        const soNo = so.so_no || so.payload?.soNo || so.payload?.orderNo || ''
+        const displayNo = soNo || so.id.slice(0, 8)
+        return {
+          label: `${displayNo} (${so.order_date || ''} - ${so.partner_code || ''})`,
+          value: soNo || so.id,
+          data: so
+        }
+      })
       for (const so of sos) {
-        const key = so.order_no || so.payload?.orderNo || so.id
+        const key = so.so_no || so.payload?.soNo || so.payload?.orderNo || so.id
         refDataCache.value[key] = so
       }
     }
