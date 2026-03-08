@@ -177,7 +177,8 @@
     </el-tabs>
 
     <!-- 入力ダイアログ（既存） -->
-    <el-dialog v-model="dialogVisible" title="勤怠入力" width="500px">
+    <el-dialog v-model="dialogVisible" title="勤怠入力" width="500px"
+      append-to-body>
       <el-form :model="form" label-position="top">
         <el-form-item label="年月">
           <el-input :value="formatYearMonth(form.yearMonth)" disabled />
@@ -217,7 +218,8 @@
     </el-dialog>
 
     <!-- ファイルアップロードダイアログ -->
-    <el-dialog v-model="showUploadDialog" title="勤怠ファイルアップロード" width="500px">
+    <el-dialog v-model="showUploadDialog" title="勤怠ファイルアップロード" width="500px"
+      append-to-body>
       <div class="upload-area">
         <el-upload
           ref="uploadRef"

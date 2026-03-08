@@ -364,7 +364,8 @@
     </el-dialog>
 
     <!-- 契約更新ダイアログ -->
-    <el-dialog v-model="renewDialogVisible" title="契約更新" width="400px">
+    <el-dialog v-model="renewDialogVisible" title="契約更新" width="400px"
+      append-to-body>
       <el-form label-width="100px">
         <el-form-item label="新終了日">
           <el-date-picker v-model="renewEndDate" type="date" style="width: 100%" />
@@ -377,7 +378,8 @@
     </el-dialog>
 
     <!-- 契約終了ダイアログ -->
-    <el-dialog v-model="terminateDialogVisible" title="契約終了" width="450px">
+    <el-dialog v-model="terminateDialogVisible" title="契約終了" width="450px"
+      append-to-body>
       <el-form label-width="100px">
         <el-form-item label="終了日">
           <el-date-picker v-model="terminationDate" type="date" style="width: 100%" />

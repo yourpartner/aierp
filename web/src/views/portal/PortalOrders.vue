@@ -69,7 +69,8 @@
     </el-card>
 
     <!-- 詳細/承諾ダイアログ -->
-    <el-dialog v-model="detailVisible" :title="`注文書 ${selectedOrder?.orderNo}`" width="600px">
+    <el-dialog v-model="detailVisible" :title="`注文書 ${selectedOrder?.orderNo}`" width="600px"
+      append-to-body>
       <div class="order-detail" v-if="selectedOrder">
         <div class="detail-grid">
           <div class="detail-item">

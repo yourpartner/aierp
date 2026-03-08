@@ -151,7 +151,8 @@
     </el-dialog>
 
     <!-- 详情对话框 -->
-    <el-dialog v-model="detailDialog.visible" :title="labels.detailTitle" width="1000px" destroy-on-close>
+    <el-dialog v-model="detailDialog.visible" :title="labels.detailTitle" width="1000px" destroy-on-close
+      append-to-body>
       <el-skeleton :loading="detailDialog.loading" :rows="8" animated />
       <template v-if="!detailDialog.loading && detailDialog.data">
         <el-descriptions :column="4" border size="small">
@@ -217,6 +218,7 @@
       title="一括請求書作成"
       width="560px"
       destroy-on-close
+      append-to-body
     >
       <div v-if="batchDialog.loading" class="batch-loading">
         <el-icon class="is-loading" style="font-size:24px;color:#409eff"><Loading /></el-icon>
@@ -287,6 +289,7 @@
       title="一括作成結果"
       width="640px"
       destroy-on-close
+      append-to-body
     >
       <div class="batch-result-summary">
         <el-tag type="success" size="large">成功: {{ batchResult.successCount }}件</el-tag>
@@ -320,7 +323,8 @@
     </el-dialog>
 
     <!-- 取消对话框 -->
-    <el-dialog v-model="cancelDialog.visible" :title="labels.cancelTitle" width="400px">
+    <el-dialog v-model="cancelDialog.visible" :title="labels.cancelTitle" width="400px"
+      append-to-body>
       <el-form :model="cancelDialog.form" label-width="80px">
         <el-form-item :label="labels.reason">
           <el-input v-model="cancelDialog.form.reason" type="textarea" :rows="3" :placeholder="labels.reasonPlaceholder" />

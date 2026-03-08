@@ -51,7 +51,8 @@
     </el-card>
 
     <!-- 編集ダイアログ -->
-    <el-dialog v-model="dialogVisible" :title="isEdit ? 'ルール編集' : '新規ルール'" width="700px">
+    <el-dialog v-model="dialogVisible" :title="isEdit ? 'ルール編集' : '新規ルール'" width="700px"
+      append-to-body>
       <el-form :model="form" label-position="top">
         <el-form-item label="ルール名" required>
           <el-input v-model="form.ruleName" placeholder="契約締結時に確認メール送信" />

@@ -54,7 +54,8 @@
     </el-card>
 
     <!-- 請求書作成ダイアログ -->
-    <el-dialog v-model="dialogVisible" title="請求書作成" width="550px">
+    <el-dialog v-model="dialogVisible" title="請求書作成" width="550px"
+      append-to-body>
       <el-form :model="form" label-position="top">
         <el-row :gutter="16">
           <el-col :span="12">

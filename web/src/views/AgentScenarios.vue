@@ -120,6 +120,7 @@
       v-model="editor.visible" 
       :title="editor.isNew ? (text.tables.agentScenarios.createTitle || 'シナリオ作成') : (text.tables.agentScenarios.editTitle || 'シナリオ編集')"
       width="600px"
+      append-to-body
     >
       <el-form 
         ref="formRef"

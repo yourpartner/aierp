@@ -113,7 +113,8 @@
     </div>
 
     <!-- 返信ダイアログ -->
-    <el-dialog v-model="replyDialogVisible" title="メール返信" width="600px">
+    <el-dialog v-model="replyDialogVisible" title="メール返信" width="600px"
+      append-to-body>
       <el-form :model="replyForm" label-position="top">
         <el-form-item label="宛先">
           <el-input v-model="replyForm.to" />

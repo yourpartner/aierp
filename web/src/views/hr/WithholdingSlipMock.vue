@@ -132,7 +132,8 @@
     </el-card>
 
     <!-- Overwrite confirmation dialog -->
-    <el-dialog v-model="overwriteDialog.visible" title="確認" width="500px">
+    <el-dialog v-model="overwriteDialog.visible" title="確認" width="500px"
+      append-to-body>
       <p>以下の従業員の源泉徴収票は既に作成済みです：</p>
       <ul class="existing-list">
         <li v-for="e in overwriteDialog.existingList" :key="e.employeeCode">

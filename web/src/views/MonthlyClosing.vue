@@ -199,7 +199,8 @@
     </el-card>
 
     <!-- 手動チェック確認ダイアログ -->
-    <el-dialog v-model="manualCheckDialog" :title="text.tables.monthlyClosing.manualCheck" width="480px">
+    <el-dialog v-model="manualCheckDialog" :title="text.tables.monthlyClosing.manualCheck" width="480px"
+      append-to-body>
       <el-form label-position="top">
         <el-form-item :label="text.tables.monthlyClosing.checkItem">
           {{ getCheckItemName(currentCheckItem?.itemKey || '') }}
@@ -223,7 +224,8 @@
     </el-dialog>
 
     <!-- チェック詳細ダイアログ -->
-    <el-dialog v-model="detailDialog" :title="detailTitle" width="1100px" :style="{ maxWidth: '95vw' }" destroy-on-close>
+    <el-dialog v-model="detailDialog" :title="detailTitle" width="1100px" :style="{ maxWidth: '95vw' }" destroy-on-close
+      append-to-body>
       <div v-loading="detailLoading">
         <el-alert v-if="detailErrorMessage" type="error" :closable="false" :title="detailErrorMessage" style="margin-bottom:10px" />
         <div v-if="detailData.length" style="max-width:100%; overflow-x:auto;">
@@ -287,7 +289,8 @@
     </el-dialog>
 
     <!-- 再開ダイアログ -->
-    <el-dialog v-model="reopenDialog" :title="text.tables.monthlyClosing.reopen" width="480px">
+    <el-dialog v-model="reopenDialog" :title="text.tables.monthlyClosing.reopen" width="480px"
+      append-to-body>
       <el-form label-position="top">
         <el-form-item :label="text.tables.monthlyClosing.reopenReason" required>
           <el-input v-model="reopenReason" type="textarea" :rows="3" :placeholder="text.tables.monthlyClosing.reopenReasonPlaceholder" />

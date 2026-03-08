@@ -101,7 +101,8 @@
       </template>
     </el-drawer>
 
-    <el-dialog v-model="tester.visible" width="620px" :title="testerTitle">
+    <el-dialog v-model="tester.visible" width="620px" :title="testerTitle"
+      append-to-body>
       <div class="tester-body">
         <div class="tester-section">
           <div class="tester-label">{{ text.tables.workflowRules.testPayload }}</div>

@@ -298,7 +298,8 @@
     </el-card>
 
 
-    <el-dialog v-model="rulesDialogVisible" title="自動記帳ルール" width="815px">
+    <el-dialog v-model="rulesDialogVisible" title="自動記帳ルール" width="815px"
+      append-to-body>
       <div class="rules-toolbar">
         <el-button type="primary" @click="startCreateRule">ルール追加</el-button>
       </div>

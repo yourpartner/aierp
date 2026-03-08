@@ -46,10 +46,12 @@
     </el-card>
 
     <!-- 银行/支店选择弹窗（与会计科目一致） -->
-    <el-dialog v-model="showBank" title="銀行を選択" width="720px">
+    <el-dialog v-model="showBank" title="銀行を選択" width="720px"
+      append-to-body>
       <BankBranchPicker mode="bank" @select="onPickBank" @cancel="showBank=false" />
     </el-dialog>
-    <el-dialog v-model="showBranch" title="支店を選択" width="720px">
+    <el-dialog v-model="showBranch" title="支店を選択" width="720px"
+      append-to-body>
       <BankBranchPicker mode="branch" @select="onPickBranch" @cancel="showBranch=false" />
     </el-dialog>
     <el-dialog v-model="showEmploymentTypeManager" title="雇用区分の管理" width="560px" append-to-body>

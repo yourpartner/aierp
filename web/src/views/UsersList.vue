@@ -70,7 +70,8 @@
     </el-card>
 
     <!-- 创建/编辑用户对话框 -->
-    <el-dialog v-model="showCreate" :title="editId ? text.editUser : text.createUser" width="500px" destroy-on-close>
+    <el-dialog v-model="showCreate" :title="editId ? text.editUser : text.createUser" width="500px" destroy-on-close
+      append-to-body>
       <el-form :model="form" label-width="90px" size="small" class="user-form">
         <el-form-item :label="text.employeeCode" required>
           <el-input v-model="form.employeeCode" :disabled="!!editId" />

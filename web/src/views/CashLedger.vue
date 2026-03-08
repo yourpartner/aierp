@@ -160,8 +160,19 @@
         <el-form-item label="日付" required>
           <el-date-picker v-model="receiptForm.transactionDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="金額" required>
+        <el-form-item label="金額（税込）" required>
           <el-input-number v-model="receiptForm.amount" :min="0" :controls="false" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="税率">
+          <el-select v-model="receiptForm.taxRate" style="width: 120px" @change="calcReceiptTax">
+            <el-option :label="'10%'" :value="10" />
+            <el-option :label="'8%（軽減）'" :value="8" />
+            <el-option :label="'非課税'" :value="0" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="消費税額">
+          <el-input-number v-model="receiptForm.taxAmount" :min="0" :controls="false" style="width: 160px" />
+          <span class="hint">（税込金額から自動計算・手動調整可）</span>
         </el-form-item>
         <el-form-item label="相手先">
           <el-input v-model="receiptForm.counterparty" />
@@ -201,8 +212,19 @@
         <el-form-item label="日付" required>
           <el-date-picker v-model="paymentForm.transactionDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="金額" required>
+        <el-form-item label="金額（税込）" required>
           <el-input-number v-model="paymentForm.amount" :min="0" :controls="false" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="税率">
+          <el-select v-model="paymentForm.taxRate" style="width: 120px" @change="calcPaymentTax">
+            <el-option :label="'10%'" :value="10" />
+            <el-option :label="'8%（軽減）'" :value="8" />
+            <el-option :label="'非課税'" :value="0" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="消費税額">
+          <el-input-number v-model="paymentForm.taxAmount" :min="0" :controls="false" style="width: 160px" />
+          <span class="hint">（税込金額から自動計算・手動調整可）</span>
         </el-form-item>
         <el-form-item label="カテゴリ">
           <el-select v-model="paymentForm.category" style="width: 100%" clearable>
@@ -380,6 +402,8 @@ const filter = ref({
 const receiptForm = ref({
   transactionDate: new Date().toISOString().split('T')[0],
   amount: 0,
+  taxRate: 10,
+  taxAmount: 0,
   counterparty: '',
   description: '',
   createVoucher: true,
@@ -389,6 +413,8 @@ const receiptForm = ref({
 const paymentForm = ref({
   transactionDate: new Date().toISOString().split('T')[0],
   amount: 0,
+  taxRate: 10,
+  taxAmount: 0,
   category: '',
   counterparty: '',
   description: '',
@@ -457,6 +483,20 @@ function formatCurrency(value: number): string {
 function getCategoryName(code: string): string {
   const cat = expenseCategories.value.find(c => c.code === code)
   return cat?.name || code || ''
+}
+
+// 消費税計算（税込金額から消費税を算出）
+function calcTax(amount: number, rate: number): number {
+  if (!rate) return 0
+  return Math.floor(amount * rate / (100 + rate))
+}
+
+function calcPaymentTax() {
+  paymentForm.value.taxAmount = calcTax(paymentForm.value.amount, paymentForm.value.taxRate)
+}
+
+function calcReceiptTax() {
+  receiptForm.value.taxAmount = calcTax(receiptForm.value.amount, receiptForm.value.taxRate)
 }
 
 // 合计
@@ -603,6 +643,8 @@ async function submitReceipt() {
         transactionDate: receiptForm.value.transactionDate,
         transactionType: 'receipt',
         amount: receiptForm.value.amount,
+        taxRate: receiptForm.value.taxRate,
+        taxAmount: receiptForm.value.taxAmount,
         counterparty: receiptForm.value.counterparty,
         description: receiptForm.value.description
       },
@@ -640,6 +682,8 @@ async function submitPayment() {
         transactionDate: paymentForm.value.transactionDate,
         transactionType: 'payment',
         amount: paymentForm.value.amount,
+        taxRate: paymentForm.value.taxRate,
+        taxAmount: paymentForm.value.taxAmount,
         category: paymentForm.value.category,
         counterparty: paymentForm.value.counterparty,
         description: paymentForm.value.description
@@ -777,6 +821,8 @@ function resetReceiptForm() {
   receiptForm.value = {
     transactionDate: new Date().toISOString().split('T')[0],
     amount: 0,
+    taxRate: 10,
+    taxAmount: 0,
     counterparty: '',
     description: '',
     createVoucher: true,
@@ -788,6 +834,8 @@ function resetPaymentForm() {
   paymentForm.value = {
     transactionDate: new Date().toISOString().split('T')[0],
     amount: 0,
+    taxRate: 10,
+    taxAmount: 0,
     category: '',
     counterparty: '',
     description: '',
@@ -854,6 +902,10 @@ watch(showCountForm, (val) => {
     countForm.value.actualBalance = currentBalance.value
   }
 })
+
+// 金額変更時に消費税を自動計算
+watch(() => paymentForm.value.amount, () => calcPaymentTax())
+watch(() => receiptForm.value.amount, () => calcReceiptTax())
 
 // 监听出金表单的分类变化
 watch(() => paymentForm.value.category, (cat) => {

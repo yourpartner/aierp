@@ -80,7 +80,8 @@
     </el-row>
 
     <!-- 詳細ダイアログ -->
-    <el-dialog v-model="detailVisible" :title="`${formatPayPeriod(selectedPayslip?.payPeriod)} 給与明細`" width="600px">
+    <el-dialog v-model="detailVisible" :title="`${formatPayPeriod(selectedPayslip?.payPeriod)} 給与明細`" width="600px"
+      append-to-body>
       <div class="payslip-detail" v-if="selectedPayslip">
         <div class="detail-section">
           <h4>支給</h4>

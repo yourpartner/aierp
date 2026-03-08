@@ -92,12 +92,14 @@
     </el-card>
 
     <!-- 新規工数入力ダイアログ -->
-    <el-dialog v-model="newFormVisible" title="工数入力" width="1100px" destroy-on-close>
+    <el-dialog v-model="newFormVisible" title="工数入力" width="1100px" destroy-on-close
+      append-to-body>
       <TimesheetForm dialog-mode @saved="onFormSaved" />
     </el-dialog>
 
     <!-- 详细弹窗 -->
-    <el-dialog v-model="detailVisible" :title="detailTitle" width="900px" destroy-on-close>
+    <el-dialog v-model="detailVisible" :title="detailTitle" width="900px" destroy-on-close
+      append-to-body>
       <div v-loading="detailLoading">
         <div class="detail-summary">
           <div class="summary-item">

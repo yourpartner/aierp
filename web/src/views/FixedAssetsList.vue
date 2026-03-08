@@ -117,7 +117,8 @@
     </el-card>
 
     <!-- 新建/编辑弹窗 -->
-    <el-dialog v-model="showDialog" :title="dialogTitle" width="460px" destroy-on-close top="5vh" class="resizable-dialog">
+    <el-dialog v-model="showDialog" :title="dialogTitle" width="460px" destroy-on-close top="5vh" class="resizable-dialog"
+      append-to-body>
       <div class="dialog-content asset-dialog">
         <h4 class="section-title">資産マスタ</h4>
         
@@ -284,7 +285,8 @@
     </el-dialog>
 
     <!-- 资产取得对话框 -->
-    <el-dialog v-model="showAcquisitionDialog" :title="isNewAssetAcquisition ? '資産取得（新規）' : '資産取得（資本化）'" width="1050px" destroy-on-close top="5vh" class="acquisition-dialog resizable-dialog">
+    <el-dialog v-model="showAcquisitionDialog" :title="isNewAssetAcquisition ? '資産取得（新規）' : '資産取得（資本化）'" width="1050px" destroy-on-close top="5vh" class="acquisition-dialog resizable-dialog"
+      append-to-body>
       <div class="acquisition-content">
         <el-alert type="info" :closable="false" class="acquisition-alert">
           {{ isNewAssetAcquisition ? '資産取得を行うと、資産マスタと取得仕訳が同時に作成されます。' : '既存資産の資本化を行います。取得仕訳のみ作成されます。' }}
@@ -446,7 +448,8 @@
     </el-dialog>
 
     <!-- 资产除却对话框（方案3：科目/分录由系统自动决定，仅确认） -->
-    <el-dialog v-model="showDisposalDialog" title="資産除却" width="860px" destroy-on-close top="5vh" class="resizable-dialog">
+    <el-dialog v-model="showDisposalDialog" title="資産除却" width="860px" destroy-on-close top="5vh" class="resizable-dialog"
+      append-to-body>
       <div class="dialog-content asset-dialog">
         <el-alert type="warning" :closable="false" style="margin-bottom: 16px;">
           除却を実行すると、会計仕訳が自動作成され、帳簿価額が0になります。（科目は資産クラス設定から自動決定）

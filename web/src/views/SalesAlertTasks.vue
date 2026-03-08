@@ -271,7 +271,8 @@
     </el-tabs>
 
     <!-- 解决对话框 -->
-    <el-dialog v-model="resolveDialog.visible" title="アラート解決" width="400px">
+    <el-dialog v-model="resolveDialog.visible" title="アラート解決" width="400px"
+      append-to-body>
       <el-form :model="resolveDialog.form" label-width="100px">
         <el-form-item label="解決メモ">
           <el-input v-model="resolveDialog.form.note" type="textarea" :rows="3" placeholder="解決内容を記入" />
@@ -284,7 +285,8 @@
     </el-dialog>
 
     <!-- 完成任务对话框 -->
-    <el-dialog v-model="completeDialog.visible" title="タスク完了" width="400px">
+    <el-dialog v-model="completeDialog.visible" title="タスク完了" width="400px"
+      append-to-body>
       <el-form :model="completeDialog.form" label-width="100px">
         <el-form-item label="完了メモ">
           <el-input v-model="completeDialog.form.note" type="textarea" :rows="3" placeholder="完了内容を記入" />

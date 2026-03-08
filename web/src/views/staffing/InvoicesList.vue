@@ -149,6 +149,7 @@
       title="請求書詳細"
       width="900px"
       destroy-on-close
+      append-to-body
     >
       <div class="invoice-detail" v-if="currentInvoice">
         <div class="invoice-header-info">
@@ -237,7 +238,8 @@
     </el-dialog>
 
     <!-- 請求書生成ダイアログ -->
-    <el-dialog v-model="generateDialogVisible" title="請求書生成" width="400px">
+    <el-dialog v-model="generateDialogVisible" title="請求書生成" width="400px"
+      append-to-body>
       <el-form label-width="100px">
         <el-form-item label="対象月">
           <el-date-picker
@@ -261,7 +263,8 @@
     </el-dialog>
 
     <!-- 入金登録ダイアログ -->
-    <el-dialog v-model="paymentDialogVisible" title="入金登録" width="400px">
+    <el-dialog v-model="paymentDialogVisible" title="入金登録" width="400px"
+      append-to-body>
       <el-form label-width="100px" v-if="paymentTarget">
         <el-form-item label="請求書番号">
           <el-input :model-value="paymentTarget.invoiceNo" disabled />

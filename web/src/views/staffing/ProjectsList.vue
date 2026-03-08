@@ -328,7 +328,8 @@
     </el-dialog>
 
     <!-- マッチングダイアログ -->
-    <el-dialog v-model="matchingDialogVisible" title="候補者マッチング" width="900px">
+    <el-dialog v-model="matchingDialogVisible" title="候補者マッチング" width="900px"
+      append-to-body>
       <div class="matching-header" v-if="currentProject">
         <h4>{{ currentProject.projectName }}</h4>
         <el-tag>{{ currentProject.filledCount }}/{{ currentProject.headcount }}名決定</el-tag>

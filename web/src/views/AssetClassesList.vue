@@ -64,7 +64,8 @@
     </el-card>
 
     <!-- 新建/编辑弹窗 -->
-    <el-dialog v-model="showDialog" :title="isEdit ? '編集' : '新規登録'" width="600px" destroy-on-close class="asset-class-dialog">
+    <el-dialog v-model="showDialog" :title="isEdit ? '編集' : '新規登録'" width="600px" destroy-on-close class="asset-class-dialog"
+      append-to-body>
       <el-form :model="form" label-width="160px" @submit.prevent="saveForm">
         <el-form-item label="資産クラス名称" required>
           <el-input v-model="form.className" placeholder="例：ソフトウェア" style="width: 320px" />

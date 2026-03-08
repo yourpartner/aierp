@@ -40,7 +40,8 @@
     </el-card>
 
     <!-- 編集ダイアログ -->
-    <el-dialog v-model="dialogVisible" :title="isEdit ? 'テンプレート編集' : '新規テンプレート'" width="800px">
+    <el-dialog v-model="dialogVisible" :title="isEdit ? 'テンプレート編集' : '新規テンプレート'" width="800px"
+      append-to-body>
       <el-form :model="form" label-position="top">
         <el-row :gutter="20">
           <el-col :span="12">
@@ -106,7 +107,8 @@
     </el-dialog>
 
     <!-- プレビューダイアログ -->
-    <el-dialog v-model="previewVisible" title="テンプレートプレビュー" width="600px">
+    <el-dialog v-model="previewVisible" title="テンプレートプレビュー" width="600px"
+      append-to-body>
       <div class="preview-section">
         <div class="preview-label">件名:</div>
         <div class="preview-subject">{{ previewData.subject }}</div>

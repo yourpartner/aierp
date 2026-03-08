@@ -152,6 +152,7 @@
       width="720px"
       destroy-on-close
       class="resource-dialog"
+      append-to-body
     >
       <el-form :model="form" label-width="100px" label-position="right" class="resource-form">
         <el-row :gutter="20">
@@ -295,6 +296,7 @@
       destroy-on-close
       :show-close="false"
       class="employee-select-dialog"
+      append-to-body
     >
       <div class="employee-dialog-header">
         <div class="employee-dialog-header__left">

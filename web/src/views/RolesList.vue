@@ -54,7 +54,8 @@
     </el-card>
 
     <!-- 作成/編集ロールダイアログ -->
-    <el-dialog v-model="showCreate" :title="editId ? text.editRole : text.createRole" width="640px" destroy-on-close @closed="resetForm">
+    <el-dialog v-model="showCreate" :title="editId ? text.editRole : text.createRole" width="640px" destroy-on-close @closed="resetForm"
+      append-to-body>
       <el-form :model="form" label-width="100px" size="small">
         <el-form-item :label="text.roleCode" required>
           <el-input v-model="form.roleCode" :disabled="!!editId" :placeholder="text.roleCodePlaceholder" />
@@ -145,7 +146,8 @@
     </el-dialog>
 
     <!-- AIでロール作成ダイアログ -->
-    <el-dialog v-model="showAiDialog" :title="text.aiCreateTitle" width="480px" destroy-on-close>
+    <el-dialog v-model="showAiDialog" :title="text.aiCreateTitle" width="480px" destroy-on-close
+      append-to-body>
       <div class="ai-dialog-content">
         <el-alert type="info" :closable="false" style="margin-bottom:16px">
           <template #title>{{ text.aiHint }}</template>
@@ -192,7 +194,8 @@
     </el-dialog>
 
     <!-- 権限チェック結果ダイアログ -->
-    <el-dialog v-model="showCheckDialog" :title="text.checkResult" width="480px">
+    <el-dialog v-model="showCheckDialog" :title="text.checkResult" width="480px"
+      append-to-body>
       <div v-if="checkResult">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item :label="text.roleName">{{ checkResult.roleName }}</el-descriptions-item>

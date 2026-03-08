@@ -177,7 +177,8 @@
     </el-card>
 
     <!-- 图片上传对话框 -->
-    <el-dialog v-model="showUploadDialog" title="住民税税単読取" width="700px" destroy-on-close>
+    <el-dialog v-model="showUploadDialog" title="住民税税単読取" width="700px" destroy-on-close
+      append-to-body>
       <div class="upload-dialog">
         <el-upload
           ref="uploadRef"
@@ -249,7 +250,8 @@
     </el-dialog>
 
     <!-- 编辑对话框 -->
-    <el-dialog v-model="showEditDialog" title="住民税編集" width="600px" destroy-on-close>
+    <el-dialog v-model="showEditDialog" title="住民税編集" width="600px" destroy-on-close
+      append-to-body>
       <el-form v-if="editForm" label-width="100px">
         <el-form-item label="社員">
           <span>{{ editForm.employeeCode }} {{ editForm.employeeName }}</span>

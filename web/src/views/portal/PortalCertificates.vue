@@ -56,7 +56,8 @@
     </el-card>
 
     <!-- 申請ダイアログ -->
-    <el-dialog v-model="dialogVisible" title="証明書申請" width="500px">
+    <el-dialog v-model="dialogVisible" title="証明書申請" width="500px"
+      append-to-body>
       <el-form :model="form" label-position="top">
         <el-form-item label="証明書種類" required>
           <el-select v-model="form.requestType" placeholder="選択してください" style="width: 100%">

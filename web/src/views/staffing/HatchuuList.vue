@@ -189,6 +189,7 @@
       v-model="pdfDialogVisible"
       title="発注書プレビュー"
       width="860px"
+      append-to-body
     >
       <div v-html="pdfHtml" class="pdf-preview" />
     </el-dialog>

@@ -215,7 +215,8 @@
     </el-row>
 
     <!-- 連絡生成ダイアログ -->
-    <el-dialog v-model="outreachDialogVisible" title="案件紹介メール生成" width="600px">
+    <el-dialog v-model="outreachDialogVisible" title="案件紹介メール生成" width="600px"
+      append-to-body>
       <div v-loading="generatingOutreach">
         <div class="outreach-preview" v-if="generatedOutreach">
           <div class="outreach-field">

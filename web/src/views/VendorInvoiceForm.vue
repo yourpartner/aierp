@@ -203,7 +203,8 @@
     </el-card>
 
     <!-- 科目选择弹窗 -->
-    <el-dialog v-model="showAccountSelection" title="勘定科目の選択" width="600px">
+    <el-dialog v-model="showAccountSelection" title="勘定科目の選択" width="600px"
+      append-to-body>
       <el-form label-width="140px">
         <el-form-item v-if="accountSelection.drAccount?.required" label="借方科目（在庫）" required>
           <el-select v-model="selectedDrAccount" style="width:100%" placeholder="科目を選択...">
