@@ -70,6 +70,7 @@ export interface Messages {
     purchaseOrderNew: string
     vendorInvoices: string
     vendorInvoiceNew: string
+    goodsReceipts: string
     crm: string
     crmContacts: string
     crmDeals: string
@@ -900,6 +901,7 @@ export const ja: Messages = {
     purchaseOrderNew: '発注登録',
     vendorInvoices: '請求書一覧',
     vendorInvoiceNew: '請求書登録',
+    goodsReceipts: '入庫一覧',
     crm: 'CRM',
     crmContacts: 'コンタクト一覧',
     crmDeals: '商談一覧',
@@ -1995,6 +1997,7 @@ export const en: Messages = {
     purchaseOrderNew: 'New Purchase Order',
     vendorInvoices: 'Vendor Invoices',
     vendorInvoiceNew: 'New Vendor Invoice',
+    goodsReceipts: 'Goods Receipts',
     crm: 'CRM',
     crmContacts: 'Contacts',
     crmDeals: 'Deals',
@@ -3041,6 +3044,7 @@ zh.nav = {
   purchaseOrderNew: '新建采购订单',
   vendorInvoices: '供应商请求书',
   vendorInvoiceNew: '新建请求书',
+  goodsReceipts: '入库一览',
   crm: 'CRM',
   crmContacts: '联系人列表',
   crmDeals: '商机列表',

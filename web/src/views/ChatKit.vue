@@ -3701,6 +3701,7 @@ const pathToEmbedKeyMap: Record<string, string> = {
   '/inventory-counts': 'inv.counts',
   '/purchase-orders': 'inv.po.list',
   '/vendor-invoices': 'inv.vi.list',
+  '/goods-receipts': 'inv.gr.list',
   // CRM
   '/crm/contacts': 'crm.contacts',
   '/crm/deals': 'crm.deals',
@@ -3913,6 +3914,7 @@ const embedMap:Record<string, any> = {
   ,'inv.po.new': defineAsyncComponent(() => import('./PurchaseOrderForm.vue'))
   ,'inv.vi.list': defineAsyncComponent(() => import('./VendorInvoicesList.vue'))
   ,'inv.vi.new': defineAsyncComponent(() => import('./VendorInvoiceForm.vue'))
+  ,'inv.gr.list': defineAsyncComponent(() => import('./GoodsReceiptsList.vue'))
   // CRM embeds（直接用路由页面组件复用）
   ,'crm.contacts': defineAsyncComponent(() => import('./ContactsList.vue'))
   ,'crm.contact.new': defineAsyncComponent(() => import('./ContactForm.vue'))

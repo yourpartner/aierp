@@ -26,6 +26,7 @@ public class PurchaseStandardModule : ModuleBase
             new MenuConfig { Id = "menu_purchase", Label = "menu.purchase", Icon = "ShoppingBag", Path = "", ParentId = null, Order = 500 },
             new MenuConfig { Id = "menu_purchase_orders", Label = "menu.purchaseOrders", Icon = "Document", Path = "/purchase-orders", ParentId = "menu_purchase", Order = 501 },
             new MenuConfig { Id = "menu_vendor_invoices", Label = "menu.vendorInvoices", Icon = "Tickets", Path = "/vendor-invoices", ParentId = "menu_purchase", Order = 502 },
+            new MenuConfig { Id = "menu_goods_receipts", Label = "menu.goodsReceipts", Icon = "Box", Path = "/goods-receipts", ParentId = "menu_purchase", Order = 503 },
         }
     };
 
@@ -219,6 +220,123 @@ public class PurchaseStandardModule : ModuleBase
                 }
             });
         }).RequireAuthorization().DisableAntiforgery();
+
+        // POST /vendor-invoice/available-receipts — query uninvoiced receipt lines linked to a vendor's POs
+        app.MapPost("/vendor-invoice/available-receipts", async (HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: req.HttpContext.RequestAborted);
+            var root = doc.RootElement;
+            var vendorCode = root.TryGetProperty("vendorCode", out var vc) && vc.ValueKind == JsonValueKind.String ? vc.GetString() : null;
+            if (string.IsNullOrWhiteSpace(vendorCode))
+                return Results.BadRequest(new { error = "vendorCode required" });
+            var beforeDate = root.TryGetProperty("beforeDate", out var bd) && bd.ValueKind == JsonValueKind.String ? bd.GetString() : null;
+
+            var company = cc.ToString().Trim();
+
+            await using var conn = await ds.OpenConnectionAsync(req.HttpContext.RequestAborted);
+
+            // 1) Get all IN-type inventory movements that reference this vendor's POs
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                WITH vendor_pos AS (
+                    SELECT id, po_no,
+                           jsonb_array_elements(COALESCE(payload->'lines','[]'::jsonb)) AS po_line
+                    FROM purchase_orders
+                    WHERE company_code = $1
+                      AND partner_code = $2
+                ),
+                receipt_lines AS (
+                    SELECT
+                        il.id AS ledger_id,
+                        im.id AS movement_id,
+                        im.movement_date::text AS receipt_date,
+                        im.reference_no AS po_no,
+                        il.material_code,
+                        il.quantity AS received_qty,
+                        il.uom,
+                        il.to_warehouse AS warehouse_code
+                    FROM inventory_movements im
+                    JOIN inventory_ledger il ON il.movement_id = im.id
+                    WHERE im.company_code = $1
+                      AND im.movement_type = 'IN'
+                      AND im.reference_no IN (SELECT DISTINCT po_no FROM vendor_pos)
+                ),
+                invoiced AS (
+                    SELECT
+                        (line->>'matchedReceiptId') AS receipt_id,
+                        COALESCE((line->>'quantity')::numeric, 0) AS invoiced_qty,
+                        COALESCE((line->>'amount')::numeric, 0) AS invoiced_amount
+                    FROM vendor_invoices vi,
+                         jsonb_array_elements(COALESCE(vi.payload->'lines','[]'::jsonb)) AS line
+                    WHERE vi.company_code = $1
+                      AND vi.vendor_code = $2
+                )
+                SELECT
+                    rl.ledger_id,
+                    rl.receipt_date,
+                    rl.po_no,
+                    rl.material_code,
+                    COALESCE(vp.po_line->>'materialName', '') AS material_name,
+                    rl.received_qty,
+                    COALESCE(SUM(inv.invoiced_qty), 0) AS total_invoiced_qty,
+                    COALESCE((vp.po_line->>'unitPrice')::numeric, 0) AS unit_price,
+                    rl.uom,
+                    rl.warehouse_code
+                FROM receipt_lines rl
+                LEFT JOIN vendor_pos vp
+                    ON vp.po_no = rl.po_no
+                   AND (vp.po_line->>'materialCode') = rl.material_code
+                LEFT JOIN invoiced inv ON inv.receipt_id = rl.ledger_id::text
+                GROUP BY rl.ledger_id, rl.receipt_date, rl.po_no, rl.material_code,
+                         vp.po_line->>'materialName', rl.received_qty, vp.po_line->>'unitPrice',
+                         rl.uom, rl.warehouse_code
+                HAVING rl.received_qty - COALESCE(SUM(inv.invoiced_qty), 0) > 0
+                ORDER BY rl.receipt_date DESC, rl.po_no, rl.material_code";
+
+            cmd.Parameters.AddWithValue(company);
+            cmd.Parameters.AddWithValue(vendorCode);
+
+            // Optional date filter
+            if (!string.IsNullOrWhiteSpace(beforeDate))
+            {
+                // We'll filter in-memory since the CTE is already constrained
+            }
+
+            var receipts = new List<object>();
+            await using var reader = await cmd.ExecuteReaderAsync(req.HttpContext.RequestAborted);
+            while (await reader.ReadAsync(req.HttpContext.RequestAborted))
+            {
+                var receiptDate = reader.GetString(1);
+                if (!string.IsNullOrWhiteSpace(beforeDate) && string.Compare(receiptDate, beforeDate, StringComparison.Ordinal) > 0)
+                    continue;
+
+                var receivedQty = reader.GetDecimal(5);
+                var invoicedQty = reader.GetDecimal(6);
+                var unitPrice = reader.GetDecimal(7);
+                var uninvoicedQty = receivedQty - invoicedQty;
+                var uninvoicedAmount = uninvoicedQty * unitPrice;
+
+                receipts.Add(new
+                {
+                    id = reader.GetGuid(0).ToString(),
+                    receiptDate,
+                    poNo = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                    materialCode = reader.GetString(3),
+                    materialName = reader.GetString(4),
+                    quantity = receivedQty,
+                    uninvoicedQuantity = uninvoicedQty,
+                    unitPrice,
+                    uninvoicedAmount,
+                    uom = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                    warehouseCode = reader.IsDBNull(9) ? "" : reader.GetString(9)
+                });
+            }
+
+            return Results.Ok(new { receipts });
+        }).RequireAuthorization();
 
         // GET /blob/download-url?name=xxx — get fresh SAS URL for blob
         app.MapGet("/blob/download-url", (HttpRequest req, AzureBlobService blobService) =>
