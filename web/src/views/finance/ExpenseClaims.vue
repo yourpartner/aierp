@@ -1,35 +1,35 @@
 <template>
-  <div class="expense-claims-container">
-    <div class="page-header">
-      <div class="title-area">
-        <h2>経費精算一覧</h2>
-        <el-tooltip content="経費精算の状況を確認します" placement="right">
-          <el-icon class="info-icon"><InfoFilled /></el-icon>
-        </el-tooltip>
-      </div>
-      <div class="action-area">
-        <el-date-picker
-          v-model="month"
-          type="month"
-          placeholder="対象月"
-          size="small"
-          class="month-picker"
-        />
-        <el-select v-model="status" placeholder="ステータス" size="small" class="filter-select" clearable>
-          <el-option label="承認済" value="approved" />
-          <el-option label="支払済" value="paid" />
-        </el-select>
-      </div>
-    </div>
+  <div class="page">
+    <el-card>
+      <template #header>
+        <div class="page-header">
+          <div class="page-header-left">
+            <el-icon class="page-header-icon"><Money /></el-icon>
+            <span class="page-header-title">経費精算一覧</span>
+          </div>
+          <div class="page-actions">
+            <el-date-picker
+              v-model="month"
+              type="month"
+              placeholder="対象月"
+              value-format="YYYY-MM"
+              style="width: 140px"
+            />
+            <el-select v-model="status" placeholder="ステータス" style="width: 130px" clearable>
+              <el-option label="承認済" value="approved" />
+              <el-option label="支払済" value="paid" />
+            </el-select>
+          </div>
+        </div>
+      </template>
 
-    <div class="table-section">
-      <el-table :data="tableData" style="width: 100%" size="small" border stripe>
+      <el-table :data="tableData" style="width: 100%" border stripe>
         <el-table-column prop="month" label="年月" width="100" />
         <el-table-column prop="empCode" label="社員番号" width="120" />
         <el-table-column prop="empName" label="氏名" width="150" />
         <el-table-column prop="amount" label="精算金額" width="120" align="right">
           <template #default="{ row }">
-            {{ formatAmount(row.amount) }}
+            {{ row.amount.toLocaleString() }}
           </template>
         </el-table-column>
         <el-table-column prop="expectedDate" label="支払予定日" width="120" />
@@ -38,46 +38,39 @@
             {{ row.actualDate || '-' }}
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="承認ステータス" width="120" align="center">
+        <el-table-column prop="status" label="承認ステータス" width="130" align="center">
           <template #default="{ row }">
-            <div :class="['status-badge', row.status === '支払済' ? 'paid' : 'approved']">
-              {{ row.status }}
-            </div>
+            <el-tag v-if="row.status === '支払済'" type="success" size="small">支払済</el-tag>
+            <el-tag v-else size="small">承認済</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="voucherNo" label="会計伝票" width="150">
-          <template #header>
-            会計伝票 <el-icon class="info-icon"><InfoFilled /></el-icon>
-          </template>
           <template #default="{ row }">
-            <a href="#" class="link-text text-danger">{{ row.voucherNo }}</a>
+            <span class="voucher-link">{{ row.voucherNo }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="アクション" align="center" width="100">
+        <el-table-column label="操作" align="center" width="100">
           <template #default="{ row }">
-            <div class="action-icons">
-              <el-icon class="action-icon view"><View /></el-icon>
-              <el-icon v-if="row.status === '承認済'" class="action-icon revert"><RefreshLeft /></el-icon>
-            </div>
+            <el-button type="primary" text size="small">
+              <el-icon><View /></el-icon>
+            </el-button>
+            <el-button v-if="row.status === '承認済'" type="warning" text size="small">
+              <el-icon><RefreshLeft /></el-icon>
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
-    </div>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { InfoFilled, View, RefreshLeft } from '@element-plus/icons-vue'
+import { Money, View, RefreshLeft } from '@element-plus/icons-vue'
 
-const month = ref(new Date('2023-09-01'))
+const month = ref('2023-09')
 const status = ref('')
 
-const formatAmount = (amount: number) => {
-  return amount.toLocaleString()
-}
-
-// 假数据
 const tableData = ref([
   { month: '2023-9', empCode: 'YP232', empName: '山田 太郎', amount: 14270, expectedDate: '2023-10-25', actualDate: '', status: '承認済', voucherNo: '2309000003' },
   { month: '2023-9', empCode: 'YP231', empName: '鈴木 一郎', amount: 18450, expectedDate: '2023-10-25', actualDate: '2023-10-23', status: '支払済', voucherNo: '2309000002' },
@@ -94,113 +87,50 @@ const tableData = ref([
 </script>
 
 <style scoped>
-.expense-claims-container {
+.page {
   padding: 20px;
-  background-color: #fff;
-  min-height: 100%;
 }
 
 .page-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #ebeef5;
-  background-color: #f8f9fa;
-  padding: 12px 16px;
-  border-radius: 4px 4px 0 0;
+  justify-content: space-between;
 }
 
-.title-area {
+.page-header-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
-.title-area h2 {
-  margin: 0;
-  font-size: 16px;
+.page-header-icon {
+  font-size: 22px;
+  color: #e6a23c;
+}
+
+.page-header-title {
+  font-size: 18px;
+  font-weight: 600;
   color: #303133;
-  font-weight: 500;
 }
 
-.info-icon {
+.page-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.voucher-link {
   color: #409eff;
   cursor: pointer;
 }
 
-.action-area {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-}
-
-.month-picker {
-  width: 120px !important;
-}
-
-.filter-select {
-  width: 120px;
-}
-
-.table-section {
-  margin-top: 10px;
-}
-
-.status-badge {
-  display: inline-block;
-  padding: 4px 12px;
-  border-radius: 2px;
-  font-size: 12px;
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.status-badge.approved {
-  background-color: transparent;
-  color: #606266;
-}
-
-.status-badge.paid {
-  background-color: #67c23a;
-  color: #fff;
-}
-
-.link-text {
-  text-decoration: none;
-}
-
-.link-text:hover {
+.voucher-link:hover {
   text-decoration: underline;
 }
 
-.text-danger {
-  color: #f56c6c;
-}
-
-.action-icons {
-  display: flex;
-  justify-content: center;
-  gap: 12px;
-}
-
-.action-icon {
-  cursor: pointer;
-  font-size: 16px;
-}
-
-.action-icon.view {
-  color: #67c23a;
-}
-
-.action-icon.revert {
-  color: #f56c6c;
-}
-
-:deep(.el-table th.el-table__cell) {
-  background-color: #f5f7fa;
-  color: #606266;
-  font-weight: 500;
+:deep(.el-card) {
+  border-radius: 12px;
+  overflow: hidden;
 }
 </style>
