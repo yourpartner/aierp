@@ -109,14 +109,14 @@
               :auto-upload="false"
               :on-change="onFileSelected"
               accept=".pdf,.png,.jpg,.jpeg,.gif,.webp"
-              style="display:inline-block"
+              class="inline-upload"
             >
-              <el-button size="small" :loading="recognizing">
+              <el-button :loading="recognizing">
                 <el-icon><Upload /></el-icon> AI識別
               </el-button>
             </el-upload>
-            <el-button type="primary" size="small" :loading="formRef?.saving" @click="formRef?.save()">保存</el-button>
-            <el-button size="small" @click="showForm = false">キャンセル</el-button>
+            <el-button @click="showForm = false">キャンセル</el-button>
+            <el-button type="primary" :loading="formRef?.saving" @click="formRef?.save()">保存</el-button>
           </div>
         </div>
       </template>
@@ -580,7 +580,12 @@ onMounted(() => {
 }
 .dialog-header-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+.dialog-header-actions .inline-upload {
+  display: inline-flex;
+  line-height: 1;
 }
 
 .search-bar {

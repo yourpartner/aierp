@@ -13,8 +13,8 @@
 
       <el-alert v-if="err" type="error" :title="err" show-icon :closable="false" style="margin-bottom:16px" />
 
-      <!-- PDF/画像識別 -->
-      <div class="recognize-section">
+      <!-- PDF/画像識別 (standalone mode only) -->
+      <div v-if="!dialogMode" class="recognize-section">
         <el-upload
           :auto-upload="false"
           :show-file-list="false"
@@ -28,6 +28,9 @@
         <span v-if="form.attachment" class="attachment-badge">
           <el-icon><Document /></el-icon> {{ form.attachment.fileName || '添付済み' }}
         </span>
+      </div>
+      <div v-else-if="form.attachment" class="attachment-badge" style="margin-bottom: 12px;">
+        <el-icon><Document /></el-icon> {{ form.attachment.fileName || '添付済み' }}
       </div>
 
       <!-- 基本信息 -->
@@ -69,7 +72,7 @@
         </el-row>
 
         <el-row :gutter="20">
-          <el-col :span="5">
+          <el-col :span="6">
             <el-form-item label="請求数量" required>
               <el-input-number
                 v-model="form.invoiceQuantity"
@@ -81,7 +84,7 @@
               />
             </el-form-item>
           </el-col>
-          <el-col :span="5">
+          <el-col :span="8">
             <el-form-item label="請求金額" required>
               <el-input
                 v-model="formattedInvoiceAmount"
@@ -92,7 +95,7 @@
               </el-input>
             </el-form-item>
           </el-col>
-          <el-col :span="5">
+          <el-col :span="6">
             <el-form-item label="通貨">
               <el-select v-model="form.currency" style="width:100%">
                 <el-option label="JPY - 日本円" value="JPY" />
@@ -101,8 +104,8 @@
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="9">
-            <el-form-item label="請求書番号" label-width="100px" class="nowrap-label">
+          <el-col :span="4">
+            <el-form-item label="仕入先No">
               <el-input v-model="form.vendorInvoiceNo" placeholder="任意" />
             </el-form-item>
           </el-col>
@@ -806,8 +809,14 @@ onMounted(() => {
   padding: 0;
 }
 
-.page.dialog-mode .el-card {
+.page.dialog-mode :deep(.el-card) {
   margin: 0;
+  border: none;
+  box-shadow: none;
+}
+
+.page.dialog-mode :deep(.el-card__body) {
+  padding: 0;
 }
 
 .page-header {
