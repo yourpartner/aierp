@@ -908,6 +908,65 @@ CREATE TABLE IF NOT EXISTS inventory_balances (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY(company_code, material_code, warehouse_code, bin_code, status_code, batch_no)
 );
+
+CREATE TABLE IF NOT EXISTS inventory_counts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_code VARCHAR(20) NOT NULL,
+    count_no VARCHAR(50) NOT NULL,
+    warehouse_code VARCHAR(20) NOT NULL,
+    count_date DATE NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'draft',
+    description TEXT,
+    created_by VARCHAR(50),
+    completed_at TIMESTAMPTZ,
+    completed_by VARCHAR(50),
+    posted_at TIMESTAMPTZ,
+    posted_by VARCHAR(50),
+    adjustment_voucher_no VARCHAR(50),
+    payload JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(company_code, count_no)
+);
+
+CREATE TABLE IF NOT EXISTS inventory_count_lines (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_code VARCHAR(20) NOT NULL,
+    count_id UUID NOT NULL REFERENCES inventory_counts(id) ON DELETE CASCADE,
+    line_no INTEGER NOT NULL,
+    material_code VARCHAR(50) NOT NULL,
+    material_name VARCHAR(200),
+    bin_code VARCHAR(50),
+    batch_no VARCHAR(50),
+    uom VARCHAR(20),
+    system_qty DECIMAL(18,4) NOT NULL DEFAULT 0,
+    actual_qty DECIMAL(18,4),
+    variance_qty DECIMAL(18,4) GENERATED ALWAYS AS (COALESCE(actual_qty, 0) - system_qty) STORED,
+    variance_reason TEXT,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    counted_at TIMESTAMPTZ,
+    counted_by VARCHAR(50),
+    payload JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(count_id, line_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_counts_company ON inventory_counts(company_code);
+CREATE INDEX IF NOT EXISTS idx_inventory_counts_warehouse ON inventory_counts(company_code, warehouse_code);
+CREATE INDEX IF NOT EXISTS idx_inventory_counts_status ON inventory_counts(company_code, status);
+CREATE INDEX IF NOT EXISTS idx_inventory_counts_date ON inventory_counts(company_code, count_date);
+CREATE INDEX IF NOT EXISTS idx_inventory_count_lines_count ON inventory_count_lines(count_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_count_lines_material ON inventory_count_lines(company_code, material_code);
+
+CREATE TABLE IF NOT EXISTS inventory_count_sequences (
+    company_code VARCHAR(20) NOT NULL,
+    prefix VARCHAR(10) NOT NULL DEFAULT 'IC',
+    year INTEGER NOT NULL,
+    month INTEGER NOT NULL,
+    last_number INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(company_code, prefix, year, month)
+);
 ";
         await cmd.ExecuteNonQueryAsync();
     }
