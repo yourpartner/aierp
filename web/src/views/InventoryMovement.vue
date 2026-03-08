@@ -242,10 +242,40 @@ function onTypeChange() {
   loadRefOptions()
 }
 
-function onRefChange(val: string) {
+async function onRefChange(val: string) {
   if (!val) return
   const data = refDataCache.value[val]
   if (!data?.payload?.lines) return
+
+  // Collect material codes to fetch UOM
+  const matCodes: string[] = []
+  for (const line of data.payload.lines) {
+    if (line.materialCode && !matCodes.includes(line.materialCode)) {
+      matCodes.push(line.materialCode)
+    }
+  }
+
+  // Fetch material master for UOM (baseUnit)
+  const matUomMap: Record<string, string> = {}
+  if (matCodes.length > 0) {
+    try {
+      const resp = await api.post('/objects/material/search', {
+        where: [{ field: 'material_code', op: 'in', value: matCodes }],
+        limit: matCodes.length
+      })
+      for (const m of resp.data?.data || []) {
+        matUomMap[m.material_code] = m.payload?.baseUnit || m.payload?.uom || m.payload?.unit || ''
+        // Pre-populate material options for display
+        const exists = materialOptions.value.find(o => o.code === m.material_code)
+        if (!exists) {
+          materialOptions.value.push({
+            code: m.material_code,
+            label: `${m.material_code} - ${m.payload?.name || m.payload?.materialName || ''}`
+          })
+        }
+      }
+    } catch { /* ignore */ }
+  }
 
   // Auto-populate lines from PO/SO
   const lines: any[] = []
@@ -260,20 +290,9 @@ function onRefChange(val: string) {
       lineNo: lines.length + 1,
       materialCode: line.materialCode || '',
       quantity: remaining,
-      uom: line.uom || '',
+      uom: line.uom || matUomMap[line.materialCode] || '',
       batchNo: ''
     })
-
-    // Pre-populate material options for display
-    if (line.materialCode && line.materialName) {
-      const exists = materialOptions.value.find(m => m.code === line.materialCode)
-      if (!exists) {
-        materialOptions.value.push({
-          code: line.materialCode,
-          label: `${line.materialCode} - ${line.materialName}`
-        })
-      }
-    }
   }
   model.lines = lines
 }
