@@ -31,6 +31,7 @@ public class SalesStandardModule : ModuleBase
         services.AddScoped<SalesOrderLifecycleService>();
         services.AddScoped<SalesAnalyticsAiService>();
         services.AddSingleton<WeComNotificationService>();
+        services.AddSingleton<SalesPdfService>();
         services.AddHostedService<SalesMonitorBackgroundService>();
     }
     

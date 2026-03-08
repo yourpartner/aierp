@@ -327,10 +327,11 @@ public class FbPaymentModule : ModuleBase
     /// </summary>
     private static void MapCreateEndpoint(WebApplication app)
     {
-        app.MapPost("/fb-payment/create", async (HttpRequest req, NpgsqlDataSource ds, Auth.UserCtx? user) =>
+        app.MapPost("/fb-payment/create", async (HttpRequest req, NpgsqlDataSource ds) =>
         {
             if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
                 return Results.BadRequest(new { error = "Missing x-company-code" });
+            var user = Auth.GetUserCtx(req);
 
             using var body = await JsonDocument.ParseAsync(req.Body);
             var root = body.RootElement;

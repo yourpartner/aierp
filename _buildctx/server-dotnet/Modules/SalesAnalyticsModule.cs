@@ -190,8 +190,8 @@ public static class SalesAnalyticsModule
                     COALESCE(m.name, line->>'materialName', line->>'materialCode') as material_name,
                     SUM((line->>'quantity')::numeric) as total_qty,
                     SUM((line->>'amount')::numeric) as total_amount
-                FROM sales_orders so,
-                     jsonb_array_elements(so.payload->'lines') line
+                FROM sales_orders so
+                CROSS JOIN LATERAL jsonb_array_elements(so.payload->'lines') AS line
                 LEFT JOIN materials m ON m.company_code = so.company_code AND m.material_code = line->>'materialCode'
                 WHERE so.company_code = $1 
                   AND so.status != 'cancelled'

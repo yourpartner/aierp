@@ -30,6 +30,8 @@ public class FinanceCoreModule : ModuleBase
             new MenuConfig { Id = "menu_account_ledger", Label = "menu.accountLedger", Icon = "Notebook", Path = "/account-ledger", ParentId = "menu_finance", Order = 104 },
             new MenuConfig { Id = "menu_account_balance", Label = "menu.accountBalance", Icon = "DataAnalysis", Path = "/account-balance", ParentId = "menu_finance", Order = 105 },
             new MenuConfig { Id = "menu_trial_balance", Label = "menu.trialBalance", Icon = "DataLine", Path = "/trial-balance", ParentId = "menu_finance", Order = 106 },
+            new MenuConfig { Id = "menu_cash_flow", Label = "menu.cashFlow", Icon = "TrendCharts", Path = "/finance/cash-flow", ParentId = "menu_finance", Order = 107 },
+            new MenuConfig { Id = "menu_expense_claims", Label = "menu.expenseClaims", Icon = "Tickets", Path = "/finance/expense-claims", ParentId = "menu_finance", Order = 108 },
         }
     };
     

@@ -114,7 +114,6 @@ ORDER BY e.employee_code";
         var prefix = $"{companyCode}/withholding-slips/{year}/";
         var items = new List<object>();
 
-        // Get employee names for display
         var empNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         await using var conn = await ds.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
@@ -127,7 +126,6 @@ ORDER BY e.employee_code";
         await foreach (var blob in blobService.ListBlobsAsync(prefix, ct))
         {
             var blobName = blob.Name;
-            // Extract employee code from pattern: 源泉徴収票_{empCode}_{year}.pdf
             var fileName = Path.GetFileNameWithoutExtension(blobName);
             var parts = fileName.Split('_');
             var empCode = parts.Length >= 2 ? parts[1] : "";
@@ -234,24 +232,62 @@ ORDER BY e.employee_code";
 
     record SlipData
     {
+        // 支払を受ける者
         public string EmployeeName { get; init; } = "";
         public string EmployeeNameKana { get; init; } = "";
         public string EmployeeAddress { get; init; } = "";
         public string EmployeePostalCode { get; init; } = "";
         public string EmployeeCode { get; init; } = "";
+        // 支払者
         public string CompanyName { get; init; } = "";
         public string CompanyAddress { get; init; } = "";
         public string CompanyPostalCode { get; init; } = "";
         public string CompanyTel { get; init; } = "";
         public string? CompanyRegistrationNo { get; init; }
+        // 種別 (給与・賞与)
+        public string PaymentType { get; init; } = "給与・賞与";
+        // 支払金額等 (Row 1)
         public decimal PaymentAmount { get; init; }
         public decimal SalaryIncomeAfterDeduction { get; init; }
         public decimal TotalIncomeDeductions { get; init; }
         public decimal WithholdingTaxAmount { get; init; }
+        // 配偶者・扶養 (Row 2)
+        public bool HasSpouse { get; init; }
+        public bool SpouseIsElderly { get; init; }
+        public decimal SpouseDeduction { get; init; }
+        public int NumSpecificDependents { get; init; }
+        public int NumElderlyDependents { get; init; }
+        public int NumElderlyCoResident { get; init; }
+        public int NumOtherDependents { get; init; }
+        public int NumUnder16Dependents { get; init; }
+        public int NumSpecialDisabled { get; init; }
+        public int NumSpecialDisabledCoResident { get; init; }
+        public int NumOtherDisabled { get; init; }
+        public bool IsNonResident { get; init; }
+        // 保険料等 (Row 3)
         public decimal SocialInsurance { get; init; }
+        public decimal SmallBusinessMutualAid { get; init; }
         public decimal LifeInsurance { get; init; }
         public decimal EarthquakeInsurance { get; init; }
+        // 住宅借入金等
+        public decimal HousingLoanCredit { get; init; }
+        // 基礎控除
         public decimal BasicDeduction { get; init; }
+        // 生命保険料内訳
+        public decimal NewLifeInsurance { get; init; }
+        public decimal OldLifeInsurance { get; init; }
+        public decimal CareInsurance { get; init; }
+        public decimal NewPensionInsurance { get; init; }
+        public decimal OldPensionInsurance { get; init; }
+        // 配偶者・扶養親族名
+        public string SpouseName { get; init; } = "";
+        public string SpouseNameKana { get; init; } = "";
+        public List<string> DependentNames { get; init; } = new();
+        public List<string> Under16DependentNames { get; init; } = new();
+        // 摘要
+        public string Remarks { get; init; } = "";
+        // 年末調整済か
+        public bool YearEndAdjusted { get; init; }
     }
 
     record PayrollItem(string ItemCode, decimal Amount, string Kind);
@@ -358,7 +394,6 @@ WHERE e.company_code = $1 AND r.period_month LIKE $2 AND e.employee_code = $3
         decimal totalEarnings = 0;
         decimal socialInsurance = 0;
         decimal withholdingTax = 0;
-        decimal residentTax = 0;
 
         foreach (var item in items)
         {
@@ -372,9 +407,6 @@ WHERE e.company_code = $1 AND r.period_month LIKE $2 AND e.employee_code = $3
 
             if (item.ItemCode.Equals("WHT", StringComparison.OrdinalIgnoreCase) || item.ItemCode.Equals("IncomeTax", StringComparison.OrdinalIgnoreCase))
                 withholdingTax += Math.Abs(item.Amount);
-
-            if (item.ItemCode.Equals("RESIDENT_TAX", StringComparison.OrdinalIgnoreCase))
-                residentTax += Math.Abs(item.Amount);
         }
 
         if (totalEarnings == 0)
@@ -449,7 +481,7 @@ WHERE e.company_code = $1 AND r.period_month LIKE $2 AND e.employee_code = $3
 
     #endregion
 
-    #region PDF Generation
+    #region PDF Generation — 国税庁 源泉徴収票 公式様式準拠
 
     static byte[] GeneratePdf(SlipData data, string year)
     {
@@ -462,12 +494,12 @@ WHERE e.company_code = $1 AND r.period_month LIKE $2 AND e.employee_code = $3
         {
             container.Page(page =>
             {
-                page.Size(PageSizes.A4.Landscape());
-                page.MarginTop(25);
+                page.Size(PageSizes.A4);
+                page.MarginTop(20);
                 page.MarginBottom(20);
-                page.MarginHorizontal(30);
-                page.DefaultTextStyle(x => x.FontSize(8).FontFamily(JpFontFamily).FontColor(Colors.Black));
-                page.Content().Column(col => RenderSlip(col, data, yearInt, reiwa));
+                page.MarginHorizontal(20);
+                page.DefaultTextStyle(x => x.FontSize(6.5f).FontFamily(JpFontFamily).FontColor(Colors.Black));
+                page.Content().Column(col => RenderOfficialSlip(col, data, yearInt, reiwa));
             });
         });
 
@@ -476,166 +508,359 @@ WHERE e.company_code = $1 AND r.period_month LIKE $2 AND e.employee_code = $3
         return ms.ToArray();
     }
 
-    static void RenderSlip(ColumnDescriptor col, SlipData data, int year, int reiwa)
+    // Border & style constants
+    const float Bw = 0.5f;       // thin border
+    const float BwThick = 1.0f;  // thick outer border
+    const float LabelFs = 5.5f;  // label font size
+    const float ValueFs = 7.5f;  // value font size
+    const float SmallFs = 5.0f;  // small annotation font size
+
+    static string Yen(decimal v) => v != 0 ? $"{v:#,0}" : "";
+    static string YenFull(decimal v) => $"{v:#,0}";
+
+    static void RenderOfficialSlip(ColumnDescriptor col, SlipData data, int year, int reiwa)
     {
-        col.Item().AlignCenter().PaddingBottom(4).Text($"令和{reiwa}年分　給与所得の源泉徴収票").FontSize(14).Bold().LetterSpacing(0.05f);
+        // Title
+        col.Item().AlignCenter().PaddingBottom(3)
+            .Text($"令和 {reiwa} 年分　給与所得の源泉徴収票")
+            .FontSize(11).Bold().LetterSpacing(0.08f);
 
-        col.Item().PaddingBottom(8).Border(1.5f).BorderColor(Colors.Black).Padding(0).Column(main =>
+        // Outer border wrapping the entire form
+        col.Item().Border(BwThick).BorderColor(Colors.Black).Column(main =>
         {
-            // Row 1: 支払を受ける者
-            main.Item().Row(topRow =>
+            // === Section 1: 種別 ・ 支払金額 ・ 給与所得控除後 ・ 所得控除合計 ・ 源泉徴収税額 ===
+            main.Item().Table(table =>
             {
-                // Left: Employee info
-                topRow.RelativeItem(6).Border(0.5f).BorderColor(Colors.Black).Padding(0).Column(empCol =>
+                table.ColumnsDefinition(cd =>
                 {
-                    empCol.Item().Background("#F5F5F0").BorderBottom(0.5f).BorderColor(Colors.Black).Padding(4)
-                        .Text("支払を受ける者").FontSize(7).Bold();
+                    cd.ConstantColumn(55);  // 種別
+                    cd.RelativeColumn(1);   // 支払金額
+                    cd.RelativeColumn(1);   // 給与所得控除後の金額
+                    cd.RelativeColumn(1);   // 所得控除の額の合計額
+                    cd.RelativeColumn(1);   // 源泉徴収税額
+                });
 
-                    empCol.Item().Padding(6).Column(inner =>
+                // Header labels
+                LabelCell(table.Cell().Row(1).Column(1), "種　別");
+                LabelCell(table.Cell().Row(1).Column(2), "支　払　金　額");
+                LabelCell(table.Cell().Row(1).Column(3), "給与所得控除後の金額\n（調整控除後）");
+                LabelCell(table.Cell().Row(1).Column(4), "所得控除の額の合計額");
+                LabelCell(table.Cell().Row(1).Column(5), "源泉徴収税額");
+
+                // Value row
+                ValueCellLeft(table.Cell().Row(2).Column(1), data.PaymentType);
+                ValueCellRight(table.Cell().Row(2).Column(2), YenFull(data.PaymentAmount));
+                ValueCellRight(table.Cell().Row(2).Column(3), Yen(data.SalaryIncomeAfterDeduction));
+                ValueCellRight(table.Cell().Row(2).Column(4), Yen(data.TotalIncomeDeductions));
+                ValueCellRight(table.Cell().Row(2).Column(5), YenFull(data.WithholdingTaxAmount));
+            });
+
+            // === Section 2: 配偶者・扶養親族・障害者・非居住者 ===
+            main.Item().Table(table =>
+            {
+                table.ColumnsDefinition(cd =>
+                {
+                    cd.RelativeColumn(2);   // (源泉)控除対象配偶者の有無等
+                    cd.RelativeColumn(2);   // 配偶者(特別)控除の額
+                    cd.RelativeColumn(4);   // 控除対象扶養親族の数
+                    cd.RelativeColumn(2);   // 16歳未満扶養親族の数
+                    cd.RelativeColumn(2);   // 障害者の数
+                    cd.RelativeColumn(1);   // 非居住者
+                });
+
+                // Sub-header labels
+                LabelCell(table.Cell().Row(1).Column(1), "(源泉)控除対象\n配偶者の有無等");
+                LabelCell(table.Cell().Row(1).Column(2), "配偶者(特別)\n控除の額");
+                LabelCell(table.Cell().Row(1).Column(3), "控除対象扶養親族の数（配偶者を除く。）");
+                LabelCell(table.Cell().Row(1).Column(4), "16歳未満\n扶養親族の数");
+                LabelCell(table.Cell().Row(1).Column(5), "障害者の数\n（本人を除く。）");
+                LabelCell(table.Cell().Row(1).Column(6), "非居\n住者");
+
+                // Value row - 配偶者有無
+                table.Cell().Row(2).Column(1).Border(Bw).Padding(2).Column(c =>
+                {
+                    c.Item().Row(r =>
                     {
-                        inner.Item().Row(r =>
+                        r.RelativeItem().AlignCenter().Text(text =>
                         {
-                            r.RelativeItem(1).Column(c =>
-                            {
-                                c.Item().Text("住所（居所）").FontSize(6).FontColor(Colors.Grey.Darken2);
-                                var addr = string.IsNullOrEmpty(data.EmployeePostalCode) ? data.EmployeeAddress : $"〒{data.EmployeePostalCode}　{data.EmployeeAddress}";
-                                c.Item().PaddingTop(2).Text(addr).FontSize(9);
-                            });
+                            text.Span("有  ").FontSize(SmallFs);
+                            text.Span(data.HasSpouse ? "○" : "").FontSize(ValueFs);
                         });
-
-                        inner.Item().PaddingTop(4).Row(r =>
+                        r.RelativeItem().AlignCenter().Text(text =>
                         {
-                            r.RelativeItem(1).Column(c =>
-                            {
-                                c.Item().Text("（フリガナ）").FontSize(6).FontColor(Colors.Grey.Darken2);
-                                c.Item().Text(data.EmployeeNameKana).FontSize(7).FontColor(Colors.Grey.Darken1);
-                            });
+                            text.Span("無  ").FontSize(SmallFs);
+                            text.Span(!data.HasSpouse ? "○" : "").FontSize(ValueFs);
                         });
-
-                        inner.Item().Row(r =>
+                    });
+                    c.Item().Row(r =>
+                    {
+                        r.RelativeItem().AlignCenter().Text(text =>
                         {
-                            r.RelativeItem(3).Column(c =>
-                            {
-                                c.Item().Text("氏名").FontSize(6).FontColor(Colors.Grey.Darken2);
-                                c.Item().PaddingTop(1).Text(data.EmployeeName).FontSize(12).Bold();
-                            });
-                            r.RelativeItem(2).Column(c =>
-                            {
-                                c.Item().Text("受給者番号").FontSize(6).FontColor(Colors.Grey.Darken2);
-                                c.Item().PaddingTop(1).Text(data.EmployeeCode).FontSize(9);
-                            });
+                            text.Span("老人  ").FontSize(SmallFs);
+                            text.Span(data.SpouseIsElderly ? "○" : "").FontSize(ValueFs);
                         });
                     });
                 });
 
-                // Right: Payer info
-                topRow.RelativeItem(4).Border(0.5f).BorderColor(Colors.Black).Padding(0).Column(payerCol =>
-                {
-                    payerCol.Item().Background("#F5F5F0").BorderBottom(0.5f).BorderColor(Colors.Black).Padding(4)
-                        .Text("支払者").FontSize(7).Bold();
+                // 配偶者控除額
+                ValueCellRight(table.Cell().Row(2).Column(2), Yen(data.SpouseDeduction));
 
-                    payerCol.Item().Padding(6).Column(inner =>
+                // 扶養親族の数
+                table.Cell().Row(2).Column(3).Border(Bw).Padding(2).Table(depTable =>
+                {
+                    depTable.ColumnsDefinition(cd =>
                     {
-                        inner.Item().Column(c =>
-                        {
-                            c.Item().Text("名称").FontSize(6).FontColor(Colors.Grey.Darken2);
-                            c.Item().PaddingTop(1).Text(data.CompanyName).FontSize(10).Bold();
-                        });
-                        inner.Item().PaddingTop(3).Column(c =>
-                        {
-                            c.Item().Text("所在地").FontSize(6).FontColor(Colors.Grey.Darken2);
-                            var addr = string.IsNullOrEmpty(data.CompanyPostalCode) ? data.CompanyAddress : $"〒{data.CompanyPostalCode}　{data.CompanyAddress}";
-                            c.Item().PaddingTop(1).Text(addr).FontSize(8);
-                        });
-                        if (!string.IsNullOrEmpty(data.CompanyTel))
-                        {
-                            inner.Item().PaddingTop(2).Text($"TEL: {data.CompanyTel}").FontSize(7);
-                        }
-                        if (!string.IsNullOrEmpty(data.CompanyRegistrationNo))
-                        {
-                            inner.Item().PaddingTop(2).Text($"法人番号: {data.CompanyRegistrationNo}").FontSize(7);
-                        }
+                        cd.RelativeColumn(1); // 特定
+                        cd.RelativeColumn(1); // 老人(内)
+                        cd.RelativeColumn(1); // 老人
+                        cd.RelativeColumn(1); // その他
                     });
+                    depTable.Cell().Row(1).Column(1).Padding(1).AlignCenter().Text("特定").FontSize(SmallFs);
+                    depTable.Cell().Row(1).Column(2).Padding(1).AlignCenter().Text("老人\n(内)").FontSize(SmallFs);
+                    depTable.Cell().Row(1).Column(3).Padding(1).AlignCenter().Text("老人").FontSize(SmallFs);
+                    depTable.Cell().Row(1).Column(4).Padding(1).AlignCenter().Text("その他").FontSize(SmallFs);
+
+                    depTable.Cell().Row(2).Column(1).Padding(1).AlignCenter().Text(data.NumSpecificDependents > 0 ? $"{data.NumSpecificDependents}人" : "").FontSize(ValueFs);
+                    depTable.Cell().Row(2).Column(2).Padding(1).AlignCenter().Text(data.NumElderlyCoResident > 0 ? $"{data.NumElderlyCoResident}人" : "").FontSize(ValueFs);
+                    depTable.Cell().Row(2).Column(3).Padding(1).AlignCenter().Text(data.NumElderlyDependents > 0 ? $"{data.NumElderlyDependents}人" : "").FontSize(ValueFs);
+                    depTable.Cell().Row(2).Column(4).Padding(1).AlignCenter().Text(data.NumOtherDependents > 0 ? $"{data.NumOtherDependents}人" : "").FontSize(ValueFs);
+                });
+
+                // 16歳未満
+                table.Cell().Row(2).Column(4).Border(Bw).Padding(2).AlignCenter().AlignMiddle()
+                    .Text(data.NumUnder16Dependents > 0 ? $"{data.NumUnder16Dependents}人" : "").FontSize(ValueFs);
+
+                // 障害者
+                table.Cell().Row(2).Column(5).Border(Bw).Padding(2).Table(disTable =>
+                {
+                    disTable.ColumnsDefinition(cd =>
+                    {
+                        cd.RelativeColumn(1);
+                        cd.RelativeColumn(1);
+                    });
+                    disTable.Cell().Row(1).Column(1).Padding(1).AlignCenter().Text("特別\n(内)").FontSize(SmallFs);
+                    disTable.Cell().Row(1).Column(2).Padding(1).AlignCenter().Text("その他").FontSize(SmallFs);
+                    disTable.Cell().Row(2).Column(1).Padding(1).AlignCenter().Text(data.NumSpecialDisabled > 0 ? $"{data.NumSpecialDisabled}人" : "").FontSize(ValueFs);
+                    disTable.Cell().Row(2).Column(2).Padding(1).AlignCenter().Text(data.NumOtherDisabled > 0 ? $"{data.NumOtherDisabled}人" : "").FontSize(ValueFs);
+                });
+
+                // 非居住者
+                table.Cell().Row(2).Column(6).Border(Bw).Padding(2).AlignCenter().AlignMiddle()
+                    .Text(data.IsNonResident ? "○" : "").FontSize(ValueFs);
+            });
+
+            // === Section 3: 社会保険料等・生命保険料・地震保険料・住宅借入金等 ===
+            main.Item().Table(table =>
+            {
+                table.ColumnsDefinition(cd =>
+                {
+                    cd.RelativeColumn(1);  // 社会保険料等の金額
+                    cd.RelativeColumn(1);  // 生命保険料の控除額
+                    cd.RelativeColumn(1);  // 地震保険料の控除額
+                    cd.RelativeColumn(1);  // 住宅借入金等特別控除の額
+                });
+
+                LabelCell(table.Cell().Row(1).Column(1), "社会保険料等の金額");
+                LabelCell(table.Cell().Row(1).Column(2), "生命保険料の控除額");
+                LabelCell(table.Cell().Row(1).Column(3), "地震保険料の控除額");
+                LabelCell(table.Cell().Row(1).Column(4), "住宅借入金等\n特別控除の額");
+
+                ValueCellRight(table.Cell().Row(2).Column(1), Yen(data.SocialInsurance));
+                ValueCellRight(table.Cell().Row(2).Column(2), Yen(data.LifeInsurance));
+                ValueCellRight(table.Cell().Row(2).Column(3), Yen(data.EarthquakeInsurance));
+                ValueCellRight(table.Cell().Row(2).Column(4), Yen(data.HousingLoanCredit));
+            });
+
+            // === Section 4: 内訳行 (小規模企業共済等・生命保険料内訳) ===
+            main.Item().Table(table =>
+            {
+                table.ColumnsDefinition(cd =>
+                {
+                    cd.RelativeColumn(1);  // (内)小規模企業共済等掛金の額
+                    cd.RelativeColumn(2);  // 生命保険料の控除額の内訳
+                    cd.RelativeColumn(1);  // 基礎控除の額
+                });
+
+                // Row 1: labels
+                LabelCell(table.Cell().Row(1).Column(1), "（うち）小規模企業\n共済等掛金の額");
+
+                // 生命保険料内訳
+                table.Cell().Row(1).Column(2).Border(Bw).Padding(0).Table(lifeTable =>
+                {
+                    lifeTable.ColumnsDefinition(cd =>
+                    {
+                        cd.RelativeColumn(1);
+                        cd.RelativeColumn(1);
+                        cd.RelativeColumn(1);
+                        cd.RelativeColumn(1);
+                        cd.RelativeColumn(1);
+                    });
+                    lifeTable.Cell().Row(1).Column(1).BorderBottom(Bw).BorderRight(Bw).Padding(1).AlignCenter().Text("新生命\n保険料").FontSize(SmallFs);
+                    lifeTable.Cell().Row(1).Column(2).BorderBottom(Bw).BorderRight(Bw).Padding(1).AlignCenter().Text("旧生命\n保険料").FontSize(SmallFs);
+                    lifeTable.Cell().Row(1).Column(3).BorderBottom(Bw).BorderRight(Bw).Padding(1).AlignCenter().Text("介護医療\n保険料").FontSize(SmallFs);
+                    lifeTable.Cell().Row(1).Column(4).BorderBottom(Bw).BorderRight(Bw).Padding(1).AlignCenter().Text("新個人\n年金保険料").FontSize(SmallFs);
+                    lifeTable.Cell().Row(1).Column(5).BorderBottom(Bw).Padding(1).AlignCenter().Text("旧個人\n年金保険料").FontSize(SmallFs);
+
+                    lifeTable.Cell().Row(2).Column(1).BorderRight(Bw).Padding(2).AlignRight().Text(Yen(data.NewLifeInsurance)).FontSize(ValueFs);
+                    lifeTable.Cell().Row(2).Column(2).BorderRight(Bw).Padding(2).AlignRight().Text(Yen(data.OldLifeInsurance)).FontSize(ValueFs);
+                    lifeTable.Cell().Row(2).Column(3).BorderRight(Bw).Padding(2).AlignRight().Text(Yen(data.CareInsurance)).FontSize(ValueFs);
+                    lifeTable.Cell().Row(2).Column(4).BorderRight(Bw).Padding(2).AlignRight().Text(Yen(data.NewPensionInsurance)).FontSize(ValueFs);
+                    lifeTable.Cell().Row(2).Column(5).Padding(2).AlignRight().Text(Yen(data.OldPensionInsurance)).FontSize(ValueFs);
+                });
+
+                LabelCell(table.Cell().Row(1).Column(3), "基礎控除の額");
+
+                // Values
+                ValueCellRight(table.Cell().Row(2).Column(1), Yen(data.SmallBusinessMutualAid));
+                // Column 2 already rendered inside nested table above (spans rows)
+                ValueCellRight(table.Cell().Row(2).Column(3), Yen(data.BasicDeduction));
+            });
+
+            // === Section 5: 配偶者氏名・扶養親族氏名 ===
+            main.Item().Table(table =>
+            {
+                table.ColumnsDefinition(cd =>
+                {
+                    cd.RelativeColumn(2);  // 控除対象配偶者
+                    cd.RelativeColumn(4);  // 控除対象扶養親族
+                    cd.RelativeColumn(2);  // 16歳未満扶養親族
+                });
+
+                LabelCell(table.Cell().Row(1).Column(1), "控除対象配偶者");
+                LabelCell(table.Cell().Row(1).Column(2), "控除対象扶養親族");
+                LabelCell(table.Cell().Row(1).Column(3), "16歳未満の扶養親族");
+
+                // 配偶者名
+                table.Cell().Row(2).Column(1).Border(Bw).Padding(3).MinHeight(20).Column(c =>
+                {
+                    if (!string.IsNullOrEmpty(data.SpouseNameKana))
+                        c.Item().Text(data.SpouseNameKana).FontSize(SmallFs);
+                    c.Item().Text(data.SpouseName).FontSize(ValueFs);
+                });
+
+                // 扶養親族名
+                table.Cell().Row(2).Column(2).Border(Bw).Padding(3).MinHeight(20).Column(c =>
+                {
+                    foreach (var name in data.DependentNames.Take(4))
+                        c.Item().Text(name).FontSize(ValueFs);
+                });
+
+                // 16歳未満
+                table.Cell().Row(2).Column(3).Border(Bw).Padding(3).MinHeight(20).Column(c =>
+                {
+                    foreach (var name in data.Under16DependentNames.Take(2))
+                        c.Item().Text(name).FontSize(ValueFs);
                 });
             });
 
-            // Row 2: 支払金額等
-            main.Item().Border(0.5f).BorderColor(Colors.Black).Padding(0).Column(amtCol =>
+            // === Section 6: 摘要 ===
+            main.Item().Table(table =>
             {
-                amtCol.Item().Background("#F5F5F0").BorderBottom(0.5f).BorderColor(Colors.Black).Padding(4)
-                    .Text("支払金額等").FontSize(7).Bold();
-
-                amtCol.Item().Table(table =>
-                {
-                    table.ColumnsDefinition(cd =>
-                    {
-                        cd.RelativeColumn(1);
-                        cd.RelativeColumn(1);
-                        cd.RelativeColumn(1);
-                        cd.RelativeColumn(1);
-                    });
-
-                    var hStyle = TextStyle.Default.FontSize(7).FontColor(Colors.Grey.Darken2);
-                    var vStyle = TextStyle.Default.FontSize(11).Bold();
-
-                    void AmtCell(IContainer c, string label, decimal value)
-                    {
-                        c.Border(0.5f).BorderColor(Colors.Grey.Lighten1).Padding(6).Column(inner =>
-                        {
-                            inner.Item().Text(label).Style(hStyle);
-                            inner.Item().PaddingTop(3).AlignRight().Text($"¥{value:#,0}").Style(vStyle);
-                        });
-                    }
-
-                    AmtCell(table.Cell(), "支払金額", data.PaymentAmount);
-                    AmtCell(table.Cell(), "給与所得控除後の金額\n（調整控除後）", data.SalaryIncomeAfterDeduction);
-                    AmtCell(table.Cell(), "所得控除の額の合計額", data.TotalIncomeDeductions);
-                    AmtCell(table.Cell(), "源泉徴収税額", data.WithholdingTaxAmount);
-                });
+                table.ColumnsDefinition(cd => cd.RelativeColumn(1));
+                LabelCell(table.Cell().Row(1).Column(1), "摘　　要");
+                table.Cell().Row(2).Column(1).Border(Bw).Padding(4).MinHeight(30)
+                    .Text(data.Remarks).FontSize(ValueFs);
             });
 
-            // Row 3: 控除の内訳
-            main.Item().Border(0.5f).BorderColor(Colors.Black).Padding(0).Column(dedCol =>
+            // === Section 7: 支払を受ける者 ===
+            main.Item().BorderTop(BwThick).Table(table =>
             {
-                dedCol.Item().Background("#F5F5F0").BorderBottom(0.5f).BorderColor(Colors.Black).Padding(4)
-                    .Text("控除等の内訳").FontSize(7).Bold();
-
-                dedCol.Item().Table(table =>
+                table.ColumnsDefinition(cd =>
                 {
-                    table.ColumnsDefinition(cd =>
-                    {
-                        cd.RelativeColumn(1);
-                        cd.RelativeColumn(1);
-                        cd.RelativeColumn(1);
-                        cd.RelativeColumn(1);
-                    });
-
-                    var hStyle = TextStyle.Default.FontSize(7).FontColor(Colors.Grey.Darken2);
-                    var vStyle = TextStyle.Default.FontSize(10).Bold();
-
-                    void DedCell(IContainer c, string label, decimal value)
-                    {
-                        c.Border(0.5f).BorderColor(Colors.Grey.Lighten1).Padding(5).Column(inner =>
-                        {
-                            inner.Item().Text(label).Style(hStyle);
-                            inner.Item().PaddingTop(2).AlignRight().Text(value > 0 ? $"¥{value:#,0}" : "―").Style(vStyle);
-                        });
-                    }
-
-                    DedCell(table.Cell(), "社会保険料等の金額", data.SocialInsurance);
-                    DedCell(table.Cell(), "基礎控除の額", data.BasicDeduction);
-                    DedCell(table.Cell(), "生命保険料の控除額", data.LifeInsurance);
-                    DedCell(table.Cell(), "地震保険料の控除額", data.EarthquakeInsurance);
+                    cd.ConstantColumn(60);  // label
+                    cd.RelativeColumn(3);   // 住所 / 氏名
+                    cd.ConstantColumn(60);  // label
+                    cd.RelativeColumn(1);   // 受給者番号
                 });
+
+                // Row 1: 住所
+                table.Cell().Row(1).Column(1).Border(Bw).Padding(2).AlignMiddle()
+                    .Text("住所（居所）\n又は転居前の\n住所（居所）").FontSize(SmallFs);
+                table.Cell().Row(1).Column(2).ColumnSpan(3).Border(Bw).Padding(3).MinHeight(25).Column(c =>
+                {
+                    if (!string.IsNullOrEmpty(data.EmployeePostalCode))
+                        c.Item().Text($"〒{data.EmployeePostalCode}").FontSize(SmallFs);
+                    c.Item().Text(data.EmployeeAddress).FontSize(ValueFs);
+                });
+
+                // Row 2: 氏名 + 受給者番号
+                table.Cell().Row(2).Column(1).Border(Bw).Padding(2).Column(c =>
+                {
+                    c.Item().Text("（フリガナ）").FontSize(SmallFs);
+                    c.Item().Text("氏　名").FontSize(SmallFs);
+                });
+                table.Cell().Row(2).Column(2).Border(Bw).Padding(3).MinHeight(25).Column(c =>
+                {
+                    c.Item().Text(data.EmployeeNameKana).FontSize(SmallFs);
+                    c.Item().PaddingTop(1).Text(data.EmployeeName).FontSize(9).Bold();
+                });
+                table.Cell().Row(2).Column(3).Border(Bw).Padding(2).AlignMiddle()
+                    .Text("受給者番号").FontSize(SmallFs);
+                table.Cell().Row(2).Column(4).Border(Bw).Padding(3).AlignMiddle()
+                    .Text(data.EmployeeCode).FontSize(ValueFs);
             });
 
-            // Footer note
-            main.Item().Padding(6).AlignCenter()
-                .Text($"この源泉徴収票は、令和{reiwa}年（{year}年）1月1日から12月31日までの給与等について作成したものです。")
-                .FontSize(7).FontColor(Colors.Grey.Darken1);
+            // === Section 8: 支払者 ===
+            main.Item().BorderTop(BwThick).Table(table =>
+            {
+                table.ColumnsDefinition(cd =>
+                {
+                    cd.ConstantColumn(60);   // label
+                    cd.RelativeColumn(2);    // 所在地 / 名称
+                    cd.ConstantColumn(60);   // label
+                    cd.RelativeColumn(1);    // 法人番号 / TEL
+                });
+
+                // Row 1: 所在地 + 法人番号
+                table.Cell().Row(1).Column(1).Border(Bw).Padding(2).AlignMiddle()
+                    .Text("支払者\n住所(居所)又は\n所在地").FontSize(SmallFs);
+                table.Cell().Row(1).Column(2).Border(Bw).Padding(3).MinHeight(20).Column(c =>
+                {
+                    if (!string.IsNullOrEmpty(data.CompanyPostalCode))
+                        c.Item().Text($"〒{data.CompanyPostalCode}").FontSize(SmallFs);
+                    c.Item().Text(data.CompanyAddress).FontSize(ValueFs);
+                });
+                table.Cell().Row(1).Column(3).Border(Bw).Padding(2).AlignMiddle()
+                    .Text("法人番号").FontSize(SmallFs);
+                table.Cell().Row(1).Column(4).Border(Bw).Padding(3).AlignMiddle()
+                    .Text(data.CompanyRegistrationNo ?? "").FontSize(ValueFs);
+
+                // Row 2: 名称 + TEL
+                table.Cell().Row(2).Column(1).Border(Bw).Padding(2).AlignMiddle()
+                    .Text("氏名又は名称").FontSize(SmallFs);
+                table.Cell().Row(2).Column(2).Border(Bw).Padding(3).MinHeight(18)
+                    .AlignMiddle().Text(data.CompanyName).FontSize(8).Bold();
+                table.Cell().Row(2).Column(3).Border(Bw).Padding(2).AlignMiddle()
+                    .Text("電話番号").FontSize(SmallFs);
+                table.Cell().Row(2).Column(4).Border(Bw).Padding(3).AlignMiddle()
+                    .Text(data.CompanyTel ?? "").FontSize(ValueFs);
+            });
         });
 
-        col.Item().PaddingTop(8).AlignRight().Text($"作成日: {DateTime.Now:yyyy年MM月dd日}").FontSize(7).FontColor(Colors.Grey.Medium);
+        // Footer
+        col.Item().PaddingTop(4).AlignRight()
+            .Text($"作成日: {DateTime.Now:yyyy年MM月dd日}").FontSize(6).FontColor(Colors.Grey.Medium);
+    }
+
+    // Helper: label cell with gray background
+    static void LabelCell(IContainer container, string label)
+    {
+        container.Border(Bw).Background("#F0F0EC").Padding(2).AlignCenter().AlignMiddle()
+            .Text(label).FontSize(LabelFs).Bold();
+    }
+
+    // Helper: value cell, right-aligned (for amounts)
+    static void ValueCellRight(IContainer container, string value)
+    {
+        container.Border(Bw).Padding(3).AlignRight().AlignMiddle()
+            .Text(value).FontSize(ValueFs);
+    }
+
+    // Helper: value cell, left-aligned
+    static void ValueCellLeft(IContainer container, string value)
+    {
+        container.Border(Bw).Padding(3).AlignLeft().AlignMiddle()
+            .Text(value).FontSize(ValueFs);
     }
 
     #endregion

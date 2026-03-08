@@ -29,12 +29,15 @@ using System.IO;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 using Server.Infrastructure.Modules;
+using ClosedXML.Excel;
 
 // Authorization helper notes (must appear before top-level statements):
 // - User context comes from headers: x-user-id / x-roles / x-dept-id
 // - jsonstructures.auth.actions defines allowed operations
 // - jsonstructures.auth.scopes produces parameterized row-level filters
 // We reference Server.Infrastructure.Auth instead of redefining helpers here.
+
+System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -751,8 +754,40 @@ CREATE TABLE IF NOT EXISTS warehouse_sequences (
             using var doc = System.Text.Json.JsonDocument.Parse(json);
             try { await Server.Domain.SchemasService.SaveAndActivate(ds, "scheduler_task", doc.RootElement, null); } catch { }
         }
+
     }
     catch { }
+});
+
+// Always ensure ai.agentSkills menu exists (not gated by YANXIA_RUN_MIGRATE)
+app.Lifetime.ApplicationStarted.Register(async () =>
+{
+    try
+    {
+        var ds = app.Services.GetRequiredService<NpgsqlDataSource>();
+        await using var conn = await ds.OpenConnectionAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"INSERT INTO permission_menus (module_code, menu_key, menu_name, menu_path, caps_required, display_order)
+VALUES ('system', 'ai.agentSkills', '{""ja"":""Agent Skill設定"",""zh"":""Agent Skill設定"",""en"":""Agent Skill""}'::jsonb, '/ai/agent-skills', ARRAY['ai:scenarios'], 9)
+ON CONFLICT (menu_key) DO UPDATE SET menu_name = EXCLUDED.menu_name";
+        await cmd.ExecuteNonQueryAsync();
+    }
+    catch (Exception ex) { Console.WriteLine("[startup] agentSkills menu init: " + ex.Message); }
+});
+
+app.Lifetime.ApplicationStarted.Register(async () =>
+{
+    try
+    {
+        var ds = app.Services.GetRequiredService<NpgsqlDataSource>();
+        await using var conn = await ds.OpenConnectionAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"INSERT INTO permission_menus (module_code, menu_key, menu_name, menu_path, caps_required, display_order)
+VALUES ('hr', 'hr.withholdingSlip', '{""ja"":""源泉徴収票"",""zh"":""源泉徴収票"",""en"":""Withholding Tax Certificate""}'::jsonb, '/hr/withholding-slip', ARRAY['payroll:view'], 15)
+ON CONFLICT (menu_key) DO NOTHING";
+        await cmd.ExecuteNonQueryAsync();
+    }
+    catch (Exception ex) { Console.WriteLine("[startup] withholdingSlip menu init: " + ex.Message); }
 });
 
 if (runMigrate)
@@ -1352,16 +1387,34 @@ app.MapPost("/auth/login", async (HttpRequest req, NpgsqlDataSource ds) =>
     return Results.Ok(new { token = jwt, name, roles });
 });
 // Current user info endpoint.
-app.MapGet("/auth/me", (HttpContext ctx) =>
+// Returns fresh name from DB if JWT claim is empty (handles name updates without re-login).
+app.MapGet("/auth/me", async (HttpContext ctx, NpgsqlDataSource ds) =>
 {
     var uid = ctx.User?.FindFirst("uid")?.Value;
     var company = ctx.User?.FindFirst("companyCode")?.Value;
     var emp = ctx.User?.FindFirst("employeeCode")?.Value;
-    var name = ctx.User?.FindFirst("name")?.Value;
+    var nameFromToken = ctx.User?.FindFirst("name")?.Value;
     var dept = ctx.User?.FindFirst("deptId")?.Value;
     var roles = ctx.User?.FindFirst("roles")?.Value;
     var caps = ctx.User?.FindFirst("caps")?.Value;
     if (string.IsNullOrEmpty(uid)) return Results.Unauthorized();
+
+    // If name is missing from JWT, fetch fresh from DB
+    var name = nameFromToken;
+    if (string.IsNullOrWhiteSpace(name) && Guid.TryParse(uid, out var userGuid))
+    {
+        try
+        {
+            await using var conn = await ds.OpenConnectionAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT name FROM users WHERE id = $1 LIMIT 1";
+            cmd.Parameters.AddWithValue(userGuid);
+            var dbName = await cmd.ExecuteScalarAsync();
+            if (dbName is string s && !string.IsNullOrWhiteSpace(s)) name = s;
+        }
+        catch { /* ignore DB errors, fall back to token value */ }
+    }
+
     return Results.Ok(new { uid, companyCode = company, employeeCode = emp, name, deptId = dept, roles, caps });
 }).RequireAuthorization();
 // Debug: self-test voucher creation without frontend involvement.
@@ -2157,6 +2210,15 @@ async Task<IResult> HandleObjectSearch(HttpRequest req, string entity, NpgsqlDat
     if (string.Equals(entity, "employee", StringComparison.OrdinalIgnoreCase))
     {
         await EnrichEmployeeDepartmentsAsync(ds, result.Data);
+        // Strip myNumber from search results unless user has employee:mynumber cap
+        if (!user.Caps.Contains("employee:mynumber"))
+        {
+            foreach (var row in result.Data)
+            {
+                if (row?.TryGetPropertyValue("payload", out var pNode) == true && pNode is JsonObject pObj)
+                    pObj.Remove("myNumber");
+            }
+        }
     }
         // Restore legacy behavior: voucher payload attachments should include a resolvable url for preview.
         // FinanceService strips url/previewUrl when persisting (SAS URLs expire), so we enrich on read.
@@ -2201,6 +2263,165 @@ async Task<IResult> HandleObjectSearch(HttpRequest req, string entity, NpgsqlDat
         Console.WriteLine($"[search] {entity} failed: {ex}");
         return Results.BadRequest(new { error = "search_failed", detail = ex.Message });
     }
+}
+
+async Task<IResult> HandleVouchersExport(HttpRequest req, NpgsqlDataSource ds)
+{
+    if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+        return Results.BadRequest(new { error = "missing company" });
+    var companyCode = cc.ToString();
+    SearchRequest searchRequest;
+    try
+    {
+        searchRequest = (await JsonSerializer.DeserializeAsync<SearchRequest>(req.Body, searchRequestJsonOptions, req.HttpContext.RequestAborted)) ?? new SearchRequest();
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = "invalid_search_payload", detail = ex.Message });
+    }
+    var table = Crud.TableFor("voucher");
+    var user = Auth.GetUserCtx(req);
+    var builder = new SearchQueryBuilder(table!, companyCode, user, Crud.RequiresCompanyCode(table!));
+    builder.ApplyWhere(searchRequest.Where);
+    builder.SetOrdering(searchRequest.OrderBy ?? new List<SearchOrder> { new SearchOrder { Field = "posting_date", Dir = "DESC" }, new SearchOrder { Field = "voucher_no", Dir = "DESC" } });
+    builder.SetPagination(5000, 0);
+    List<JsonObject> data;
+    try
+    {
+        var result = await builder.ExecuteAsync(ds);
+        data = result.Data;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[vouchers/export] search failed: {ex}");
+        return Results.BadRequest(new { error = "search_failed", detail = ex.Message });
+    }
+    static string J(JsonObject? o, string key)
+    {
+        if (o is null) return "";
+        return o.TryGetPropertyValue(key, out var v) && v != null ? (v.GetValueKind() == JsonValueKind.String ? v.GetValue<string>() : v.ToJsonString().Trim('"')) ?? "" : "";
+    }
+    static string JN(JsonNode? n)
+    {
+        if (n is null) return "";
+        if (n is JsonValue jv && jv.TryGetValue(out string? s)) return s ?? "";
+        return n.GetValueKind() == JsonValueKind.String ? n.GetValue<string>() ?? "" : n.ToJsonString();
+    }
+    var rows = new List<object[]>();
+    foreach (var row in data)
+    {
+        var postingDate = J(row, "posting_date");
+        var voucherNo = J(row, "voucher_no");
+        if (string.IsNullOrEmpty(postingDate) && row.TryGetPropertyValue("payload", out var pl) && pl is JsonObject payload)
+        {
+            if (payload.TryGetPropertyValue("header", out var h) && h is JsonObject header)
+            {
+                postingDate = JN(header["postingDate"]);
+                if (string.IsNullOrEmpty(voucherNo)) voucherNo = JN(header["voucherNo"]);
+            }
+        }
+        var voucherType = "";
+        var summary = "";
+        JsonArray? lines = null;
+        if (row.TryGetPropertyValue("payload", out var pNode) && pNode is JsonObject payloadObj)
+        {
+            if (payloadObj.TryGetPropertyValue("header", out var headerNode) && headerNode is JsonObject headerObj)
+            {
+                voucherType = JN(headerObj["voucherType"]);
+                summary = JN(headerObj["summary"]);
+            }
+            if (payloadObj.TryGetPropertyValue("lines", out var linesNode) && linesNode is JsonArray arr)
+                lines = arr;
+        }
+        if (lines == null || lines.Count == 0)
+        {
+            rows.Add(new object[] { postingDate, voucherType, voucherNo, summary, "", "", 0m, "", "", "", "", "", "" });
+            continue;
+        }
+        for (int i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i] as JsonObject;
+            var accountCode = line != null ? JN(line["accountCode"] ?? line["account_code"]) : "";
+            var drcr = line != null ? JN(line["drcr"] ?? line["side"]) : "";
+            var amount = 0m;
+            if (line != null && line.TryGetPropertyValue("amount", out var am) && am != null)
+            {
+                if (am is JsonValue jv && jv.TryGetValue(out decimal d))
+                    amount = d;
+                else
+                    decimal.TryParse(JN(am), out amount);
+            }
+            var customer = line != null ? JN(line["customerCode"] ?? line["customer_code"] ?? line["customerId"] ?? line["customer_id"]) : "";
+            var vendor = line != null ? JN(line["vendorCode"] ?? line["vendor_code"] ?? line["vendorId"] ?? line["vendor_id"]) : "";
+            var department = line != null ? JN(line["departmentCode"] ?? line["department_code"] ?? line["departmentId"] ?? line["department_id"]) : "";
+            var employee = line != null ? JN(line["employeeCode"] ?? line["employee_code"] ?? line["employeeId"] ?? line["employee_id"]) : "";
+            var paymentDate = line != null ? JN(line["paymentDate"] ?? line["payment_date"]) : "";
+            var note = line != null ? JN(line["note"] ?? line["remark"] ?? line["description"]) : "";
+            rows.Add(new object[]
+            {
+                i == 0 ? postingDate : "",
+                i == 0 ? voucherType : "",
+                i == 0 ? voucherNo : "",
+                i == 0 ? summary : "",
+                accountCode,
+                drcr,
+                amount,
+                customer,
+                vendor,
+                department,
+                employee,
+                paymentDate,
+                note
+            });
+        }
+    }
+    var headers = new[] { "転記日", "伝票種別", "伝票番号", "摘要", "勘定科目", "借貸", "金額", "得意先", "仕入先", "部門", "社員", "支払日", "備考" };
+    using var wb = new XLWorkbook();
+    var ws = wb.Worksheets.Add("会計伝票一覧");
+    for (int col = 0; col < headers.Length; col++)
+    {
+        var cell = ws.Cell(1, col + 1);
+        cell.Value = headers[col];
+        cell.Style.Font.Bold = true;
+        cell.Style.Fill.BackgroundColor = XLColor.FromHtml("#E2EFDA");
+        cell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+        cell.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+        cell.Style.Border.OutsideBorderColor = XLColor.LightGray;
+    }
+    int dataRow = 2;
+    foreach (var row in rows)
+    {
+        for (int col = 0; col < row.Length; col++)
+        {
+            var cell = ws.Cell(dataRow, col + 1);
+            if (row[col] is decimal d)
+                cell.Value = d;
+            else
+                cell.Value = row[col]?.ToString() ?? "";
+            cell.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+            cell.Style.Border.OutsideBorderColor = XLColor.LightGray;
+            if (col == 6 && row[col] is decimal)
+                cell.Style.NumberFormat.Format = "#,##0";
+        }
+        dataRow++;
+    }
+    ws.Column(1).Width = 12;
+    ws.Column(2).Width = 10;
+    ws.Column(3).Width = 14;
+    ws.Column(4).Width = 32;
+    ws.Column(5).Width = 14;
+    ws.Column(6).Width = 8;
+    ws.Column(7).Width = 14;
+    ws.Column(8).Width = 14;
+    ws.Column(9).Width = 14;
+    ws.Column(10).Width = 12;
+    ws.Column(11).Width = 12;
+    ws.Column(12).Width = 12;
+    ws.Column(13).Width = 24;
+    using var ms = new MemoryStream();
+    wb.SaveAs(ms);
+    var fileName = $"会計伝票一覧_{DateTime.Today:yyyyMMdd}.xlsx";
+    return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
 }
 
 static string? ExtractEmploymentStatusFilter(List<SearchClause>? clauses)
@@ -2998,6 +3219,9 @@ app.MapPut("/vouchers/{id:guid}", HandleVoucherUpdate).RequireAuthorization();
 app.MapPut("/api/vouchers/{id:guid}", HandleVoucherUpdate).RequireAuthorization();
 app.MapPut("/vouchers/{id:guid}/number", HandleVoucherNumberUpdate).RequireAuthorization();
 app.MapPut("/api/vouchers/{id:guid}/number", HandleVoucherNumberUpdate).RequireAuthorization();
+
+app.MapPost("/vouchers/export", HandleVouchersExport).RequireAuthorization();
+app.MapPost("/api/vouchers/export", HandleVouchersExport).RequireAuthorization();
 
 // Generic create endpoint:
 // - Requires the x-company-code header as the tenant isolation key.
@@ -5211,6 +5435,13 @@ app.MapGet("/objects/employee/{id:guid}", async (Guid id, HttpRequest req, Npgsq
     {
         var node = JsonNode.Parse(json);
         AddAttachmentUrlsPreserveBlob(node, blobService);
+        // Strip myNumber unless user has employee:mynumber cap
+        if (!user.Caps.Contains("employee:mynumber"))
+        {
+            var payload = node?["payload"];
+            if (payload is JsonObject payloadObj)
+                payloadObj.Remove("myNumber");
+        }
         return Results.Text(node?.ToJsonString() ?? json, "application/json");
     }
     catch
