@@ -78,7 +78,7 @@
               :auto-upload="false"
               :on-change="onFileSelected"
               accept=".pdf,.png,.jpg,.jpeg,.gif,.webp"
-              style="display:inline-block"
+              class="inline-upload"
             >
               <el-button :loading="recognizing">
                 <el-icon><Upload /></el-icon> 納品書AI読取
@@ -92,7 +92,7 @@
 
       <el-alert v-if="createErr" type="error" :title="createErr" show-icon :closable="false" style="margin-bottom:16px" />
 
-      <el-form label-position="left" label-width="90px">
+      <el-form label-position="left" label-width="90px" style="margin-top: 12px;">
         <el-row :gutter="20">
           <el-col :span="8">
             <el-form-item label="入庫日" required>
@@ -130,7 +130,7 @@
           <el-col :span="8">
             <el-form-item label="棚番">
               <el-select v-model="createForm.toBin" placeholder="棚番" style="width:100%" :loading="binsLoading" clearable>
-                <el-option v-for="b in bins" :key="b.bin_code" :label="b.bin_code" :value="b.bin_code" />
+                <el-option v-for="b in bins" :key="b.bin_code" :label="b.bin_code + (b.payload?.name ? ' - ' + b.payload.name : '')" :value="b.bin_code" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -208,17 +208,17 @@
         <el-table-column label="単位" width="70">
           <template #default="{ row }">{{ row.uom || '-' }}</template>
         </el-table-column>
-        <el-table-column label="倉庫" width="120">
+        <el-table-column label="倉庫" width="160">
           <template #default="{ row }">
             <el-select v-model="row.toWarehouse" size="small" style="width:100%">
-              <el-option v-for="w in warehouses" :key="w.warehouse_code" :label="w.warehouse_code" :value="w.warehouse_code" />
+              <el-option v-for="w in warehouses" :key="w.warehouse_code" :label="w.warehouse_code + (w.payload?.name ? ' - ' + w.payload.name : '')" :value="w.warehouse_code" />
             </el-select>
           </template>
         </el-table-column>
-        <el-table-column label="棚番" width="100">
+        <el-table-column label="棚番" width="130">
           <template #default="{ row }">
             <el-select v-model="row.toBin" size="small" style="width:100%" clearable>
-              <el-option v-for="b in allBins.filter(x => x.warehouse_code === row.toWarehouse)" :key="b.bin_code" :label="b.bin_code" :value="b.bin_code" />
+              <el-option v-for="b in allBins.filter(x => x.warehouse_code === row.toWarehouse)" :key="b.bin_code" :label="b.bin_code + (b.payload?.name ? ' - ' + b.payload.name : '')" :value="b.bin_code" />
             </el-select>
           </template>
         </el-table-column>
@@ -989,15 +989,24 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
 }
+.dialog-header-actions .inline-upload {
+  display: inline-flex;
+  line-height: 1;
+}
 </style>
 
 <style>
 /* gr-dialog: override el-dialog default padding for consistent layout */
 .el-dialog.gr-dialog .el-dialog__header {
-  padding: 16px 20px 12px;
+  padding: 16px 20px 14px;
   margin-right: 0;
+  border-bottom: 1px solid #e4e7ed;
 }
 .el-dialog.gr-dialog .el-dialog__body {
-  padding: 0 20px 20px;
+  padding: 4px 20px 20px;
+}
+/* Fix el-upload adding extra margin inside flex container */
+.el-dialog.gr-dialog .el-upload {
+  display: inline-flex;
 }
 </style>
