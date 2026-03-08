@@ -4810,7 +4810,7 @@ async function submitAttachmentTask(messageText: string){
 }
 
 function handleLogout() {
-  const keys = ['auth_token', 'company_code', 'currentUserName', 'currentCompany', 'userCaps', 'userRoles']
+  const keys = ['auth_token', 'company_code', 'currentUserName', 'currentCompany', 'userCaps', 'userRoles', SINGLE_SESSION_STORAGE_KEY]
   keys.forEach(k => { localStorage.removeItem(k); sessionStorage.removeItem(k) })
   delete api.defaults.headers.common['Authorization']
   delete api.defaults.headers.common['x-company-code']
