@@ -140,7 +140,7 @@ public class FinanceExtStandardModule : ModuleBase
             {
                 new { code = "misc", name = "雑費" },
                 new { code = "transportation", name = "交通費" },
-                new { code = "dining", name = "会食费" }
+                new { code = "dining", name = "会食費" }
             });
         }).RequireAuthorization();
 
