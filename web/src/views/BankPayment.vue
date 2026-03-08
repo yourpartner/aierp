@@ -25,6 +25,12 @@
               <el-option v-for="p in partnerOptions" :key="p.value" :label="p.label" :value="p.value" />
             </el-select>
           </div>
+          <div class="rcpt-form-item">
+            <label class="rcpt-label">{{ labels.employee }}</label>
+            <el-select v-model="form.employeeId" filterable remote clearable :remote-method="searchEmployees" reserve-keyword :placeholder="labels.optional" class="rcpt-input-partner" @change="onEmployeeChange">
+              <el-option v-for="e in employeeOptions" :key="e.value" :label="e.label" :value="e.value" />
+            </el-select>
+          </div>
         </div>
 
         <!-- 第二行：出金信息 -->
@@ -182,7 +188,7 @@ const labels = section(
     bankAccount: '', bankPlaceholder: '', paymentAmount: '', amount: '',
     paymentDate: '', date: '', feeBearer: '', vendorBears: '', companyBears: '',
     feeAmount: '', feeAccount: '', account: '', bearer: '',
-    noOpenItems: '', docDate: '', voucherNo: '', partnerCol: '', employeeCol: '', originalAmount: '', residualAmount: '',
+    noOpenItems: '', docDate: '', voucherNo: '', partnerCol: '', employeeCol: '', employee: '', originalAmount: '', residualAmount: '',
     applyAmount: '', remark: '', clearingTotal: '', actualPayment: '', fee: '',
     mismatch: '', execute: '', success: '', failed: ''
   },
@@ -209,6 +215,7 @@ const labels = section(
     docDate: msg.bankPayment?.docDate || '伝票日付',
     voucherNo: msg.bankPayment?.voucherNo || '伝票番号',
     partnerCol: msg.bankPayment?.partnerCol || '取引先',
+    employee: msg.bankPayment?.employee || '従業員',
     employeeCol: msg.bankPayment?.employeeCol || '従業員',
     originalAmount: msg.bankPayment?.originalAmount || '原金額',
     residualAmount: msg.bankPayment?.residualAmount || '未消込残高',
@@ -228,6 +235,7 @@ const labels = section(
 const form = reactive({
   accountCodes: [] as string[],
   partnerId: '',
+  employeeId: '',
   bankAccountCode: '',
   currency: '',
   amountText: '',
@@ -241,6 +249,7 @@ const form = reactive({
 // 下拉选项
 const clearingAccountOptions = ref<{ label: string; value: string }[]>([])
 const partnerOptions = ref<{ label: string; value: string }[]>([])
+const employeeOptions = ref<{ label: string; value: string }[]>([])
 const bankAccountOptions = ref<{ label: string; value: string }[]>([])
 const feeAccountOptions = ref<{ label: string; value: string }[]>([])
 
@@ -403,6 +412,28 @@ async function searchPartners(query: string) {
   })
 }
 
+// 搜索従業員
+async function searchEmployees(query: string) {
+  const where: any[] = []
+  if (query && query.trim()) {
+    where.push({ json: 'name', op: 'contains', value: query.trim() })
+  }
+  try {
+    const r = await api.post('/objects/employee/search', { page: 1, pageSize: 50, where, orderBy: [] })
+    const arr: any[] = r.data?.data || []
+    employeeOptions.value = arr.map((e: any) => {
+      const id = e.id
+      const code = String(e.employee_code || '').trim()
+      const payload = parseJsonSafe(e.payload) || {}
+      const name = (payload?.name || e.name || '').toString()
+      if (id) employeeCache.set(id, { code, name })
+      return { label: `${name} (${code})`, value: id }
+    })
+  } catch {
+    employeeOptions.value = []
+  }
+}
+
 // 搜索银行/现金科目（与入金配分保持一致的逻辑）
 async function searchBankAccounts(query: string) {
   const q = (query || '').trim()
@@ -500,6 +531,11 @@ function onAccountChange() {
 
 // 取引先变化时重新加载未清项
 function onPartnerChange() {
+  loadOpenItems()
+}
+
+// 従業員变化时重新加载未清项
+function onEmployeeChange() {
   loadOpenItems()
 }
 
@@ -676,12 +712,13 @@ async function loadOpenItems() {
 
       // 従業員情報（从凭证明细行获取）
       let employeeDisplayText = ''
+      let employeeId = ''
       if (vInfo) {
         const line = vInfo.lines.find((l: any) => l.lineNo === lineNo)
         if (line) {
-          const empId = String(line.employeeId || '').trim()
-          if (empId) {
-            const emp = employeeCache.get(empId)
+          employeeId = String(line.employeeId || '').trim()
+          if (employeeId) {
+            const emp = employeeCache.get(employeeId)
             if (emp) {
               employeeDisplayText = emp.code ? `${emp.name} (${emp.code})` : emp.name
             }
@@ -697,12 +734,18 @@ async function loadOpenItems() {
         drcr,
         isDebit,
         partnerDisplay: partnerDisplayText,
+        employeeId,
         employeeDisplay: employeeDisplayText,
         remark: lineRemark || headerRemark || ''
       }
     })
 
-    openItems.value = enriched
+    // 従業員フィルタ（client-side：open_itemsテーブルに従業員列がないため）
+    const filtered = form.employeeId
+      ? enriched.filter((row: any) => row.employeeId === form.employeeId)
+      : enriched
+
+    openItems.value = filtered
     applyAllocations(new Map())
   } finally {
     loading.value = false
