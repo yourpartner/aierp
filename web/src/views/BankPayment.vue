@@ -91,6 +91,9 @@
         <el-table-column :label="labels.partnerCol" min-width="140" header-align="left" align="left">
           <template #default="{ row }">{{ row.partnerDisplay || '-' }}</template>
         </el-table-column>
+        <el-table-column :label="labels.employeeCol" min-width="120" header-align="left" align="left">
+          <template #default="{ row }">{{ row.employeeDisplay || '-' }}</template>
+        </el-table-column>
         <el-table-column :label="labels.voucherNo" width="130" header-align="left" align="left">
           <template #default="{ row }">
             <span v-if="row.voucher_no" class="voucher-link" @click="openVoucherDetail(row)">{{ row.voucher_no }}</span>
@@ -179,7 +182,7 @@ const labels = section(
     bankAccount: '', bankPlaceholder: '', paymentAmount: '', amount: '',
     paymentDate: '', date: '', feeBearer: '', vendorBears: '', companyBears: '',
     feeAmount: '', feeAccount: '', account: '', bearer: '',
-    noOpenItems: '', docDate: '', voucherNo: '', partnerCol: '', originalAmount: '', residualAmount: '',
+    noOpenItems: '', docDate: '', voucherNo: '', partnerCol: '', employeeCol: '', originalAmount: '', residualAmount: '',
     applyAmount: '', remark: '', clearingTotal: '', actualPayment: '', fee: '',
     mismatch: '', execute: '', success: '', failed: ''
   },
@@ -206,6 +209,7 @@ const labels = section(
     docDate: msg.bankPayment?.docDate || '伝票日付',
     voucherNo: msg.bankPayment?.voucherNo || '伝票番号',
     partnerCol: msg.bankPayment?.partnerCol || '取引先',
+    employeeCol: msg.bankPayment?.employeeCol || '従業員',
     originalAmount: msg.bankPayment?.originalAmount || '原金額',
     residualAmount: msg.bankPayment?.residualAmount || '未消込残高',
     applyAmount: msg.bankPayment?.applyAmount || '今回消込',
@@ -313,6 +317,29 @@ async function fetchPartnersByCodes(codes: string[]) {
   } catch {}
 }
 
+// 员工缓存
+const employeeCache = new Map<string, { code: string; name: string }>()
+
+// 批量获取员工信息
+async function fetchEmployeesByIds(ids: string[]) {
+  const unique = Array.from(new Set(ids.filter(c => !!c)))
+  const missing = unique.filter(c => !employeeCache.has(c))
+  if (missing.length === 0) return
+  try {
+    const resp = await api.post('/objects/employee/search', {
+      page: 1, pageSize: Math.max(200, missing.length),
+      where: [{ field: 'id', op: 'in', value: missing }], orderBy: []
+    })
+    for (const row of (resp.data?.data || [])) {
+      const id = String(row.id || '').trim()
+      const code = String(row.employee_code || '').trim()
+      const payload = parseJsonSafe(row.payload) || {}
+      const name = (payload?.name || row.name || '').toString()
+      if (id) employeeCache.set(id, { code, name })
+    }
+  } catch {}
+}
+
 // 监听金额输入
 watch(() => form.amountText, (val) => {
   const txt = String(val ?? '').replace(/,/g, '').trim()
@@ -357,15 +384,10 @@ async function loadClearingAccounts() {
   }
 }
 
-// 搜索供应商（vendor + employee）
+// 搜索供应商（vendor）
 // open_items.partner_id 存的是 UUID（businesspartner.id），所以下拉的 value 也用 UUID
 async function searchPartners(query: string) {
-  const where: any[] = [{
-    anyOf: [
-      { field: 'flag_vendor', op: 'eq', value: true },
-      { field: 'flag_employee', op: 'eq', value: true }
-    ]
-  }]
+  const where: any[] = [{ field: 'flag_vendor', op: 'eq', value: true }]
   if (query && query.trim()) {
     where.push({ json: 'name', op: 'contains', value: query.trim() })
   }
@@ -375,7 +397,6 @@ async function searchPartners(query: string) {
     const id = p.id
     const code = p.partner_code
     const name = p.payload?.name || p.name
-    // 也缓存取引先信息
     if (id) partnerCache.set(id, { code: code || id, name })
     if (code) partnerCache.set(code, { code, name })
     return { label: `${name} (${code})`, value: id }
@@ -575,12 +596,12 @@ async function loadOpenItems() {
       }
     }
 
-    // 收集取引先ID（从open_items和凭证明细行两个来源）
+    // 收集取引先ID和員工ID（从open_items和凭证明细行）
     const partnerIdSet = new Set<string>()
+    const employeeIdSet = new Set<string>()
     for (const item of data) {
       const pid = String(item.partner_id || '').trim()
-      if (pid) partnerIdSet.add(pid)
-      // 也从凭证明细行提取 vendorId/employeeId
+      if (pid) partnerIdSet.add(pid) // partner_id 可能是 vendor 或 employee 的 UUID
       const refs = parseJsonSafe(item.refs)
       const vid = item.voucher_id || refs?.voucherId || ''
       const lineNo = item.voucher_line_no || refs?.lineNo || 0
@@ -588,14 +609,17 @@ async function loadOpenItems() {
       if (vInfo) {
         const line = vInfo.lines.find((l: any) => l.lineNo === lineNo)
         if (line) {
-          for (const key of ['vendorId', 'employeeId', 'customerId']) {
-            const v = String(line[key] || '').trim()
-            if (v) partnerIdSet.add(v)
-          }
+          const vendorVal = String(line.vendorId || line.customerId || '').trim()
+          if (vendorVal) partnerIdSet.add(vendorVal)
+          const empVal = String(line.employeeId || '').trim()
+          if (empVal) employeeIdSet.add(empVal)
         }
       }
     }
-    await fetchPartnersByCodes(Array.from(partnerIdSet))
+    await Promise.all([
+      fetchPartnersByCodes(Array.from(partnerIdSet)),
+      fetchEmployeesByIds(Array.from(employeeIdSet))
+    ])
 
     // 补充科目名称、伝票信息、取引先信息
     const enriched = data.map((item: any) => {
@@ -642,13 +666,28 @@ async function loadOpenItems() {
       if (!partnerCode && vInfo) {
         const line = vInfo.lines.find((l: any) => l.lineNo === lineNo)
         if (line) {
-          for (const key of ['vendorId', 'employeeId', 'customerId']) {
+          for (const key of ['vendorId', 'customerId']) {
             const v = String(line[key] || '').trim()
             if (v) { partnerCode = v; break }
           }
         }
       }
       const partnerDisplayText = partnerDisplay(partnerCode)
+
+      // 従業員情報（从凭证明细行获取）
+      let employeeDisplayText = ''
+      if (vInfo) {
+        const line = vInfo.lines.find((l: any) => l.lineNo === lineNo)
+        if (line) {
+          const empId = String(line.employeeId || '').trim()
+          if (empId) {
+            const emp = employeeCache.get(empId)
+            if (emp) {
+              employeeDisplayText = emp.code ? `${emp.name} (${emp.code})` : emp.name
+            }
+          }
+        }
+      }
 
       return {
         ...item,
@@ -658,6 +697,7 @@ async function loadOpenItems() {
         drcr,
         isDebit,
         partnerDisplay: partnerDisplayText,
+        employeeDisplay: employeeDisplayText,
         remark: lineRemark || headerRemark || ''
       }
     })
