@@ -34,7 +34,7 @@
         <el-table-column prop="po_no" label="発注番号" width="150" />
         <el-table-column label="仕入先" min-width="200">
           <template #default="{ row }">
-            <span>{{ row.payload?.partnerName ? `${row.payload.partnerName} (${row.partner_code})` : row.partner_code }}</span>
+            <span>{{ (row.payload?.partnerName || partnerNames[row.partner_code]) ? `${row.payload?.partnerName || partnerNames[row.partner_code]} (${row.partner_code})` : row.partner_code }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="order_date" label="発注日" width="120" />
@@ -100,7 +100,7 @@
               <el-descriptions :column="2" border size="small">
                 <el-descriptions-item label="発注番号">{{ detailData.payload?.poNo }}</el-descriptions-item>
                 <el-descriptions-item label="発注日">{{ detailData.payload?.orderDate }}</el-descriptions-item>
-                <el-descriptions-item label="仕入先">{{ detailData.payload?.partnerName }} ({{ detailData.partner_code }})</el-descriptions-item>
+                <el-descriptions-item label="仕入先">{{ detailData.payload?.partnerName || partnerNames[detailData.partner_code] || '' }} ({{ detailData.partner_code }})</el-descriptions-item>
                 <el-descriptions-item label="ステータス">
                   <el-tag :type="getActualPoStatusType()" size="small">{{ getActualPoStatusLabel() }}</el-tag>
                 </el-descriptions-item>
@@ -475,6 +475,7 @@ const receiving = ref(false)
 const warehouses = ref<any[]>([])
 const bins = ref<any[]>([])
 const binsLoading = ref(false)
+const partnerNames = ref<Record<string, string>>({})
 
 function formatNumber(value: number | undefined | null) {
   if (value === undefined || value === null) return '-'
@@ -632,8 +633,26 @@ async function loadData() {
       where,
       orderBy: [{ field: 'order_date', dir: 'desc' }]
     })
-    list.value = resp.data?.data || []
+    const data = resp.data?.data || []
+    list.value = data
     total.value = resp.data?.total || 0
+    // 仕入先名称を取得
+    const codes = Array.from(new Set(data.map((r: any) => r.partner_code).filter((c: any) => !!c && !partnerNames.value[c])))
+    if (codes.length > 0) {
+      try {
+        const pResp = await api.post('/objects/businesspartner/search', {
+          page: 1, pageSize: Math.max(200, codes.length),
+          where: [{ field: 'partner_code', op: 'in', value: codes }], orderBy: []
+        })
+        const map = { ...partnerNames.value }
+        for (const row of (pResp.data?.data || [])) {
+          const code = row.partner_code
+          const name = row.payload?.name || row.name || ''
+          if (code && name) map[code] = name
+        }
+        partnerNames.value = map
+      } catch { /* ignore */ }
+    }
   } catch (e: any) {
     ElMessage.error('データの読み込みに失敗しました')
   } finally {
