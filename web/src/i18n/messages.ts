@@ -18,6 +18,7 @@ export interface Messages {
     financialDesigner: string
     consumptionTax: string
     cashLedger: string
+    financialAnalysis: string
     schemaEditor: string
     approvalsDesigner: string
     notifRuleRuns: string
@@ -847,6 +848,7 @@ export const ja: Messages = {
     financialDesigner: '財務諸表構成',
     consumptionTax: '消費税申告書',
     cashLedger: '現金出納帳',
+    financialAnalysis: '財務分析Agent',
     schemaEditor: 'スキーマ管理',
     approvalsDesigner: '承認ルール',
     notifRuleRuns: '通知ルール実行履歴',
@@ -1940,6 +1942,7 @@ export const en: Messages = {
     financialDesigner: 'Statement Designer',
     consumptionTax: 'Consumption Tax Return',
     cashLedger: 'Cash Ledger',
+    financialAnalysis: 'Financial Analysis Agent',
     schemaEditor: 'Schema Manager',
     approvalsDesigner: 'Approval Rules',
     notifRuleRuns: 'Notification Rule Runs',
@@ -2985,6 +2988,7 @@ zh.nav = {
   financialDesigner: '财务报表构成',
   consumptionTax: '消费税申报表',
   cashLedger: '现金出纳账',
+  financialAnalysis: '财务分析Agent',
   schemaEditor: '架构管理',
   approvalsDesigner: '审批规则',
   notifRuleRuns: '通知规则执行记录',

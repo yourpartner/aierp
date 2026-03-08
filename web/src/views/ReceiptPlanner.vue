@@ -354,28 +354,35 @@ async function fetchPartnersByCodes(codes: string[]){
   const unique = Array.from(new Set((codes || []).map(code => (code || '').toString().trim()).filter(code => !!code)))
   const missing = unique.filter(code => !partnerCache.has(code))
   if (missing.length === 0) return
-  
-  const body = { 
-    page: 1, 
-    pageSize: Math.max(200, missing.length), 
-    where: [{ 
-      or: [
-        { field: 'id', op: 'in', value: missing },
-        { field: 'partner_code', op: 'in', value: missing }
-      ]
-    }], 
-    orderBy: [] as any[] 
+  // 分离UUID和partner_code，分别查询
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const uuids = missing.filter(c => uuidPattern.test(c))
+  const plainCodes = missing.filter(c => !uuidPattern.test(c))
+  const fetches: Promise<any>[] = []
+  if (uuids.length > 0) {
+    fetches.push(api.post('/objects/businesspartner/search', {
+      page: 1, pageSize: Math.max(200, uuids.length),
+      where: [{ field: 'id', op: 'in', value: uuids }], orderBy: [] as any[]
+    }))
+  }
+  if (plainCodes.length > 0) {
+    fetches.push(api.post('/objects/businesspartner/search', {
+      page: 1, pageSize: Math.max(200, plainCodes.length),
+      where: [{ field: 'partner_code', op: 'in', value: plainCodes }], orderBy: [] as any[]
+    }))
   }
   try {
-    const resp = await api.post('/objects/businesspartner/search', body)
-    const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
-    for (const row of rows){
-      const id = String(row.id || '').trim()
-      const code = String(row.partner_code || row.partnerCode || row.code || '').trim()
-      const payload = parseJsonSafe(row.payload) || {}
-      const name = (payload?.name || row.name || row.partner_name || '').toString()
-      if (id) partnerCache.set(id, { code: code || id, name })
-      if (code) partnerCache.set(code, { code, name })
+    const results = await Promise.all(fetches)
+    for (const resp of results) {
+      const rows = Array.isArray(resp.data?.data) ? resp.data.data : []
+      for (const row of rows){
+        const id = String(row.id || '').trim()
+        const code = String(row.partner_code || row.partnerCode || row.code || '').trim()
+        const payload = parseJsonSafe(row.payload) || {}
+        const name = (payload?.name || row.name || row.partner_name || '').toString()
+        if (id) partnerCache.set(id, { code: code || id, name })
+        if (code) partnerCache.set(code, { code, name })
+      }
     }
   } catch {}
 }
@@ -452,11 +459,16 @@ async function searchPartners(query: string){
   const where: any[] = [{ field:'flag_customer', op:'eq', value:true }]
   if (query && query.trim()) where.push({ json:'name', op:'contains', value: query.trim() })
   const r = await api.post('/objects/businesspartner/search', { page:1, pageSize:50, where, orderBy:[] })
-  partnerOptions.splice(0, partnerOptions.length, ...((r.data?.data || []).map((p: any) => ({ 
-    label:`${p.payload?.name||p.name} (${p.partner_code})`, 
-    value:p.partner_code, 
-    name:(p.payload?.name||p.name) 
-  }))))
+  partnerOptions.splice(0, partnerOptions.length, ...((r.data?.data || []).map((p: any) => {
+    const id = p.id
+    const code = p.partner_code
+    const name = p.payload?.name || p.name
+    // 缓存取引先信息
+    if (id) partnerCache.set(id, { code: code || id, name })
+    if (code) partnerCache.set(code, { code, name })
+    // value 用 UUID（与 open_items.partner_id 一致）
+    return { label:`${name} (${code})`, value: id, name }
+  })))
 }
 
 async function searchBankAccounts(query: string){
@@ -556,11 +568,14 @@ function onApplyChange(row: any){
 
 // === 智能配分 ===
 
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 function partnerDisplay(code?: string, name?: string){
   const trimmedCode = (code || '').toString().trim()
   const cached = trimmedCode ? partnerCache.get(trimmedCode) : undefined
   const finalName = (cached?.name || name || '').toString().trim()
   const finalCode = cached?.code || trimmedCode
+  // UUID格式且未缓存到名字 → partner已被删除，不显示
+  if (!cached && uuidPattern.test(finalCode)) return ''
   if (finalCode && finalName) return `${finalCode} ${finalName}`
   if (finalCode) return finalCode
   return finalName

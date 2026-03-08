@@ -32,6 +32,7 @@ export const coreRoutes: RouteRecordRaw[] = [
 export const financeCoreRoutes: RouteRecordRaw[] = [
   { path: '/finance/cash-flow', component: () => import('../views/finance/CashFlow.vue'), meta: { requiresAuth: true } },
   { path: '/finance/expense-claims', component: () => import('../views/finance/ExpenseClaims.vue'), meta: { requiresAuth: true } },
+  { path: '/finance/analysis', component: () => import('../views/finance/FinancialAnalysis.vue'), meta: { requiresAuth: true } },
 ]
 
 // 财务扩展模块路由 - 已通过 ChatKit 弹窗访问，不需要独立路由

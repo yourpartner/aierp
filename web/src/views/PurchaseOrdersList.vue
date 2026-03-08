@@ -34,7 +34,7 @@
         <el-table-column prop="po_no" label="発注番号" width="150" />
         <el-table-column label="仕入先" min-width="200">
           <template #default="{ row }">
-            <span>{{ row.payload?.partnerName || row.partner_code }}</span>
+            <span>{{ row.payload?.partnerName ? `${row.payload.partnerName} (${row.partner_code})` : row.partner_code }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="order_date" label="発注日" width="120" />
@@ -75,7 +75,7 @@
     </el-card>
 
     <!-- 详情/编辑弹窗 -->
-    <el-dialog v-model="showDetail" width="900px" :style="{ maxWidth: '95vw' }" destroy-on-close append-to-body>
+    <el-dialog v-model="showDetail" width="1100px" :style="{ maxWidth: '95vw' }" destroy-on-close append-to-body class="po-detail-dialog">
       <template #header>
         <div class="dialog-header">
           <span class="dialog-header-title">{{ isEditMode ? '発注編集' : '発注詳細' }}</span>
@@ -1106,11 +1106,13 @@ onMounted(() => {
 .po-detail-layout {
   display: flex;
   gap: 20px;
+  overflow: hidden;
 }
 
 .po-detail-main {
   flex: 1;
-  min-width: 600px;
+  min-width: 0;
+  overflow: auto;
 }
 
 .po-detail-progress {
@@ -1249,5 +1251,21 @@ onMounted(() => {
   border-color: #3b82f6;
 }
 
+</style>
+
+<style>
+.el-dialog.po-detail-dialog {
+  border-radius: 8px !important;
+}
+
+.el-dialog.po-detail-dialog .el-dialog__header {
+  border-bottom: 1px solid #e4e7ed;
+  padding: 16px 20px;
+  margin-right: 0;
+}
+
+.el-dialog.po-detail-dialog .el-dialog__body {
+  padding: 20px;
+}
 </style>
 

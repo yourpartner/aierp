@@ -36,6 +36,7 @@ public class PayrollStandardModule : ModuleBase
     public override void MapEndpoints(WebApplication app)
     {
         app.MapHrPayrollModule();
+        app.MapWithholdingSlipModule();
     }
 }
 

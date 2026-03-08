@@ -261,40 +261,54 @@ function parseJsonSafe(val: any): any {
   try { return JSON.parse(val) } catch { return null }
 }
 
-// 取引先显示
+// 取引先显示（UUID格式的未找到partner不显示原始ID）
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 function partnerDisplay(code?: string, name?: string) {
   const trimmedCode = (code || '').toString().trim()
   const cached = trimmedCode ? partnerCache.get(trimmedCode) : undefined
   const finalName = (cached?.name || name || '').toString().trim()
   const finalCode = cached?.code || trimmedCode
+  // 如果是UUID且没有缓存到名字，说明partner已被删除，不显示
+  if (!cached && uuidPattern.test(finalCode)) return ''
   if (finalCode && finalName) return `${finalCode} ${finalName}`
   if (finalCode) return finalCode
   return finalName
 }
 
-// 批量获取取引先信息
+// 批量获取取引先信息（支持UUID和partner_code两种格式）
 async function fetchPartnersByCodes(codes: string[]) {
   const unique = Array.from(new Set((codes || []).map(c => (c || '').toString().trim()).filter(c => !!c)))
   const missing = unique.filter(c => !partnerCache.has(c))
   if (missing.length === 0) return
+  // 分离UUID和partner_code
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const uuids = missing.filter(c => uuidPattern.test(c))
+  const codes2 = missing.filter(c => !uuidPattern.test(c))
+  // 分别查询避免or条件兼容性问题
+  const fetches: Promise<any>[] = []
+  if (uuids.length > 0) {
+    fetches.push(api.post('/objects/businesspartner/search', {
+      page: 1, pageSize: Math.max(200, uuids.length),
+      where: [{ field: 'id', op: 'in', value: uuids }], orderBy: []
+    }))
+  }
+  if (codes2.length > 0) {
+    fetches.push(api.post('/objects/businesspartner/search', {
+      page: 1, pageSize: Math.max(200, codes2.length),
+      where: [{ field: 'partner_code', op: 'in', value: codes2 }], orderBy: []
+    }))
+  }
   try {
-    const resp = await api.post('/objects/businesspartner/search', {
-      page: 1, pageSize: Math.max(200, missing.length),
-      where: [{
-        or: [
-          { field: 'id', op: 'in', value: missing },
-          { field: 'partner_code', op: 'in', value: missing }
-        ]
-      }],
-      orderBy: []
-    })
-    for (const row of (resp.data?.data || [])) {
-      const id = String(row.id || '').trim()
-      const code = String(row.partner_code || '').trim()
-      const payload = parseJsonSafe(row.payload) || {}
-      const name = (payload?.name || row.name || '').toString()
-      if (id) partnerCache.set(id, { code: code || id, name })
-      if (code) partnerCache.set(code, { code, name })
+    const results = await Promise.all(fetches)
+    for (const resp of results) {
+      for (const row of (resp.data?.data || [])) {
+        const id = String(row.id || '').trim()
+        const code = String(row.partner_code || '').trim()
+        const payload = parseJsonSafe(row.payload) || {}
+        const name = (payload?.name || row.name || '').toString()
+        if (id) partnerCache.set(id, { code: code || id, name })
+        if (code) partnerCache.set(code, { code, name })
+      }
     }
   } catch {}
 }
@@ -343,18 +357,29 @@ async function loadClearingAccounts() {
   }
 }
 
-// 搜索供应商（vendor）
+// 搜索供应商（vendor + employee）
+// open_items.partner_id 存的是 UUID（businesspartner.id），所以下拉的 value 也用 UUID
 async function searchPartners(query: string) {
-  const where: any[] = [{ field: 'flag_vendor', op: 'eq', value: true }]
+  const where: any[] = [{
+    anyOf: [
+      { field: 'flag_vendor', op: 'eq', value: true },
+      { field: 'flag_employee', op: 'eq', value: true }
+    ]
+  }]
   if (query && query.trim()) {
     where.push({ json: 'name', op: 'contains', value: query.trim() })
   }
   const r = await api.post('/objects/businesspartner/search', { page: 1, pageSize: 50, where, orderBy: [] })
   const arr: any[] = r.data?.data || []
-  partnerOptions.value = arr.map((p: any) => ({
-    label: `${p.payload?.name || p.name} (${p.partner_code})`,
-    value: p.partner_code
-  }))
+  partnerOptions.value = arr.map((p: any) => {
+    const id = p.id
+    const code = p.partner_code
+    const name = p.payload?.name || p.name
+    // 也缓存取引先信息
+    if (id) partnerCache.set(id, { code: code || id, name })
+    if (code) partnerCache.set(code, { code, name })
+    return { label: `${name} (${code})`, value: id }
+  })
 }
 
 // 搜索银行/现金科目（与入金配分保持一致的逻辑）

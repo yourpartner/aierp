@@ -30,6 +30,7 @@ public class FinanceExtStandardModule : ModuleBase
             new MenuConfig { Id = "menu_consumption_tax", Label = "menu.consumptionTax", Icon = "Memo", Path = "/financial/consumption-tax", ParentId = "menu_finance", Order = 114 },
             new MenuConfig { Id = "menu_monthly_closing", Label = "menu.monthlyClosing", Icon = "Calendar", Path = "/financial/monthly-closing", ParentId = "menu_finance", Order = 115 },
             new MenuConfig { Id = "menu_ledger_export", Label = "menu.ledgerExport", Icon = "Download", Path = "/ledger-export", ParentId = "menu_finance", Order = 116 },
+            new MenuConfig { Id = "menu_financial_analysis", Label = "menu.financialAnalysis", Icon = "Monitor", Path = "/finance/analysis", ParentId = "menu_finance", Order = 117 },
         }
     };
     
