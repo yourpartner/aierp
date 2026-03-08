@@ -990,3 +990,14 @@ onMounted(() => {
   gap: 8px;
 }
 </style>
+
+<style>
+/* gr-dialog: override el-dialog default padding for consistent layout */
+.el-dialog.gr-dialog .el-dialog__header {
+  padding: 16px 20px 12px;
+  margin-right: 0;
+}
+.el-dialog.gr-dialog .el-dialog__body {
+  padding: 0 20px 20px;
+}
+</style>
