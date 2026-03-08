@@ -88,6 +88,9 @@
             <span :title="row.account_code">{{ row.accountName ? `${row.accountName} (${row.account_code})` : row.account_code || '-' }}</span>
           </template>
         </el-table-column>
+        <el-table-column :label="labels.partnerCol" min-width="140" header-align="left" align="left">
+          <template #default="{ row }">{{ row.partnerDisplay || '-' }}</template>
+        </el-table-column>
         <el-table-column :label="labels.voucherNo" width="130" header-align="left" align="left">
           <template #default="{ row }">
             <span v-if="row.voucher_no" class="voucher-link" @click="openVoucherDetail(row)">{{ row.voucher_no }}</span>
@@ -176,7 +179,7 @@ const labels = section(
     bankAccount: '', bankPlaceholder: '', paymentAmount: '', amount: '',
     paymentDate: '', date: '', feeBearer: '', vendorBears: '', companyBears: '',
     feeAmount: '', feeAccount: '', account: '', bearer: '',
-    noOpenItems: '', docDate: '', voucherNo: '', originalAmount: '', residualAmount: '',
+    noOpenItems: '', docDate: '', voucherNo: '', partnerCol: '', originalAmount: '', residualAmount: '',
     applyAmount: '', remark: '', clearingTotal: '', actualPayment: '', fee: '',
     mismatch: '', execute: '', success: '', failed: ''
   },
@@ -202,6 +205,7 @@ const labels = section(
     noOpenItems: msg.bankPayment?.noOpenItems || '未消込項目は見つかりません',
     docDate: msg.bankPayment?.docDate || '伝票日付',
     voucherNo: msg.bankPayment?.voucherNo || '伝票番号',
+    partnerCol: msg.bankPayment?.partnerCol || '取引先',
     originalAmount: msg.bankPayment?.originalAmount || '原金額',
     residualAmount: msg.bankPayment?.residualAmount || '未消込残高',
     applyAmount: msg.bankPayment?.applyAmount || '今回消込',
@@ -248,6 +252,52 @@ const err = ref('')
 
 // 缓存
 const accountCache = new Map<string, { name: string; currency?: string }>()
+const partnerCache = new Map<string, { code: string; name: string }>()
+
+// JSON 安全解析
+function parseJsonSafe(val: any): any {
+  if (typeof val === 'object' && val !== null) return val
+  if (typeof val !== 'string') return null
+  try { return JSON.parse(val) } catch { return null }
+}
+
+// 取引先显示
+function partnerDisplay(code?: string, name?: string) {
+  const trimmedCode = (code || '').toString().trim()
+  const cached = trimmedCode ? partnerCache.get(trimmedCode) : undefined
+  const finalName = (cached?.name || name || '').toString().trim()
+  const finalCode = cached?.code || trimmedCode
+  if (finalCode && finalName) return `${finalCode} ${finalName}`
+  if (finalCode) return finalCode
+  return finalName
+}
+
+// 批量获取取引先信息
+async function fetchPartnersByCodes(codes: string[]) {
+  const unique = Array.from(new Set((codes || []).map(c => (c || '').toString().trim()).filter(c => !!c)))
+  const missing = unique.filter(c => !partnerCache.has(c))
+  if (missing.length === 0) return
+  try {
+    const resp = await api.post('/objects/businesspartner/search', {
+      page: 1, pageSize: Math.max(200, missing.length),
+      where: [{
+        or: [
+          { field: 'id', op: 'in', value: missing },
+          { field: 'partner_code', op: 'in', value: missing }
+        ]
+      }],
+      orderBy: []
+    })
+    for (const row of (resp.data?.data || [])) {
+      const id = String(row.id || '').trim()
+      const code = String(row.partner_code || '').trim()
+      const payload = parseJsonSafe(row.payload) || {}
+      const name = (payload?.name || row.name || '').toString()
+      if (id) partnerCache.set(id, { code: code || id, name })
+      if (code) partnerCache.set(code, { code, name })
+    }
+  } catch {}
+}
 
 // 监听金额输入
 watch(() => form.amountText, (val) => {
@@ -472,17 +522,13 @@ async function loadOpenItems() {
     // 收集所有 voucher_id，批量查询伝票信息
     const voucherIds = new Set<string>()
     for (const item of data) {
-      if (item.voucher_id) voucherIds.add(item.voucher_id)
-      if (item.refs) {
-        try {
-          const refs = typeof item.refs === 'string' ? JSON.parse(item.refs) : item.refs
-          if (refs.voucherId) voucherIds.add(refs.voucherId)
-        } catch {}
-      }
+      const refs = parseJsonSafe(item.refs)
+      const vid = item.voucher_id || refs?.voucherId || ''
+      if (vid) voucherIds.add(vid)
     }
 
     // 批量查询伝票获取 voucher_no 和行的 drcr
-    const voucherMap = new Map<string, { voucherNo: string; lines: any[] }>()
+    const voucherMap = new Map<string, { voucherNo: string; headerText: string; lines: any[] }>()
     if (voucherIds.size > 0) {
       try {
         const vRes = await api.post('/objects/voucher/search', {
@@ -500,11 +546,33 @@ async function loadOpenItems() {
           })
         }
       } catch (e) {
-        console.error('批量查询伝票失败', e)
+        console.error('批量查询伝票失敗', e)
       }
     }
 
-    // 补充科目名称和伝票信息
+    // 收集取引先ID（从open_items和凭证明细行两个来源）
+    const partnerIdSet = new Set<string>()
+    for (const item of data) {
+      const pid = String(item.partner_id || '').trim()
+      if (pid) partnerIdSet.add(pid)
+      // 也从凭证明细行提取 vendorId/employeeId
+      const refs = parseJsonSafe(item.refs)
+      const vid = item.voucher_id || refs?.voucherId || ''
+      const lineNo = item.voucher_line_no || refs?.lineNo || 0
+      const vInfo = voucherMap.get(vid)
+      if (vInfo) {
+        const line = vInfo.lines.find((l: any) => l.lineNo === lineNo)
+        if (line) {
+          for (const key of ['vendorId', 'employeeId', 'customerId']) {
+            const v = String(line[key] || '').trim()
+            if (v) partnerIdSet.add(v)
+          }
+        }
+      }
+    }
+    await fetchPartnersByCodes(Array.from(partnerIdSet))
+
+    // 补充科目名称、伝票信息、取引先信息
     const enriched = data.map((item: any) => {
       const code = item.account_code
       let accountName = ''
@@ -521,15 +589,9 @@ async function loadOpenItems() {
       }
 
       // 解析 refs 获取 voucherId 和 lineNo
-      let voucherId = item.voucher_id || ''
-      let lineNo = item.voucher_line_no || 0
-      if (item.refs) {
-        try {
-          const refs = typeof item.refs === 'string' ? JSON.parse(item.refs) : item.refs
-          if (refs.voucherId) voucherId = refs.voucherId
-          if (refs.lineNo) lineNo = refs.lineNo
-        } catch {}
-      }
+      const refs = parseJsonSafe(item.refs)
+      const voucherId = item.voucher_id || refs?.voucherId || ''
+      const lineNo = item.voucher_line_no || refs?.lineNo || 0
 
       // 从 voucherMap 获取 voucher_no 和 drcr
       let voucherNo = ''
@@ -539,19 +601,29 @@ async function loadOpenItems() {
       const vInfo = voucherMap.get(voucherId)
       if (vInfo) {
         voucherNo = vInfo.voucherNo
-        // 获取凭证抬头摘要
         headerRemark = vInfo.headerText || ''
-        // 根据 lineNo 找到对应行的 drcr 和摘要
         const line = vInfo.lines.find((l: any) => l.lineNo === lineNo)
         if (line) {
           if (line.drcr) drcr = line.drcr
-          // 获取明细行摘要（优先使用 note，其次 description，再次 lineText）
           lineRemark = line.note || line.description || line.lineText || ''
         }
       }
 
       // isDebit 为 true 表示是债权（借方），出金时应显示为红色负数
       const isDebit = drcr === 'DR'
+
+      // 取引先信息（优先从open_item的partner_id，其次从凭证明细行）
+      let partnerCode = String(item.partner_id || '').trim()
+      if (!partnerCode && vInfo) {
+        const line = vInfo.lines.find((l: any) => l.lineNo === lineNo)
+        if (line) {
+          for (const key of ['vendorId', 'employeeId', 'customerId']) {
+            const v = String(line[key] || '').trim()
+            if (v) { partnerCode = v; break }
+          }
+        }
+      }
+      const partnerDisplayText = partnerDisplay(partnerCode)
 
       return {
         ...item,
@@ -560,6 +632,7 @@ async function loadOpenItems() {
         voucherId,
         drcr,
         isDebit,
+        partnerDisplay: partnerDisplayText,
         remark: lineRemark || headerRemark || ''
       }
     })
