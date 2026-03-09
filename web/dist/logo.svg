@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#60a5fa"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- 简约 A 字母变形 + 连接点 -->
+  <path d="M16 4L6 26h4l2-5h8l2 5h4L16 4zm0 8l2.5 6h-5L16 12z" fill="url(#g1)"/>
+  
+  <!-- 右上角小圆点 - 代表 AI 智能 -->
+  <circle cx="24" cy="8" r="3" fill="#22d3ee"/>
+  
+  <!-- 连接线 -->
+  <path d="M21.5 10L18 14" stroke="#22d3ee" stroke-width="1.5" stroke-linecap="round" opacity="0.8"/>
+</svg>

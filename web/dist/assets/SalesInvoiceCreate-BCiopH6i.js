@@ -1,0 +1,1 @@
+import e from"./SalesInvoicesList-Dcdu3qw3.js";import{d as t,B as o,g as r}from"./index-Cil8L7Uz.js";import"./VouchersList-BCUOa6Fi.js";import"./_plugin-vue_export-helper-DlAUqK2U.js";const _=t({__name:"SalesInvoiceCreate",setup(a){return(n,c)=>(r(),o(e,{"auto-open-create":!0,"create-only":!0}))}});export{_ as default};
