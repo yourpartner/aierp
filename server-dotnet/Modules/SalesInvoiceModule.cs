@@ -135,12 +135,13 @@ public static class SalesInvoiceModule
                 int lineNo = 0;
                 decimal totalAmount = 0m;
                 decimal taxAmount = 0m;
+                var deliveryDates = new List<DateOnly>();
 
                 foreach (var dnId in deliveryNoteIds)
                 {
                     await using var checkCmd = new NpgsqlCommand(@"
-                        SELECT status, customer_code, customer_name, delivery_no, payload
-                        FROM delivery_notes 
+                        SELECT status, customer_code, customer_name, delivery_no, payload, delivery_date
+                        FROM delivery_notes
                         WHERE id = $1 AND company_code = $2", conn, tx);
                     checkCmd.Parameters.AddWithValue(dnId);
                     checkCmd.Parameters.AddWithValue(cc.ToString()!);
@@ -157,6 +158,8 @@ public static class SalesInvoiceModule
                     var dnCustomerName = reader.IsDBNull(2) ? null : reader.GetString(2);
                     var deliveryNo = reader.IsDBNull(3) ? null : reader.GetString(3);
                     var payloadStr = reader.IsDBNull(4) ? "{}" : reader.GetString(4);
+                    if (!reader.IsDBNull(5))
+                        deliveryDates.Add(DateOnly.FromDateTime(reader.GetDateTime(5)));
 
                     // 验证客户一致性
                     if (customerCode == null)
@@ -279,6 +282,18 @@ public static class SalesInvoiceModule
                     }
                 }
 
+                // 取引年月日を算出（納品書の納品日から）
+                string? transactionDate = null;
+                if (deliveryDates.Count > 0)
+                {
+                    deliveryDates.Sort();
+                    var earliest = deliveryDates[0];
+                    var latest = deliveryDates[^1];
+                    transactionDate = earliest == latest
+                        ? earliest.ToString("yyyy-MM-dd")
+                        : $"{earliest:yyyy-MM-dd} ～ {latest:yyyy-MM-dd}";
+                }
+
                 // 构建请求书 payload - 创建即发行
                 var invoicePayload = new JsonObject
                 {
@@ -288,6 +303,7 @@ public static class SalesInvoiceModule
                         ["customerCode"] = customerCode,
                         ["customerName"] = customerName ?? customerCode,
                         ["invoiceDate"] = invoiceDate,
+                        ["transactionDate"] = transactionDate,
                         ["dueDate"] = dueDateStr,
                         ["amountTotal"] = totalAmount,
                         ["taxAmount"] = taxAmount,
@@ -772,6 +788,51 @@ public static class SalesInvoiceModule
             return Results.Text($"[{string.Join(",", rows)}]", "application/json");
         }).RequireAuthorization();
 
+        // 生成/再生成请求书PDF
+        app.MapPost("/sales-invoices/{id:guid}/pdf", async (Guid id, HttpRequest req, NpgsqlDataSource ds) =>
+        {
+            if (!req.Headers.TryGetValue("x-company-code", out var cc) || string.IsNullOrWhiteSpace(cc))
+                return Results.BadRequest(new { error = "Missing x-company-code" });
+
+            await using var conn = await ds.OpenConnectionAsync();
+
+            string? invoiceNo = null, payloadStr = null;
+            await using (var getCmd = new NpgsqlCommand(
+                "SELECT invoice_no, payload FROM sales_invoices WHERE id = $1 AND company_code = $2", conn))
+            {
+                getCmd.Parameters.AddWithValue(id);
+                getCmd.Parameters.AddWithValue(cc.ToString()!);
+                await using var reader = await getCmd.ExecuteReaderAsync();
+                if (!await reader.ReadAsync()) return Results.NotFound();
+                invoiceNo = reader.IsDBNull(0) ? null : reader.GetString(0);
+                payloadStr = reader.IsDBNull(1) ? "{}" : reader.GetString(1);
+            }
+
+            var pdfService = req.HttpContext.RequestServices.GetService<SalesPdfService>();
+            if (pdfService == null)
+                return Results.Problem("PDF service not available");
+
+            var companyInfo = await SalesPdfService.GetCompanyInfoAsync(ds, cc.ToString()!);
+            using var payloadDoc = JsonDocument.Parse(payloadStr);
+            var invoiceData = SalesPdfService.ExtractInvoiceData(payloadDoc.RootElement, invoiceNo ?? "");
+            var pdfBlobName = await pdfService.GenerateInvoicePdfAsync(cc.ToString()!, companyInfo, invoiceData, CancellationToken.None);
+            var pdfUrl = pdfService.GetReadUri(pdfBlobName);
+
+            // Save PDF info back to payload
+            await using (var updCmd = new NpgsqlCommand(@"
+                UPDATE sales_invoices SET payload = jsonb_set(jsonb_set(payload, '{pdfBlobName}', to_jsonb($1::text)), '{pdfUrl}', to_jsonb($2::text)), updated_at=now()
+                WHERE id = $3 AND company_code = $4", conn))
+            {
+                updCmd.Parameters.AddWithValue(pdfBlobName);
+                updCmd.Parameters.AddWithValue(pdfUrl);
+                updCmd.Parameters.AddWithValue(id);
+                updCmd.Parameters.AddWithValue(cc.ToString()!);
+                await updCmd.ExecuteNonQueryAsync();
+            }
+
+            return Results.Ok(new { pdfBlobName, pdfUrl });
+        }).RequireAuthorization();
+
         // GET /sales-invoices/batch-preview?year=2026&month=2
         // 月次一括請求書作成のプレビュー情報を返す
         app.MapGet("/sales-invoices/batch-preview", async (HttpRequest req, NpgsqlDataSource ds) =>
@@ -917,11 +978,12 @@ public static class SalesInvoiceModule
                     var lines = new List<object>();
                     var lineNo = 0;
                     string? dueDateStr = null;
+                    var batchDeliveryDates = new List<DateOnly>();
 
                     foreach (var dnId in dnIds)
                     {
                         await using var dnCmd = new NpgsqlCommand(@"
-                            SELECT dn.delivery_no, dn.payload
+                            SELECT dn.delivery_no, dn.payload, dn.delivery_date
                             FROM delivery_notes dn
                             WHERE dn.id=$1 AND dn.company_code=$2", conn, tx);
                         dnCmd.Parameters.AddWithValue(dnId);
@@ -931,6 +993,8 @@ public static class SalesInvoiceModule
 
                         var deliveryNo = dnRd.IsDBNull(0) ? null : dnRd.GetString(0);
                         var payloadStr = dnRd.IsDBNull(1) ? "{}" : dnRd.GetString(1);
+                        if (!dnRd.IsDBNull(2))
+                            batchDeliveryDates.Add(DateOnly.FromDateTime(dnRd.GetDateTime(2)));
                         await dnRd.CloseAsync();
 
                         using var payDoc = JsonDocument.Parse(payloadStr);
@@ -985,6 +1049,17 @@ public static class SalesInvoiceModule
                     var dnIdsJsonArr = new JsonArray();
                     foreach (var id in dnIds) dnIdsJsonArr.Add(id.ToString());
 
+                    string? batchTransactionDate = null;
+                    if (batchDeliveryDates.Count > 0)
+                    {
+                        batchDeliveryDates.Sort();
+                        var earliest = batchDeliveryDates[0];
+                        var latest = batchDeliveryDates[^1];
+                        batchTransactionDate = earliest == latest
+                            ? earliest.ToString("yyyy-MM-dd")
+                            : $"{earliest:yyyy-MM-dd} ～ {latest:yyyy-MM-dd}";
+                    }
+
                     var invoicePayload = new JsonObject
                     {
                         ["header"] = new JsonObject
@@ -993,6 +1068,7 @@ public static class SalesInvoiceModule
                             ["customerCode"] = customerCode,
                             ["customerName"] = customerName,
                             ["invoiceDate"] = invoiceDate,
+                            ["transactionDate"] = batchTransactionDate,
                             ["dueDate"] = dueDateStr,
                             ["amountTotal"] = totalAmount,
                             ["taxAmount"] = taxAmount,
